@@ -1,0 +1,21 @@
+# Profile dự phòng: dùng khi label của task không khớp guideline nào.
+# Không khai báo label nào: mọi label trong task được bật, prompt mặc định là chính tên label,
+# loại shape theo kiểu label trong CVAT (label kiểu "any" -> rectangle).
+id: generic
+title: "Generic - theo label của task"
+description: "Prompt = tên label. Sửa prompt và shape ngay trên panel."
+mode: instance
+
+defaults:
+  threshold: 0.5
+  min_area_px: 30
+
+labels: []
+
+rules:
+  dedup: {iou: 0.6, class_margin: 0.15, existing_iou: 0.7}
+  truncated: {enabled: true, attribute: truncated, border_px: 2}
+  low_visibility: {enabled: true, min_side_px: 12, score_margin: 0.08}
+  polygon: {epsilon: 1.5}
+  lane: {sample_step_px: 10, max_gap_px: 30, join_gap_px: 60, epsilon: 1.5, min_length_px: 20}
+  qa: {bounds_tolerance_px: 0.5, min_box_side_px: 3, min_polyline_px: 10, duplicate_iou: 0.85}

@@ -1,0 +1,191 @@
+# Profile cho: BBox_Polygon_Polyline_Annotation_Guideline_V1
+# Tên label phải khớp tên label trong task CVAT (không phân biệt hoa/thường, "_" và khoảng trắng).
+id: bdd_bbox_polygon_polyline_v1
+title: "BBox / Polygon / Polyline - ảnh đường phố (V1)"
+description: "10 class object (bounding box), drivable area (polygon), lane marking (polyline)."
+guideline: BBox_Polygon_Polyline_Annotation_Guideline_V1.docx
+mode: instance
+# Nếu task có đủ các label này thì profile được tự chọn.
+match_labels: ["area/direct", "lane/single white"]
+
+defaults:
+  threshold: 0.5       # độ tin cậy tối thiểu của SAM3 (0..1); tăng lên nếu ra thừa, giảm nếu sót
+  min_area_px: 30
+  join_dashes: true
+
+labels:
+  # ---- Object instance: Rectangle / Bounding Box -------------------------
+  - name: pedestrian
+    aliases: [person]
+    shape: rectangle
+    prompts: ["person"]          # mọi người trong ảnh; luật rider_split tách rider ra sau
+    group: person
+  - name: rider
+    shape: rectangle
+    prompts: []                  # suy ra: người đang ngồi trên motorcycle/bicycle
+    group: person
+  - name: car
+    shape: rectangle
+    prompts: ["car"]
+    group: vehicle               # cùng nhóm = loại trừ nhau; trùng vị trí thì giữ class điểm cao hơn
+  - name: truck
+    shape: rectangle
+    prompts: ["truck"]
+    group: vehicle
+  - name: bus
+    shape: rectangle
+    prompts: ["bus"]
+    group: vehicle
+  - name: train
+    shape: rectangle
+    prompts: ["train"]
+    group: vehicle
+  - name: motorcycle
+    aliases: [motorbike]
+    shape: rectangle
+    prompts: ["motorcycle"]
+    group: two_wheeler
+  - name: bicycle
+    aliases: [bike]
+    shape: rectangle
+    prompts: ["bicycle"]
+    group: two_wheeler
+  - name: traffic light
+    shape: rectangle
+    prompts: ["traffic light"]
+    min_area_px: 12
+  - name: traffic sign
+    shape: rectangle
+    prompts: ["traffic sign"]
+    min_area_px: 12
+
+  # ---- Drivable area: Polygon --------------------------------------------
+  - name: area/direct
+    aliases: [direct]
+    shape: polygon
+    role: drivable_direct
+    prompts: ["road"]            # prompt tìm mặt đường; làn direct được cắt ra bằng vạch kẻ
+    threshold: 0.4
+  - name: area/alternative
+    aliases: [alternative]
+    shape: polygon
+    role: drivable_alt
+    prompts: []                  # suy ra từ mặt đường + vạch kẻ làn
+
+  # ---- Lane marking: Polyline --------------------------------------------
+  - name: lane/crosswalk
+    aliases: [crosswalk]
+    shape: polyline
+    prompts: ["crosswalk"]
+    polyline_mode: centerline    # hoặc long_edges: hai mép dài của crosswalk. Hỏi mentor quy ước của lớp.
+    join_dashes: false
+    group: lane
+  - name: lane/double white
+    aliases: [double white]
+    shape: polyline
+    prompts: ["double white line"]
+    lane: {kind: double, color: white}
+    group: lane
+  - name: lane/double yellow
+    aliases: [double yellow]
+    shape: polyline
+    prompts: ["double yellow line"]
+    lane: {kind: double, color: yellow}
+    group: lane
+  - name: lane/double other
+    aliases: [double other]
+    shape: polyline
+    prompts: []                  # suy ra: vạch đôi có màu không phải trắng/vàng
+    lane: {kind: double, color: other}
+    group: lane
+  - name: lane/road curb
+    aliases: [road curb, curb]
+    shape: polyline
+    prompts: ["curb"]
+    join_dashes: false
+    group: lane
+  - name: lane/single white
+    aliases: [single white]
+    shape: polyline
+    prompts: ["white lane line"]
+    lane: {kind: single, color: white}
+    group: lane
+  - name: lane/single yellow
+    aliases: [single yellow]
+    shape: polyline
+    prompts: ["yellow lane line"]
+    lane: {kind: single, color: yellow}
+    group: lane
+  - name: lane/single other
+    aliases: [single other]
+    shape: polyline
+    prompts: []                  # suy ra: vạch đơn có màu không phải trắng/vàng
+    lane: {kind: single, color: other}
+    group: lane
+
+rules:
+  dedup:
+    iou: 0.6             # hai mask trùng nhau từ mức này coi là một đối tượng
+    class_margin: 0.15   # hai class sát điểm nhau -> gắn cờ UNCERTAIN_CLASS
+    existing_iou: 0.7    # trùng với annotation đã có trên frame -> gắn cờ DUPLICATE, bỏ tick
+
+  # "rider: người điều khiển hoặc ngồi trên phương tiện hai bánh"
+  rider_split:
+    enabled: true
+    pedestrian_label: pedestrian
+    rider_label: rider
+    vehicle_labels: [motorcycle, bicycle]
+    min_overlap: 0.2
+
+  # "occluded = true: object bị object khác che một phần" (ước lượng, luôn kèm cờ ATTRIBUTE_CHECK)
+  occluded:
+    enabled: true
+    min_overlap: 0.15
+
+  # "truncated = true: object bị cắt bởi biên ảnh". Cần attribute checkbox tên 'truncated' trên label.
+  truncated:
+    enabled: true
+    attribute: truncated
+    border_px: 2
+
+  # Issue type LOW_VISIBILITY: object quá bé hoặc model không chắc
+  low_visibility:
+    enabled: true
+    min_side_px: 12
+    score_margin: 0.08
+
+  polygon:
+    epsilon: 1.5         # sai số giản lược đỉnh (px): nhỏ = nhiều đỉnh, bám biên hơn
+
+  lane:
+    sample_step_px: 10   # khoảng cách lấy điểm dọc theo tim vạch
+    max_gap_px: 30       # trong một mask: không nối qua khoảng trống dài hơn mức này
+    join_gap_px: 60      # nối các đoạn nét đứt thẳng hàng cách nhau tối đa mức này (join_dashes)
+    epsilon: 1.5
+    min_length_px: 20
+    exclusive_region_label: lane/crosswalk   # vạch nằm trong crosswalk không tính là vạch làn
+
+  # Kiểm tra màu vạch từ pixel thật; lệch với prompt thì đổi class và gắn cờ UNCERTAIN_CLASS
+  lane_color:
+    enabled: true
+    labels:
+      single: {white: lane/single white, yellow: lane/single yellow, other: lane/single other}
+      double: {white: lane/double white, yellow: lane/double yellow, other: lane/double other}
+
+  drivable:
+    ego_point: [0.5, 0.97]         # vị trí xe trong ảnh (tỉ lệ ngang, dọc)
+    barrier_px: 7                  # bề dày vạch dùng để cắt làn
+    extend_near_px: 1500           # kéo dài vạch về phía xe cho tới mép ảnh
+    extend_far_px: 40
+    min_area_px: 1500
+    max_alternatives: 4
+    polygon_epsilon: 2.0
+    ignore_lanes: [lane/crosswalk]
+    # "không vẽ đường ngược chiều là alternative": vùng nằm bên kia các vạch này bị loại
+    opposite_separators: [lane/double yellow, lane/single yellow]
+
+  qa:
+    bounds_tolerance_px: 0.5
+    min_box_side_px: 3
+    min_polyline_px: 10
+    duplicate_iou: 0.85

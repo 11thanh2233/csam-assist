@@ -1,0 +1,31 @@
+# MẪU để viết profile cho một guideline mới.
+# 1. Chép file này thành profiles/<ten_profile>.yaml (tên KHÔNG bắt đầu bằng "_").
+# 2. Điền label theo bảng taxonomy của guideline.
+# 3. Bấm "Nạp lại profile" trên panel (hoặc khởi động lại backend).
+# Chi tiết từng trường: docs/PROFILES.md
+
+id: ten_profile_cua_ban
+title: "Tên hiển thị trên panel"
+description: "Mô tả ngắn"
+mode: instance            # instance = từng đối tượng riêng | semantic = mỗi pixel một class
+match_labels: []          # 2-3 tên label đặc trưng để tool tự chọn profile này
+
+defaults:
+  threshold: 0.5
+  min_area_px: 30
+
+labels:
+  - name: ten label trong CVAT
+    aliases: []                  # tên khác có thể gặp
+    shape: rectangle             # rectangle | polygon | polyline | mask
+    prompts: ["english noun"]    # cụm danh từ tiếng Anh ngắn, cụ thể. [] = suy ra bằng luật
+    threshold: 0.5               # tuỳ chọn, ghi đè defaults
+    group: ten_nhom              # tuỳ chọn: các label cùng nhóm loại trừ nhau khi trùng vị trí
+
+rules:
+  dedup: {iou: 0.6, class_margin: 0.15, existing_iou: 0.7}
+  truncated: {enabled: true, attribute: truncated, border_px: 2}
+  occluded: {enabled: false, min_overlap: 0.15}
+  low_visibility: {enabled: true, min_side_px: 12, score_margin: 0.08}
+  polygon: {epsilon: 1.5}
+  qa: {bounds_tolerance_px: 0.5, min_box_side_px: 3, duplicate_iou: 0.85}

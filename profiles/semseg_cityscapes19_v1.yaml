@@ -1,0 +1,80 @@
+# Profile cho: Semantic_Segmentation_Annotation_Guideline_V1 (19 class)
+id: semseg_cityscapes19_v1
+title: "Semantic Segmentation 19 class - ảnh đường phố (V1)"
+description: "Mỗi pixel một class, không chồng lấn, không tự lấp vùng không chắc."
+guideline: Semantic_Segmentation_Annotation_Guideline_V1.docx
+mode: semantic
+match_labels: [sky, vegetation, terrain]
+
+defaults:
+  threshold: 0.45
+  min_area_px: 20
+
+labels:
+  - {name: road,          prompts: ["road"]}
+  - {name: sidewalk,      prompts: ["sidewalk"]}
+  - {name: building,      prompts: ["building"]}
+  - {name: wall,          prompts: ["wall"]}
+  - {name: fence,         prompts: ["fence"]}
+  - {name: pole,          prompts: ["pole"]}
+  - {name: traffic_light, aliases: [traffic light], prompts: ["traffic light"]}
+  - {name: traffic_sign,  aliases: [traffic sign],  prompts: ["traffic sign"]}
+  - {name: vegetation,    prompts: ["tree", "bush"]}
+  - {name: terrain,       prompts: ["grass", "dirt ground"]}
+  - {name: sky,           prompts: ["sky"]}
+  - {name: person,        aliases: [pedestrian], prompts: ["person"]}
+  - {name: rider,         prompts: []}          # suy ra: person ngồi trên motorcycle/bicycle
+  - {name: car,           prompts: ["car"]}
+  - {name: truck,         prompts: ["truck"]}
+  - {name: bus,           prompts: ["bus"]}
+  - {name: train,         prompts: ["train"]}
+  - {name: motorcycle,    aliases: [motorbike], prompts: ["motorcycle"]}
+  - {name: bicycle,       aliases: [bike], prompts: ["bicycle"]}
+
+rules:
+  # "Person vs Rider: rider là người đang điều khiển hoặc ngồi trên phương tiện"
+  rider_split:
+    enabled: true
+    pedestrian_label: person
+    rider_label: rider
+    vehicle_labels: [motorcycle, bicycle]
+    min_overlap: 0.2
+
+  semantic:
+    # Label kiểu "any" trong task sẽ được ghi bằng shape này. Label kiểu mask/polygon thì theo task.
+    # mask   = chính xác từng pixel, không chồng lấn, không hở (nên dùng)
+    # polygon = dễ sửa tay hơn nhưng biên giữa hai vùng có thể lệch khoảng 1px
+    output_shape: mask
+    # Khi hai class cùng nhận một pixel, class đứng TRƯỚC thắng (vật ở gần đè lên nền).
+    priority:
+      - rider
+      - person
+      - bicycle
+      - motorcycle
+      - traffic_light
+      - traffic_sign
+      - pole
+      - car
+      - truck
+      - bus
+      - train
+      - fence
+      - wall
+      - vegetation
+      - terrain
+      - sidewalk
+      - road
+      - building
+      - sky
+    min_region_px: 40        # mảnh nhỏ hơn mức này bị bỏ rồi nhập vào class kề bên
+    fill_gaps_px: 150        # chỉ lấp lỗ nhỏ giữa các vùng đã rõ; lỗ lớn hơn để trống cho người xử lý
+    warn_unlabeled_pct: 1.0
+    respect_existing: true   # không đề xuất đè lên pixel đã có annotation trên frame
+    merge_instances: false   # true: mỗi class một mask duy nhất trên frame
+    polygon_epsilon: 1.0
+
+  qa:
+    bounds_tolerance_px: 0.5
+    duplicate_iou: 0.9
+    max_overlap_px: 0
+    min_coverage_pct: 99.0
