@@ -13,9 +13,9 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, pipeline, qa
@@ -50,6 +50,13 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="SAM3 CVAT Assist", version=__version__, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(_: Request, exc: Exception) -> JSONResponse:
+    """Lỗi chưa lường trước: trả lý do về panel thay vì chỉ một mã 500 trống."""
+    log.exception("Lỗi khi xử lý yêu cầu")
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {str(exc)[:400]}"})
 
 
 def require_key(x_api_key: str = Header(default="")) -> None:

@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from .base import Engine, Instance, resolve_device
+from .base import Engine, Instance, PromptError, resolve_device
 
 
 class Sam3TransformersEngine(Engine):
@@ -49,6 +49,16 @@ class Sam3TransformersEngine(Engine):
             "target_sizes": img_inputs.get("original_sizes").tolist(),
         }
 
+    def _check_prompt(self, inputs: Any, prompt: str) -> None:
+        """Bộ mã hoá chữ của SAM3 chỉ nhận prompt ngắn; báo lỗi rõ ràng thay vì để model sập."""
+        limit = getattr(getattr(self.model.config, "text_config", None), "max_position_embeddings", None)
+        ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+        if limit and ids is not None and ids.shape[-1] > limit:
+            raise PromptError(
+                f"prompt quá dài cho SAM3 ({ids.shape[-1]} token, tối đa {limit}). "
+                "Hãy dùng cụm danh từ tiếng Anh ngắn, ví dụ \"traffic sign\"."
+            )
+
     def _post(self, outputs: Any, target_sizes: Any, threshold: float) -> list[Instance]:
         results = self.processor.post_process_instance_segmentation(
             outputs,
@@ -66,6 +76,7 @@ class Sam3TransformersEngine(Engine):
     def segment_text(self, state: Any, prompt: str, threshold: float) -> list[Instance]:
         with self._lock, self.torch.no_grad():
             text_inputs = self.processor(text=prompt, return_tensors="pt").to(self.device)
+            self._check_prompt(text_inputs, prompt)
             outputs = self.model(vision_embeds=state["vision_embeds"], **text_inputs)
             return self._post(outputs, state["target_sizes"], threshold)
 
@@ -82,5 +93,7 @@ class Sam3TransformersEngine(Engine):
             kwargs["text"] = prompt
         with self._lock, self.torch.no_grad():
             inputs = self.processor(**kwargs).to(self.device)
+            if prompt:
+                self._check_prompt(inputs, prompt)
             outputs = self.model(**inputs)
             return self._post(outputs, inputs.get("original_sizes").tolist(), threshold)

@@ -15,6 +15,10 @@ class Instance:
     score: float
 
 
+class PromptError(ValueError):
+    """Prompt không dùng được với model (ví dụ quá dài)."""
+
+
 class Engine:
     name = "base"
     device = "cpu"

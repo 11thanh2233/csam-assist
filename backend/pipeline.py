@@ -6,6 +6,7 @@ Các trường hợp không chắc được gắn cờ theo đúng bảng Issue 
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -16,6 +17,22 @@ import numpy as np
 from . import geometry as G
 from .engines import Engine
 from .profiles import norm
+
+
+log = logging.getLogger("sam3-assist")
+
+
+def run_prompt(engine: Engine, state: Any, prompt: str, threshold: float, label: str, warnings: Optional[list]) -> list:
+    """Chạy một prompt. Prompt lỗi thì bỏ qua và báo trên panel, không làm hỏng cả lượt gợi ý."""
+    try:
+        return engine.segment_text(state, prompt, threshold)
+    except Exception as exc:  # noqa: BLE001 - lỗi của một prompt không được chặn các label khác
+        shown = prompt if len(prompt) <= 60 else prompt[:57] + "..."
+        message = f"Bỏ qua prompt \"{shown}\" của label '{label}': {str(exc)[:200]}"
+        log.warning(message)
+        if warnings is not None and message not in warnings:
+            warnings.append(message)
+        return []
 
 
 @dataclass
@@ -35,11 +52,11 @@ def add_flag(flags: list[dict], code: str, message: str) -> None:
 
 
 # ------------------------------------------------------------ phát hiện -----
-def detect(engine: Engine, state: Any, cfgs: list[dict], clean: bool = True) -> list[Det]:
+def detect(engine: Engine, state: Any, cfgs: list[dict], clean: bool = True, warnings: Optional[list] = None) -> list[Det]:
     dets: list[Det] = []
     for cfg in cfgs:
         for prompt in cfg["prompts"]:
-            for inst in engine.segment_text(state, prompt, cfg["threshold"]):
+            for inst in run_prompt(engine, state, prompt, cfg["threshold"], cfg["name"], warnings):
                 mask = inst.mask.astype(bool)
                 if clean and cfg["role"] == "object":
                     mask = G.clean_mask(mask)
@@ -285,7 +302,7 @@ def drivable(
     road = np.zeros((height, width), bool)
     score = 0.0
     for prompt in direct_cfg["prompts"]:
-        for inst in engine.segment_text(state, prompt, direct_cfg["threshold"]):
+        for inst in run_prompt(engine, state, prompt, direct_cfg["threshold"], direct_cfg["name"], warnings):
             road |= inst.mask.astype(bool)
             score = max(score, float(inst.score))
     if not road.any():
@@ -400,7 +417,7 @@ def semantic(
     sem = rules.get("semantic") or {}
     active = [c for c in cfgs if c["enabled"] and c["supported"]]
     cfg_by_name = {norm(c["name"]): c for c in cfgs if c["supported"]}
-    dets = detect(engine, state, active, clean=False)
+    dets = detect(engine, state, active, clean=False, warnings=warnings)
     rider_split(dets, rules, cfg_by_name)
 
     # Ưu tiên cao vẽ sau cùng để đè lên nền (xe đè lên đường, người đè lên xe...).
@@ -541,7 +558,7 @@ def propose(
         proposals = semantic(engine, state, profile, cfgs, existing, width, height, warnings)
     else:
         dedup = rules.get("dedup") or {}
-        dets = detect(engine, state, [c for c in active if c["role"] in ("object", "lane")])
+        dets = detect(engine, state, [c for c in active if c["role"] in ("object", "lane")], warnings=warnings)
         dets = suppress(dets, float(dedup.get("iou", 0.6)), float(dedup.get("class_margin", 0.15)))
         objects = [d for d in dets if d.cfg["role"] == "object"]
         rider_split(objects, rules, cfg_by_name)
