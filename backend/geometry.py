@@ -297,3 +297,203 @@ def classify_marking_color(image_rgb: np.ndarray, mask: np.ndarray) -> Optional[
     if sat <= 60 and val >= 110:
         return "white"
     return "other"
+
+
+# ------------------------------------------------- vạch đôi và crosswalk ----
+def canonical_axis(u: np.ndarray) -> np.ndarray:
+    """Hướng chuẩn của một vạch: dọc ảnh thì chỉ lên trên (gần xe -> xa), ngang thì chỉ sang phải."""
+    u = np.asarray(u, float)
+    u = u / (np.linalg.norm(u) or 1.0)
+    if abs(u[1]) >= abs(u[0]):
+        return -u if u[1] > 0 else u
+    return -u if u[0] < 0 else u
+
+
+def principal_axis(xs: np.ndarray, ys: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Tâm, hướng trục dài và độ thon dài (tỉ lệ hai trục) của một đám pixel."""
+    pts = np.stack([xs, ys], 1).astype(float) + 0.5
+    mean = pts.mean(0)
+    if len(pts) < 3:
+        return mean, np.array([0.0, -1.0]), 1.0
+    w, vec = np.linalg.eigh(np.cov((pts - mean).T))
+    ratio = float(np.sqrt(max(w[1], 1e-9) / max(w[0], 1e-9)))
+    return mean, canonical_axis(vec[:, int(np.argmax(w))]), ratio
+
+
+def cluster_masks(masks: list[np.ndarray], radius: int) -> list[list[int]]:
+    """Gom các mask nằm sát nhau (cách nhau không quá `radius` px) thành nhóm, trả về chỉ số mask của mỗi nhóm."""
+    if not masks:
+        return []
+    if radius <= 0 or len(masks) == 1:
+        return [[i] for i in range(len(masks))]
+    union = np.zeros(masks[0].shape, np.uint8)
+    for m in masks:
+        union |= m.astype(np.uint8)
+    k = 2 * int(radius) + 1
+    grown = cv2.dilate(union, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    _, lab = cv2.connectedComponents(grown, connectivity=8)
+    groups: dict[int, list[int]] = {}
+    for i, m in enumerate(masks):
+        ids = lab[m.astype(bool)]
+        ids = ids[ids > 0]
+        key = int(np.bincount(ids).argmax()) if ids.size else -(i + 1)
+        groups.setdefault(key, []).append(i)
+    return list(groups.values())
+
+
+def _frame(mask: np.ndarray, u: Optional[np.ndarray] = None):
+    ys, xs = np.nonzero(mask)
+    mean, axis, _ = principal_axis(xs, ys)
+    u = canonical_axis(axis if u is None else u)
+    v = np.array([-u[1], u[0]])
+    d = np.stack([xs, ys], 1).astype(float) + 0.5 - mean
+    return mean, u, v, d @ u, d @ v
+
+
+def _bin_extremes(a: np.ndarray, b: np.ndarray, step: float):
+    a0 = a.min()
+    bins = np.floor((a - a0) / step).astype(np.int64)
+    n = int(bins.max()) + 1
+    lo = np.full(n, np.inf)
+    hi = np.full(n, -np.inf)
+    np.minimum.at(lo, bins, b)
+    np.maximum.at(hi, bins, b)
+    present = np.flatnonzero(np.isfinite(lo))
+    centers = a0 + (present + 0.5) * step
+    return present, centers, lo[present], hi[present], bins
+
+
+def _median_smooth(values: np.ndarray, half: int) -> np.ndarray:
+    if half <= 0 or len(values) < 3:
+        return values
+    return np.array([np.median(values[max(0, i - half): i + half + 1]) for i in range(len(values))])
+
+
+def count_strips(mask: np.ndarray, step: float = 8.0, min_gap: float = 2.5) -> float:
+    """Tỉ lệ lát cắt ngang có từ hai dải trở lên: gần 1 nghĩa là mask gồm hai vạch song song (vạch đôi)."""
+    if np.count_nonzero(mask) < 20:
+        return 0.0
+    _, _, _, a, b = _frame(mask)
+    bins = np.floor((a - a.min()) / step).astype(np.int64)
+    order = np.lexsort((b, bins))
+    bins, b = bins[order], b[order]
+    starts = np.flatnonzero(np.r_[True, np.diff(bins) != 0])
+    ends = np.r_[starts[1:], len(bins)]
+    total = double = 0
+    for s, e in zip(starts, ends):
+        if e - s < 2:
+            continue
+        total += 1
+        if np.any(np.diff(b[s:e]) > min_gap):
+            double += 1
+    return double / total if total else 0.0
+
+
+def mask_side_edges(mask: np.ndarray, step: float = 8.0, max_gap: float = 60.0, smooth: int = 2) -> list[tuple[str, np.ndarray]]:
+    """Hai mép ngoài của một vạch (hoặc cặp vạch đôi), đi theo đúng đường cong của vạch.
+
+    Trả về [(side, điểm)] với side là 'left' hoặc 'right' nhìn theo hướng vẽ (gần xe -> xa).
+    Không nối qua khoảng trống dài hơn `max_gap` px dọc theo vạch.
+    """
+    if np.count_nonzero(mask) < 10:
+        return []
+    mean, u, v, a, b = _frame(mask)
+    present, centers, lo, hi, _ = _bin_extremes(a, b, step)
+    out: list[tuple[str, np.ndarray]] = []
+    breaks = np.flatnonzero(np.diff(present) * step > max_gap) + 1
+    for run in np.split(np.arange(len(present)), breaks):
+        if len(run) < 2:
+            continue
+        ac = centers[run]
+        # Kéo hai đầu ra tới mép thật của vạch thay vì dừng ở giữa lát cắt đầu/cuối.
+        ac = ac.copy()
+        ac[0] -= step / 2
+        ac[-1] += step / 2
+        for side, values in (("left", _median_smooth(lo[run], smooth) - 0.5), ("right", _median_smooth(hi[run], smooth) + 0.5)):
+            pts = mean + np.outer(ac, u) + np.outer(values, v)
+            out.append((side, pts[::-1] if _reversed(pts) else pts))
+    return out
+
+
+def _reversed(pts: np.ndarray) -> bool:
+    """True nếu cần đảo để vẽ từ gần xe ra xa (dọc) hoặc từ trái sang phải (ngang)."""
+    d = pts[-1] - pts[0]
+    return d[1] > 0 if abs(d[1]) >= abs(d[0]) else d[0] < 0
+
+
+def _robust_line(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    if len(x) < 2:
+        return np.array([0.0, float(y.mean()) if len(y) else 0.0])
+    coef = np.polyfit(x, y, 1)
+    for _ in range(2):
+        res = y - np.polyval(coef, x)
+        mad = np.median(np.abs(res - np.median(res))) or 1.0
+        keep = np.abs(res) <= 3 * 1.4826 * mad + 1.0
+        if keep.sum() < 2:
+            break
+        coef = np.polyfit(x[keep], y[keep], 1)
+    return coef
+
+
+def _envelope_line(x: np.ndarray, y: np.ndarray, outer: int) -> np.ndarray:
+    """Đường thẳng ôm phía ngoài của một dãy điểm (outer=-1: phía y nhỏ, +1: phía y lớn).
+
+    Các lát cắt nằm ở cạnh xiên của sọc cho giá trị lọt vào trong; chỉ giữ nửa ngoài để
+    đường không bị kéo vào giữa crosswalk. Điểm vọt ra ngoài quá xa (nhiễu) bị bỏ.
+    """
+    coef = _robust_line(x, y)
+    for _ in range(3):
+        res = (y - np.polyval(coef, x)) * outer
+        mad = np.median(np.abs(res - np.median(res))) or 1.0
+        keep = (res >= np.median(res)) & (res <= np.median(res) + 4 * 1.4826 * mad + 2.0)
+        if keep.sum() < 2:
+            break
+        coef = np.polyfit(x[keep], y[keep], 1)
+    return coef
+
+
+def crosswalk_axis(mask: np.ndarray) -> np.ndarray:
+    """Hướng chạy của crosswalk (băng qua đường): vuông góc với các sọc nếu thấy được nhiều sọc riêng."""
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    angles, weights = [], []
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] < 20:
+            continue
+        ys, xs = np.nonzero(lab == i)
+        _, axis, ratio = principal_axis(xs, ys)
+        if ratio >= 1.8:
+            angles.append(np.arctan2(axis[1], axis[0]))
+            weights.append(stats[i, cv2.CC_STAT_AREA])
+    if len(angles) >= 2:
+        ang = np.asarray(angles) * 2  # hướng không có chiều: trung bình theo góc nhân đôi
+        mean_ang = np.arctan2(np.average(np.sin(ang), weights=weights), np.average(np.cos(ang), weights=weights)) / 2
+        stripe = np.array([np.cos(mean_ang), np.sin(mean_ang)])
+        return canonical_axis(np.array([-stripe[1], stripe[0]]))
+    ys, xs = np.nonzero(mask)
+    return principal_axis(xs, ys)[1]
+
+
+def crosswalk_edges(mask: np.ndarray, step: float = 6.0) -> list[tuple[str, np.ndarray]]:
+    """Hai mép dài của cả vùng crosswalk, kéo suốt từ sọc đầu tới sọc cuối (đường thẳng)."""
+    if np.count_nonzero(mask) < 20:
+        return []
+    mean, u, v, a, b = _frame(mask, crosswalk_axis(mask))
+    present, centers, lo, hi, _ = _bin_extremes(a, b, step)
+    if len(present) < 2:
+        return []
+    a_lo, a_hi = float(a.min()), float(a.max())
+    out = []
+    for side, values, pad in (("left", lo, -0.5), ("right", hi, 0.5)):
+        coef = _envelope_line(centers, values, -1 if side == "left" else 1)
+        ends = np.array([a_lo, a_hi])
+        pts = mean + np.outer(ends, u) + np.outer(np.polyval(coef, ends) + pad, v)
+        out.append((side, pts[::-1] if _reversed(pts) else pts))
+    return out
+
+
+def polygon_between(left: np.ndarray, right: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Vùng nằm giữa hai mép (dùng làm vùng của crosswalk)."""
+    canvas = np.zeros(shape, np.uint8)
+    poly = np.concatenate([left, right[::-1]])
+    cv2.fillPoly(canvas, [np.round(poly - 0.5).astype(np.int32)], 1)
+    return canvas.astype(bool)

@@ -229,42 +229,108 @@ def objects_to_proposals(dets: list[Det], width: int, height: int, rules: dict, 
 
 
 # -------------------------------------------------------------- vạch kẻ -----
+def _lane_merge_radius(cfg: dict, lane_rule: dict) -> int:
+    """Khoảng cách gom các mảnh mask cùng label thành một vạch."""
+    if cfg.get("merge_px") is not None:
+        return int(cfg["merge_px"])
+    if cfg["polyline_mode"] == "long_edges":
+        return int(lane_rule.get("crosswalk_merge_px", 40))  # các sọc của một crosswalk
+    if cfg.get("lane") or cfg["polyline_mode"] == "edges":
+        return int(lane_rule.get("double_merge_px", 12))  # hai nét của một vạch đôi
+    return 0
+
+
 def build_lanes(dets: list[Det], image: np.ndarray, rules: dict, cfg_by_name: dict[str, dict]) -> list[dict]:
+    """Từ mask vạch kẻ ra polyline theo quy ước của từng label.
+
+    centerline : một đường theo tim vạch (vạch đơn, curb)
+    edges      : hai đường theo hai mép ngoài của cả vạch (vạch đôi)
+    long_edges : hai đường thẳng theo hai mép dài của cả vùng (crosswalk)
+    """
     lane_rule = rules.get("lane") or {}
     color_rule = rules.get("lane_color") or {}
+    kind_rule = rules.get("lane_kind") or {}
     step = int(lane_rule.get("sample_step_px", 10))
     max_gap = int(lane_rule.get("max_gap_px", 30))
-    per_label: dict[int, dict] = {}
+    join_gap = float(lane_rule.get("join_gap_px", 60))
+    label_map = color_rule.get("labels") or {}
+
+    def target_for(kind: str, color: str) -> Optional[dict]:
+        name = (label_map.get(kind) or {}).get(color)
+        target = cfg_by_name.get(norm(name)) if name else None
+        return target if target and target["supported"] else None
+
+    # 1. Màu đo từ pixel thật.
+    entries = []
     for det in dets:
         cfg, flags = det.cfg, list(det.flags)
         info = cfg.get("lane") or {}
         if color_rule.get("enabled") and info.get("color"):
             seen = G.classify_marking_color(image, det.mask)
             if seen and seen != info["color"]:
-                target_name = ((color_rule.get("labels") or {}).get(info.get("kind", ""), {}) or {}).get(seen)
-                target = cfg_by_name.get(norm(target_name)) if target_name else None
-                if target and target["supported"]:
-                    add_flag(
-                        flags,
-                        "UNCERTAIN_CLASS",
-                        f"Prompt cho '{cfg['name']}' nhưng màu đo được là '{seen}'; đã chuyển sang '{target['name']}'.",
-                    )
+                target = target_for(info.get("kind", ""), seen)
+                if target:
+                    add_flag(flags, "UNCERTAIN_CLASS",
+                             f"Prompt cho '{cfg['name']}' nhưng màu đo được là '{seen}'; đã chuyển sang '{target['name']}'.")
                     cfg = target
-        if cfg["polyline_mode"] == "long_edges":
-            lines = G.mask_long_edges(det.mask)
+        entries.append({"cfg": cfg, "mask": det.mask, "score": det.score, "flags": flags})
+
+    # 2. Gom các mảnh cùng label nằm sát nhau: hai nét của vạch đôi, các sọc của một crosswalk.
+    by_label: dict[int, list[dict]] = {}
+    for entry in entries:
+        by_label.setdefault(entry["cfg"]["label_id"], []).append(entry)
+    clusters = []
+    for group in by_label.values():
+        cfg = group[0]["cfg"]
+        for idx in G.cluster_masks([e["mask"] for e in group], _lane_merge_radius(cfg, lane_rule)):
+            members = [group[i] for i in idx]
+            flags: list[dict] = []
+            for m in members:
+                for f in m["flags"]:
+                    add_flag(flags, f["code"], f["message"])
+            clusters.append({
+                "cfg": cfg,
+                "mask": np.logical_or.reduce([m["mask"] for m in members]),
+                "score": max(m["score"] for m in members),
+                "flags": flags,
+            })
+
+    # 3. Đơn hay đôi: mask gồm hai dải song song thì là vạch đôi.
+    if kind_rule.get("enabled", True):
+        for c in clusters:
+            info = c["cfg"].get("lane") or {}
+            if info.get("kind") != "single":
+                continue
+            fraction = G.count_strips(c["mask"], step=8)
+            target = target_for("double", info.get("color", ""))
+            if target and fraction >= float(kind_rule.get("min_fraction", 0.5)):
+                add_flag(c["flags"], "UNCERTAIN_CLASS",
+                         f"Thấy hai nét song song ({fraction:.0%} chiều dài) nên đã chuyển '{c['cfg']['name']}' sang '{target['name']}'.")
+                c["cfg"] = target
+
+    # 4. Dựng polyline theo quy ước của label.
+    buckets: dict[tuple, dict] = {}
+    for c in clusters:
+        cfg = c["cfg"]
+        mode = cfg["polyline_mode"]
+        if mode == "long_edges":
+            lines = G.crosswalk_edges(c["mask"])
+        elif mode == "edges":
+            lines = G.mask_side_edges(c["mask"], step=float(lane_rule.get("edge_step_px", 8)), max_gap=join_gap)
         else:
-            lines = G.mask_to_centerlines(det.mask, step, max_gap)
-        bucket = per_label.setdefault(cfg["label_id"], {"cfg": cfg, "lines": [], "score": 0.0, "flags": []})
-        bucket["lines"].extend(lines)
-        bucket["score"] = max(bucket["score"], det.score)
-        for f in flags:
-            add_flag(bucket["flags"], f["code"], f["message"])
+            lines = [("center", l) for l in G.mask_to_centerlines(c["mask"], step, max_gap)]
+        for side, pts in lines:
+            bucket = buckets.setdefault((cfg["label_id"], side), {"cfg": cfg, "lines": [], "score": 0.0, "flags": []})
+            bucket["lines"].append(pts)
+            bucket["score"] = max(bucket["score"], c["score"])
+            for f in c["flags"]:
+                add_flag(bucket["flags"], f["code"], f["message"])
 
     items = []
-    for bucket in per_label.values():
+    for bucket in buckets.values():
         cfg, lines = bucket["cfg"], bucket["lines"]
         if cfg["join_dashes"] and cfg["polyline_mode"] != "long_edges":
-            lines = G.join_collinear(lines, float(lane_rule.get("join_gap_px", 60)))
+            lines = G.join_collinear(lines, join_gap)  # chỉ nối các đoạn cùng một mép
         for line in lines:
             line = G.simplify_polyline(line, float(lane_rule.get("epsilon", 1.5)))
             if len(line) >= 2 and G.polyline_length(line) >= float(lane_rule.get("min_length_px", 20)):
@@ -566,9 +632,17 @@ def propose(
         lane_dets = [d for d in dets if d.cfg["role"] == "lane"]
         # Vạch nằm trong vùng crosswalk là sọc của crosswalk, không phải vạch làn.
         region_name = norm((rules.get("lane") or {}).get("exclusive_region_label", ""))
-        regions = [d.mask for d in lane_dets if norm(d.cfg["name"]) == region_name]
-        if regions:
-            region = np.logical_or.reduce(regions)
+        crosswalks = [d.mask for d in lane_dets if norm(d.cfg["name"]) == region_name]
+        if crosswalks:
+            # Vùng crosswalk = phần giữa hai mép dài, kể cả khoảng trống giữa các sọc.
+            region = np.zeros((height, width), bool)
+            radius = int((rules.get("lane") or {}).get("crosswalk_merge_px", 40))
+            for idx in G.cluster_masks(crosswalks, radius):
+                part = np.logical_or.reduce([crosswalks[i] for i in idx])
+                region |= part
+                edges = G.crosswalk_edges(part)
+                if len(edges) == 2:
+                    region |= G.polygon_between(edges[0][1], edges[1][1], (height, width))
             lane_dets = [
                 d for d in lane_dets
                 if norm(d.cfg["name"]) == region_name

@@ -122,6 +122,7 @@ def resolve_labels(profile: dict, cvat_labels: list[dict], overrides: Optional[d
             "group": (entry or {}).get("group"),
             "lane": (entry or {}).get("lane"),
             "polyline_mode": (entry or {}).get("polyline_mode", "centerline"),
+            "merge_px": (entry or {}).get("merge_px"),
             "join_dashes": (entry or {}).get("join_dashes", defaults.get("join_dashes", True)),
             "min_area_px": float((entry or {}).get("min_area_px", defaults.get("min_area_px", 30))),
             "note": note,
