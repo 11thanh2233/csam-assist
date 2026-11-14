@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SAM3 CVAT Assist
 // @namespace    sam3-cvat-assist
-// @version      0.1.2
+// @version      0.1.4
 // @description  Gợi ý nhãn bằng SAM3 ngay trên giao diện CVAT: xem trước, duyệt, rồi ghi vào job. Không cần import/export file.
 // @match        https://cvat.edufun.ai/*
 // @run-at       document-idle
@@ -21,13 +21,13 @@
  *   2. Lấy ảnh frame và danh sách label qua REST API của CVAT (dùng phiên đăng nhập sẵn có).
  *   3. Gửi ảnh sang backend SAM3 của bạn; backend trả về các ĐỀ XUẤT nhãn theo guideline.
  *   4. Vẽ đề xuất đè lên canvas để bạn duyệt; chỉ những đề xuất được tick mới ghi vào job
- *      bằng PATCH /api/jobs/{id}/annotations?action=create (source = "semi-auto").
+ *      bằng PATCH /api/jobs/{id}/annotations?action=create.
  * Script không gửi dữ liệu đi đâu ngoài backend bạn cấu hình trong tab "Cài đặt".
  */
 (function () {
   'use strict';
 
-  const VERSION = '0.1.2';
+  const VERSION = '0.1.4';
   const DEFAULTS = {
     backendUrl: 'http://127.0.0.1:8765',
     apiKey: '',
@@ -35,6 +35,8 @@
     autoPropose: false,
     reloadAfterApply: true,
     confirmApply: true,
+    // false: không gửi trường source, CVAT tự ghi giá trị mặc định của nó.
+    markSemiAuto: false,
     opacity: 0.3,
     collapsed: false,
     hidden: false,
@@ -399,11 +401,13 @@
       if (value === '' && a.input_type !== 'text' && a.values && a.values.length) value = a.values[0];
       return { spec_id: a.id, value: String(value) };
     });
-    return {
+    const shape = {
       type: p.type, frame: S.propFrame, label_id: p.label_id, points: p.points,
       occluded: !!p.occluded, outside: false, z_order: p.z_order || 0, rotation: 0, group: 0,
-      source: 'semi-auto', attributes, elements: [],
+      attributes, elements: [],
     };
+    if (cfg.markSemiAuto) shape.source = 'semi-auto';
+    return shape;
   }
 
   async function saveCvatUi() {
@@ -461,6 +465,33 @@
       setStatus('Đã xoá. Đang tải lại trang…', 'ok');
       await sleep(400);
       reloadAtFrame(u.frame);
+    });
+  }
+
+  // Đổi source của các nhãn đã lưu từ "semi-auto" sang "manual" mà không vẽ lại.
+  async function convertSource(scope) {
+    await run('Đang đọc annotation của job…', async () => {
+      await saveCvatUi();
+      const ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
+      const inScope = (frame) => scope === 'job' || frame === S.frame;
+      const shapes = (ann.shapes || []).filter((s) => s.source === 'semi-auto' && inScope(s.frame));
+      const tracks = (ann.tracks || []).filter((t) => t.source === 'semi-auto' && inScope(t.frame));
+      const where = scope === 'job' ? `cả job ${S.jobId}` : `frame ${S.frame}`;
+      if (!shapes.length && !tracks.length) return setStatus(`Không có nhãn semi-auto nào trong ${where}.`, 'ok');
+      const count = shapes.length + tracks.length;
+      if (!window.confirm(`Đổi source của ${count} nhãn trong ${where} từ "semi-auto" sang "manual"?\nGồm cả nhãn tạo bằng công cụ AI có sẵn của CVAT, nếu có.`)) return setStatus('Đã huỷ.');
+      setStatus(`Đang đổi source của ${count} nhãn…`, 'busy');
+      const manual = (o) => Object.assign({}, o, { source: 'manual' });
+      await cvat('PATCH', `/api/jobs/${S.jobId}/annotations?action=update`, {
+        version: ann.version || 0, tags: [], shapes: shapes.map(manual), tracks: tracks.map(manual),
+      });
+      const after = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
+      const left = (after.shapes || []).concat(after.tracks || []).filter((o) => o.source === 'semi-auto' && inScope(o.frame)).length;
+      if (left) return setStatus(`CVAT nhận yêu cầu nhưng vẫn còn ${left} nhãn semi-auto trong ${where}. Máy chủ có thể không cho đổi trường này.`, 'error');
+      GM_setValue('undo', null); // id nhãn có thể đã đổi, lần hoàn tác cũ không còn đúng
+      setStatus(`Đã đổi ${count} nhãn sang manual. Đang tải lại trang…`, 'ok');
+      await sleep(600);
+      reloadAtFrame(S.frame);
     });
   }
 
@@ -908,10 +939,15 @@
       check('Tự gợi ý khi chuyển frame', 'autoPropose'),
       check('Tải lại trang sau khi ghi để thấy nhãn mới', 'reloadAfterApply'),
       check('Hỏi lại trước khi ghi vào CVAT', 'confirmApply'),
+      check('Đánh dấu nhãn do tool ghi là source = "semi-auto"', 'markSemiAuto'),
+      h('div', { class: 'row' },
+        h('span', { class: 'grow', text: 'Đổi nhãn semi-auto đã lưu thành manual' }),
+        h('button', { type: 'button', disabled: !!S.busy, text: 'Frame này', onclick: () => convertSource('frame') }),
+        h('button', { type: 'button', disabled: !!S.busy, text: 'Cả job', onclick: () => convertSource('job') })),
       h('label', { class: 'field' }, h('span', { text: 'Độ đậm vùng tô xem trước' }),
         h('input', { type: 'range', min: '0', max: '0.8', step: '0.05', value: String(cfg.opacity), oninput: (ev) => { cfg.opacity = Number(ev.target.value); saveCfg(); drawOverlay(); } })),
       text('CSS selector của ảnh nền canvas CVAT', 'canvasSelector', 'text', 'Chỉ đổi khi phần xem trước không hiện. Mặc định: #cvat_canvas_background'),
-      h('p', { class: 'muted small-text', style: 'margin:0', text: `SAM3 CVAT Assist ${VERSION}. Nhãn do tool ghi có source = "semi-auto". Phím tắt: Alt+G gợi ý, Alt+A ghi.` }),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: `SAM3 CVAT Assist ${VERSION}. Phím tắt: Alt+G gợi ý, Alt+A ghi.` }),
     ];
   }
 
