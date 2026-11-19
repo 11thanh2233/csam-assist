@@ -103,7 +103,7 @@ class BackendProcess:
             env.update({"SAM3_HOST": "127.0.0.1", "SAM3_PORT": str(self.port), "SAM3_API_KEY": self.key,
                         "SAM3_DESKTOP_PACKAGES": str(self.paths.packages), "SAM3_DESKTOP_DATA": str(self.paths.data)})
             flags = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
-            self.proc = subprocess.Popen([self.python, "-I", "-m", "desktop.run_backend"], cwd=str(self.paths.app), env=env,
+            self.proc = subprocess.Popen([self.python, "-I", "-X", "utf8", "-m", "desktop.run_backend"], cwd=str(self.paths.app), env=env,
                                          stdout=self._log_file, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)
             self.state, self.message, self.health = "starting", "Đang nạp model (lần đầu có thể mất 1-2 phút)...", {}
         threading.Thread(target=self._watch, daemon=True).start()

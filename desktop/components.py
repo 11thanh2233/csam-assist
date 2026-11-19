@@ -272,7 +272,7 @@ class Components:
         python = Path(sys.executable)
         if python.name.lower() == "pythonw.exe" and python.with_name("python.exe").exists():
             python = python.with_name("python.exe")
-        cmd = [str(python), "-I", "-m", "pip", "install", "--no-deps", "--no-index", "--no-cache-dir",
+        cmd = [str(python), "-I", "-X", "utf8", "-m", "pip", "install", "--no-deps", "--no-index", "--no-cache-dir",
                "--disable-pip-version-check", "--target", str(staging)] + [str(f) for f in files]
         res = subprocess.run(cmd, capture_output=True, text=True, **_no_window())
         if res.returncode != 0:
