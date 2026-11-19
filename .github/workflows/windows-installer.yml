@@ -47,6 +47,7 @@ jobs:
   windows:
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 60
     permissions:
       contents: write          # chỉ dùng để đăng Release khi push tag
     steps:
@@ -131,7 +132,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "app đã cài không chạy" }
           & "$app\runtime\python.exe" -I -c "from desktop import updater as U; i = U.check('0.0.1'); print('GitHub Releases:', i['version'], 'tự cập nhật được' if i['auto'] else i['reason'])"
           # Cập nhật như từ trong app: cài đè ở chế độ /update=1, xong phải tự mở lại app
-          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/update=1", "/LOG=update.log" -Wait
+          # -Wait của PowerShell đợi cả tiến trình con (app được mở lại) nên sẽ treo: chỉ đợi bộ cài.
+          $u = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/update=1", "/LOG=update.log" -PassThru
+          if (-not $u.WaitForExit(600000)) { throw "bộ cài chế độ cập nhật chạy quá 10 phút" }
           $relaunched = $false
           for ($i = 0; $i -lt 30; $i++) {
             $procs = Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" | Where-Object { $_.ExecutablePath -like "$app*" }
