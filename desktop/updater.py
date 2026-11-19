@@ -88,9 +88,10 @@ class Updater:
                               cancel=self.cancel, allow_http=self.allow_http,
                               progress=lambda d, t: self.p.update(done=d, total=t))
             with open(dest, "rb") as f:
-                if f.read(2) != b"MZ":
-                    dest.unlink()
-                    raise D.DownloadError("File tải về không phải bộ cài Windows.")
+                head = f.read(2)
+            if head != b"MZ":                     # đóng file trước khi xoá (Windows khoá file đang mở)
+                dest.unlink()
+                raise D.DownloadError("File tải về không phải bộ cài Windows.")
             self.p["ready"] = str(dest)
         except D.Cancelled:
             self.p["error"] = "Đã dừng tải."
