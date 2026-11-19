@@ -1,0 +1,153 @@
+# Kiểm thử rồi dựng bộ cài Windows (SAM3-CVAT-Assist-Setup-<bản>.exe).
+#   - Mỗi lần push lên main: chạy test + dựng bộ cài, tải về ở mục Actions → Artifacts.
+#   - Push tag v<bản> (ví dụ v0.6.0): như trên và đăng bộ cài lên mục Releases.
+name: Windows installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Cài thư viện
+        run: |
+          python -m pip install -r requirements-dev.txt
+          npm install --no-save jsdom
+      - name: Test backend + desktop
+        run: python -m pytest -q
+      - name: Test userscript và shim desktop (trình duyệt giả)
+        run: |
+          node tests/userscript_smoke.cjs
+          node tests/userscript_smoke_v2.cjs
+          node tests/desktop_shim_smoke.cjs
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write          # chỉ dùng để đăng Release khi push tag
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Công cụ build
+        run: python -m pip install --upgrade pip sigstore
+      - name: Test desktop trên Windows
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q tests/test_desktop.py
+
+      - name: Dựng runtime + manifest (kiểm chữ ký Python, mã băm thư viện, PyTorch CUDA có sm_75)
+        run: python installer/build.py --out build --verify-torch
+
+      - name: Biên dịch SAM3 Assist.exe
+        shell: pwsh
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /nologo /target:winexe /optimize+ /win32icon:installer\icon.ico /r:System.Windows.Forms.dll /r:System.Core.dll `
+            "/out:build\SAM3 Assist.exe" installer\Launcher.cs
+          if ($LASTEXITCODE -ne 0) { throw "csc lỗi" }
+
+      - name: Kiểm runtime đã dựng
+        shell: pwsh
+        run: |
+          $py = "build\runtime\python.exe"
+          & $py -I -c "import backend.app, desktop.app, desktop.control, webview, pystray, keyring, transformers, mediapipe; from mediapipe.tasks.python import vision; import importlib.util as u; assert u.find_spec('transformers.models.sam3'), 'transformers thiếu SAM3'; assert u.find_spec('transformers.models.vitpose'); print('runtime OK', transformers.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw "runtime lỗi" }
+          $lib = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\lib"
+          $env:SAM3_ENGINE = "mock"; $env:SAM3_PORT = "8799"; $env:SAM3_LIBRARY_DIR = $lib.FullName
+          $p = Start-Process -FilePath $py -ArgumentList "-I", "-m", "desktop.run_backend" -WorkingDirectory "build\app" -PassThru -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try { $h = Invoke-RestMethod "http://127.0.0.1:8799/health"; if ($h.ok) { $ok = $true; break } } catch { Start-Sleep 1 }
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "backend trong runtime không chạy" }
+          Write-Host "backend mock trong runtime: OK"
+
+      - name: Thử tải và cài PyTorch như trên máy người dùng, rồi nạp các lớp model của transformers
+        shell: pwsh
+        run: |
+          $env:SAM3_DESKTOP_DATA = "$env:RUNNER_TEMP\desktop-data"
+          & build\runtime\python.exe -I -c @"
+          import sys
+          from desktop.paths import Paths
+          from desktop.components import Components, Gpu
+          p = Paths(app_dir=r'$PWD\build\app').ensure()
+          c = Components(p)
+          info = c.install('torch', gpu=Gpu('CI', 8192, '560.0'), progress=lambda **k: None)
+          print('installed', info)
+          sys.path.insert(0, str(p.packages))
+          import torch, torchvision
+          print('torch', torch.__version__, 'cuda', torch.version.cuda)
+          from transformers import Sam3Model, Sam3Processor, Sam3VideoModel, Sam3VideoProcessor, VitPoseForPoseEstimation
+          print('transformers: SAM3 + SAM3 Video + ViTPose OK')
+          "@
+          if ($LASTEXITCODE -ne 0) { throw "cài PyTorch theo manifest lỗi" }
+
+      - name: Đóng gói bằng Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          $v = (Select-String -Path backend/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          & $iscc /Qp "/DAppVersion=$v" "/DBuildDir=..\build" installer\sam3-assist.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC lỗi" }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Thử cài im lặng, chạy, gỡ
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\*.exe)[0].FullName
+          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install.log" -Wait
+          $app = "$env:LOCALAPPDATA\Programs\SAM3 CVAT Assist"
+          if (-not (Test-Path "$app\SAM3 Assist.exe")) { Get-Content install.log -Tail 40; throw "chưa cài được" }
+          & "$app\runtime\python.exe" -I -c "import desktop.components as c, desktop.paths as p; m = c.load_manifest(p.Paths()); print('manifest', m['version'], m['torch']['cuda_index'])"
+          if ($LASTEXITCODE -ne 0) { throw "app đã cài không chạy" }
+          Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
+          Start-Sleep 3
+          if (Test-Path "$app\runtime") { throw "gỡ cài đặt chưa sạch" }
+          Write-Host "cài / gỡ: OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SAM3-CVAT-Assist-Setup-${{ env.VERSION }}
+          path: |
+            dist/*.exe
+            build/app/desktop/manifest.lock.json
+            build/build-info.json
+          retention-days: 30
+
+      - name: Đăng Release (khi push tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ("v$env:VERSION" -ne "$env:GITHUB_REF_NAME") { throw "Tag $env:GITHUB_REF_NAME khác phiên bản v$env:VERSION trong backend/__init__.py" }
+          $exe = (Get-ChildItem dist\*.exe)[0].FullName
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          $notes = (Get-Content docs\RELEASE_NOTES.md -Raw) + "`n`nSHA-256 của bộ cài: ``$hash``"
+          Set-Content -Path notes.md -Value $notes -Encoding utf8
+          gh release create $env:GITHUB_REF_NAME $exe build\app\desktop\manifest.lock.json build\build-info.json `
+            --title "SAM3 CVAT Assist $env:VERSION" --notes-file notes.md

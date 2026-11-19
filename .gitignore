@@ -12,3 +12,5 @@ guideline_library/lessons.jsonl
 guideline_library/runs/
 profiles/auto_*.yaml
 guideline_library/learning/
+build/
+dist/

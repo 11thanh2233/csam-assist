@@ -19,7 +19,7 @@ Task có bộ label khác vẫn dùng được ngay qua profile `generic` (promp
 đã được cất vào `profiles/archive/` và `guideline_library/archive/`; xem [Khôi phục quy ước Lab 4](#khôi-phục-quy-ước-skeleton-của-lab-4).
 
 > **Trạng thái kiểm thử.** Toàn bộ luồng đã chạy qua test tự động với model giả lập và một CVAT giả
-> (90 test backend + 2 test đầu-cuối cho userscript, và trang duyệt guideline đã chạy trong trình duyệt thật). Phần ảnh đã được bạn chạy với SAM3 thật trên
+> (97 test backend/desktop + 3 test đầu-cuối cho userscript và bản desktop, và trang duyệt guideline đã chạy trong trình duyệt thật). Phần ảnh đã được bạn chạy với SAM3 thật trên
 > `cvat.edufun.ai`. Phần skeleton (ViTPose, MediaPipe), tracking và soạn guideline **chưa** chạy với
 > model thật hay trên máy chủ thật; phần gọi LLM chỉ mới chạy với LLM giả trong test. Riêng skeleton theo hai
 > guideline mới: vị trí 50 điểm mặt mới được kiểm trên mô hình mặt chuẩn của MediaPipe (mặt nhìn thẳng), chưa
@@ -94,6 +94,15 @@ Chưa có GPU vẫn thử được giao diện: backend có chế độ `mock` t
 ---
 
 ## 3. Cài đặt
+
+### Cách nhanh trên Windows: bộ cài `.exe` (từ bản 0.6.0)
+
+Tải `SAM3-CVAT-Assist-Setup-<bản>.exe` ở mục **Releases** của repo, chạy, làm theo trình tải ở bước cuối
+(giấy phép SAM, token Hugging Face, chọn thành phần). Xong là mở **SAM3 CVAT Assist** từ Desktop: bảng điều khiển
+mở CVAT trong cửa sổ riêng, bảng của tool tự hiện. Không cần Python, PowerShell hay Tampermonkey. Chi tiết, dung
+lượng, cách gỡ và các biện pháp an toàn: [docs/DESKTOP.md](docs/DESKTOP.md).
+
+Các bước dưới đây là cách cài thủ công (Linux, macOS, Colab, hoặc khi muốn dùng Tampermonkey).
 
 ### Bước 1 - Lấy repo và cài phần chung
 
@@ -840,6 +849,8 @@ node tests/userscript_smoke_v2.cjs      # job skeleton, gợi ý cả job, theo 
 ```
 sam3-cvat-assist/
 ├── userscript/sam3-cvat-assist.user.js   Panel + lớp xem trước + gọi API CVAT (cài vào Tampermonkey)
+├── desktop/                              Bản Windows: cửa sổ CVAT có sẵn panel, trình tải thành phần, quản lý backend
+├── installer/                            Dựng bộ cài: build.py, Inno Setup, SAM3 Assist.exe (xem docs/DESKTOP.md)
 ├── backend/
 │   ├── app.py                            HTTP API: /health /resolve /propose /interactive /qa /track/*
 │   ├── pipeline.py                       Luật guideline: từ mask SAM3 tới đề xuất

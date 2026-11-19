@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>SAM3 CVAT Assist</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2430;--mut:#5d6878;--line:#dfe3ea;--acc:#2563eb;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--chip:#eef2f7}
+@media (prefers-color-scheme:dark){:root{--bg:#14181f;--card:#1c222b;--ink:#e6e9ee;--mut:#9aa4b2;--line:#2c3440;--acc:#5b8def;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--chip:#26303c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:17px;margin:0;font-weight:600}
+header .v{color:var(--mut);font-size:12px}
+.pill{margin-left:auto;padding:3px 10px;border-radius:999px;background:var(--chip);font-size:12px}
+.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.bad{color:var(--bad)}
+main{padding:18px 22px;max-width:980px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.card h2{font-size:15px;margin:0 0 10px;font-weight:600}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grow{flex:1}
+button{font:inherit;padding:6px 14px;border-radius:7px;border:1px solid var(--line);background:var(--chip);color:var(--ink);cursor:pointer}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+button.link{border:none;background:none;color:var(--acc);padding:0;text-decoration:underline}
+input[type=text],input[type=password]{font:inherit;padding:6px 9px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.mut{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.steps{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.steps span{padding:3px 10px;border-radius:999px;background:var(--chip);color:var(--mut);font-size:12px}
+.steps span.on{background:var(--acc);color:#fff}
+.license{height:300px;overflow:auto;white-space:pre-wrap;font-size:12.5px;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg)}
+.bar{height:10px;border-radius:5px;background:var(--chip);overflow:hidden}
+.bar>div{height:100%;background:var(--acc);width:0;transition:width .4s}
+.bar.indet>div{width:30%;animation:slide 1.2s infinite linear}
+@keyframes slide{from{margin-left:-30%}to{margin-left:100%}}
+pre.log{max-height:200px;overflow:auto;font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}
+td{padding:7px 4px;border-top:1px solid var(--line);vertical-align:middle}
+tr:first-child td{border-top:none}
+.hidden{display:none!important}
+label.chk{display:flex;gap:8px;align-items:flex-start;margin:6px 0}
+ol{margin:6px 0 6px 20px;padding:0}
+</style>
+</head>
+<body>
+<header><h1>SAM3 CVAT Assist</h1><span class="v" id="ver"></span><span class="pill" id="pill">Đang tải...</span></header>
+<main>
+  <!-- ================= TRÌNH CÀI ================= -->
+  <section id="wizard" class="hidden">
+    <div class="steps" id="stepbar"></div>
+
+    <div class="card step" data-step="1">
+      <h2>1. Kiểm tra máy</h2>
+      <div id="machine"></div>
+      <div class="row" style="margin-top:12px"><span class="grow"></span><button class="primary" onclick="go(2)">Tiếp</button></div>
+    </div>
+
+    <div class="card step" data-step="2">
+      <h2>2. Giấy phép SAM</h2>
+      <p class="mut">Trọng số SAM 3 là của Meta, dùng theo giấy phép dưới đây (bản gốc tiếng Anh). Tóm tắt: được dùng và chia sẻ,
+        phải kèm giấy phép khi chia sẻ, không dùng cho quân sự, vũ khí, gián điệp, phải tuân luật kiểm soát xuất khẩu.
+        Tóm tắt này không thay cho văn bản gốc.</p>
+      <div class="license" id="license">Đang tải...</div>
+      <label class="chk"><input type="checkbox" id="agree"> <span>Tôi đã đọc và đồng ý với SAM License.</span></label>
+      <div class="row"><button onclick="go(1)">Quay lại</button><span class="grow"></span><button class="primary" onclick="acceptLicense()">Tiếp</button></div>
+    </div>
+
+    <div class="card step" data-step="3">
+      <h2>3. Token Hugging Face</h2>
+      <p>SAM 3 nằm trong repo có cổng của Meta. Cần làm một lần:</p>
+      <ol>
+        <li>Có tài khoản Hugging Face (<button class="link" onclick="link('signup')">tạo tài khoản</button>).</li>
+        <li>Mở <button class="link" onclick="link('sam3')">huggingface.co/facebook/sam3</button>, điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).</li>
+        <li>Tạo token loại <b>Read</b> tại <button class="link" onclick="link('tokens')">Settings → Access Tokens</button> rồi dán vào đây.</li>
+      </ol>
+      <div class="row"><input type="password" id="token" class="grow" placeholder="hf_..." autocomplete="off">
+        <button class="primary" onclick="checkToken()">Kiểm tra</button></div>
+      <label class="chk" id="rememberRow"><input type="checkbox" id="remember"> <span>Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.</span></label>
+      <div id="tokenMsg" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:12px"><button onclick="go(2)">Quay lại</button><span class="grow"></span>
+        <button onclick="skipToken()" title="Meta chưa duyệt? Cài phần còn lại trước, nhập token sau trong app.">Cài trước, nhập token sau</button>
+        <button class="primary" id="tokenNext" disabled onclick="go(4)">Tiếp</button></div>
+    </div>
+
+    <div class="card step" data-step="4">
+      <h2>4. Chọn thành phần</h2>
+      <p class="mut">Chỉ tải phần nặng cần dùng. Thư viện nhỏ đã có sẵn trong bộ cài.</p>
+      <table id="pick"></table>
+      <div id="estimate" style="margin-top:10px" class="mut"></div>
+      <div class="row" style="margin-top:12px"><button onclick="go(3)">Quay lại</button><span class="grow"></span>
+        <button class="primary" id="installBtn" onclick="startInstall()">Tải và cài</button></div>
+    </div>
+
+    <div class="card step" data-step="5">
+      <h2>5. Tải và cài</h2>
+      <div id="pstep">...</div>
+      <div class="bar" id="pbar" style="margin:10px 0"><div></div></div>
+      <div class="mut" id="pfile"></div>
+      <div id="perr" class="bad" style="margin-top:8px"></div>
+      <details style="margin-top:8px"><summary class="mut">Nhật ký</summary><pre class="log" id="plog"></pre></details>
+      <div class="row" style="margin-top:12px"><span class="grow"></span>
+        <button id="cancelBtn" onclick="api().cancel_install()">Dừng</button>
+        <button id="retryBtn" class="hidden" onclick="startInstall()">Thử lại (tải tiếp từ chỗ dừng)</button>
+        <button id="doneBtn" class="primary hidden" onclick="finishWizard()">Xong</button></div>
+    </div>
+  </section>
+
+  <!-- ================= BẢNG ĐIỀU KHIỂN ================= -->
+  <section id="dash" class="hidden">
+    <div class="card">
+      <h2>Mở CVAT</h2>
+      <table id="sites"></table>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="siteName" placeholder="Tên (tuỳ chọn)" style="width:180px">
+        <input type="text" id="siteUrl" class="grow" placeholder="https://cvat.ten-mien.com hoặc localhost:8080">
+        <button onclick="addSite()">Thêm</button></div>
+      <div id="siteMsg" class="warn" style="margin-top:6px"></div>
+      <p class="mut" style="margin-bottom:0">Bảng của tool chỉ hiện trên các địa chỉ trong danh sách này. Đăng nhập CVAT ngay trong cửa sổ mở ra; app nhớ đăng nhập cho lần sau.</p>
+    </div>
+
+    <div class="card">
+      <h2>Backend</h2>
+      <div class="row"><span id="bstate" class="grow"></span>
+        <button onclick="be('start')">Bật</button><button onclick="be('stop')">Tắt</button><button onclick="be('restart')">Khởi động lại</button>
+        <button onclick="showLog()">Nhật ký</button></div>
+      <pre class="log hidden" id="blog"></pre>
+    </div>
+
+    <div class="card">
+      <h2>Thành phần</h2>
+      <table id="comps"></table>
+      <div class="row" style="margin-top:10px"><span class="grow mut" id="gpuLine"></span><button onclick="openWizard(3)">Tải thêm thành phần</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Cài đặt và dữ liệu</h2>
+      <label class="chk"><input type="checkbox" id="autostart" onchange="api().set_autostart(this.checked)"> <span>Tự chạy nền khi bật Windows</span></label>
+      <div class="row" id="tokenRow"></div>
+      <div class="row" style="margin-top:8px">
+        <button onclick="api().open_folder('data')">Thư mục dữ liệu</button>
+        <button onclick="api().open_folder('profiles')">Profile</button>
+        <button onclick="api().open_folder('library')">Guideline</button>
+        <button onclick="api().open_folder('learning')">Dữ liệu tự học</button>
+        <button onclick="api().open_folder('logs')">Nhật ký</button>
+        <span class="grow"></span><button onclick="api().quit()">Thoát app</button></div>
+      <p class="mut" id="dataDir" style="margin-bottom:0"></p>
+    </div>
+  </section>
+</main>
+<script>
+const api = () => window.pywebview.api;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S = null, step = 1, tokenOk = false, skipSam = false, polling = null;
+const OPTIONAL = {vitpose: true, face: true};
+
+async function refresh() {
+  S = await api().status();
+  $('ver').textContent = 'phiên bản ' + S.version;
+  const b = S.backend, p = $('pill');
+  p.className = 'pill ' + ({running: 'ok', starting: 'warn', missing: 'warn', error: 'bad'}[b.state] || '');
+  p.textContent = {running: 'Backend đang chạy', starting: 'Backend đang khởi động', missing: 'Thiếu thành phần',
+                   error: 'Backend lỗi', stopped: 'Backend đang tắt'}[b.state] || b.state;
+  renderDash();
+}
+
+function show(which) { $('wizard').classList.toggle('hidden', which !== 'wizard'); $('dash').classList.toggle('hidden', which !== 'dash'); }
+
+// ------------------------------------------------------------ trình cài ---
+const STEP_NAMES = ['Kiểm tra máy', 'Giấy phép', 'Token', 'Thành phần', 'Tải và cài'];
+function go(n) {
+  step = n;
+  $('stepbar').innerHTML = STEP_NAMES.map((t, i) => `<span class="${i + 1 === n ? 'on' : ''}">${i + 1}. ${t}</span>`).join('');
+  document.querySelectorAll('.step').forEach((el) => el.classList.toggle('hidden', +el.dataset.step !== n));
+  if (n === 1) renderMachine();
+  if (n === 2 && $('license').textContent === 'Đang tải...') api().license_text().then((t) => { $('license').textContent = t; });
+  if (n === 3) { $('rememberRow').classList.toggle('hidden', !S.keyring); if (S.components.sam3.installed) { tokenOk = true; $('tokenNext').disabled = false; } }
+  if (n === 4) renderPick();
+}
+function openWizard(n) { show('wizard'); go(S.license_accepted ? Math.max(n, 3) : 1); }
+
+function renderMachine() {
+  const g = S.gpu, lines = [];
+  if (!g.ok) lines.push('<p class="warn"><b>Không thấy card NVIDIA.</b> Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm: mỗi ảnh có thể mất vài chục giây. Nếu máy có card NVIDIA, hãy <button class="link" onclick="link(\'nvidia\')">cài driver mới</button> rồi mở lại.</p>');
+  else {
+    lines.push(`<p class="ok">Card: <b>${esc(g.name)}</b>, ${(g.vram_mb / 1024).toFixed(1)} GB VRAM, driver ${esc(g.driver)}.</p>`);
+    if (g.driver_old) lines.push('<p class="warn">Driver NVIDIA cũ, PyTorch CUDA 12 có thể không chạy. Nên <button class="link" onclick="link(\'nvidia\')">cập nhật driver</button>.</p>');
+    if (g.small) lines.push('<p class="warn">VRAM dưới 6 GB: SAM 3 có thể thiếu bộ nhớ với ảnh lớn.</p>');
+  }
+  lines.push(`<p class="mut">Dữ liệu và model sẽ nằm ở: ${esc(S.data_dir)}</p>`);
+  lines.push('<p class="mut">Cần mạng Internet trong lúc cài. Dung lượng cần được tính ở bước 4.</p>');
+  $('machine').innerHTML = lines.join('');
+}
+
+async function acceptLicense() {
+  if (!$('agree').checked) { alert('Cần tick ô đồng ý để tiếp tục.'); return; }
+  await api().accept_license(); S.license_accepted = true; go(3);
+}
+
+async function checkToken() {
+  $('tokenMsg').innerHTML = '<span class="mut">Đang kiểm tra...</span>';
+  const r = await api().check_token($('token').value, $('remember').checked);
+  tokenOk = r.ok; skipSam = false;
+  $('tokenMsg').innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${esc(r.message)}</span>`;
+  $('tokenNext').disabled = !r.ok;
+  $('token').value = '';
+}
+function skipToken() { skipSam = true; go(4); }
+
+async function renderPick() {
+  const c = S.components;
+  const rows = ['torch', 'sam3', 'vitpose', 'face'].map((k) => {
+    const comp = c[k], locked = k === 'torch' || (k === 'sam3' && !skipSam);
+    const blocked = k === 'sam3' && skipSam && !comp.installed;
+    const on = comp.installed ? false : (k === 'sam3' ? !skipSam : (locked || OPTIONAL[k]));
+    const note = {torch: S.gpu.ok ? 'bản CUDA cho card NVIDIA' : 'bản CPU (không có card NVIDIA)', sam3: blocked ? 'nhập token sau trong app' : 'bắt buộc',
+                  vitpose: 'cho job skeleton người', face: 'cho job 50 điểm mặt'}[k];
+    return `<tr><td style="width:28px"><input type="checkbox" data-k="${k}" ${on ? 'checked' : ''} ${(locked || comp.installed || blocked) ? 'disabled' : ''} onchange="OPTIONAL['${k}']=this.checked;estimate()"></td>
+      <td><b>${esc(comp.title)}</b> <span class="mut">${esc(note)}</span></td>
+      <td class="mut" id="sz-${k}">${comp.installed ? '<span class="ok">đã có</span>' : ''}</td></tr>`;
+  });
+  $('pick').innerHTML = rows.join('');
+  estimate();
+}
+function picked() { return [...document.querySelectorAll('#pick input[data-k]')].filter((x) => x.checked).map((x) => x.dataset.k); }
+async function estimate() {
+  $('estimate').textContent = 'Đang tính dung lượng...';
+  const e = await api().estimate(picked());
+  Object.entries(e.detail_h).forEach(([k, v]) => { const el = $('sz-' + k); if (el) el.textContent = v; });
+  $('estimate').innerHTML = `Tải về khoảng <b>${e.download_h}</b>, cần khoảng <b>${e.disk_h}</b> trên ổ đĩa (còn trống ${e.free_h}). ` +
+    (e.enough ? '' : '<span class="bad">Không đủ chỗ trống.</span>');
+  $('installBtn').disabled = !e.enough || !picked().length;
+}
+
+async function startInstall() {
+  const keys = step === 5 && window.lastKeys ? window.lastKeys : picked();
+  window.lastKeys = keys;
+  const r = await api().install(keys);
+  if (!r.ok) { alert(r.message || 'Không bắt đầu được.'); return; }
+  go(5); $('perr').textContent = ''; $('retryBtn').classList.add('hidden'); $('doneBtn').classList.add('hidden'); $('cancelBtn').classList.remove('hidden');
+  clearInterval(polling); polling = setInterval(pollInstall, 700);
+}
+async function pollInstall() {
+  const p = await api().install_progress();
+  $('pstep').textContent = p.step || '';
+  $('pfile').textContent = p.total ? `${p.done_h} / ${p.total_h} (${p.percent}%)` : (p.done ? p.done_h : '');
+  const bar = $('pbar'); bar.classList.toggle('indet', p.running && !p.total);
+  bar.firstElementChild.style.width = p.total ? p.percent + '%' : (p.finished && !p.error ? '100%' : '');
+  $('plog').textContent = (p.log || []).join('\n');
+  if (p.finished) {
+    clearInterval(polling);
+    $('cancelBtn').classList.add('hidden');
+    if (p.error) { $('perr').textContent = p.error; $('retryBtn').classList.remove('hidden'); }
+    else { $('doneBtn').classList.remove('hidden'); await refresh(); }
+  }
+}
+async function finishWizard() {
+  if (S.setup_mode) { await api().finish_setup(); return; }
+  show('dash'); refresh();
+}
+
+// ------------------------------------------------------ bảng điều khiển ---
+function renderDash() {
+  if (!S) return;
+  $('sites').innerHTML = S.sites.map((s, i) => `<tr><td><b>${esc(s.name)}</b> <span class="mut">${esc(s.url)}</span></td>
+    <td style="text-align:right;white-space:nowrap"><button class="primary" onclick="openSite(${i})">Mở</button>
+    <button onclick="removeSite(${i})">Xoá</button></td></tr>`).join('') || '<tr><td class="mut">Chưa có địa chỉ nào.</td></tr>';
+  const b = S.backend;
+  $('bstate').innerHTML = `<span class="${{running: 'ok', error: 'bad', missing: 'warn', starting: 'warn'}[b.state] || 'mut'}">${esc(b.message || b.state)}</span>` +
+    (b.url ? ` <span class="mut">(${esc(b.url)})</span>` : '');
+  const c = S.components;
+  $('comps').innerHTML = ['torch', 'sam3', 'vitpose', 'face'].map((k) => {
+    const x = c[k];
+    const info = x.installed ? (k === 'torch' ? `${esc(x.variant || '')} ${esc(Object.values(x.versions || {}).join(', '))}` : (x.commit ? 'commit ' + esc(String(x.commit).slice(0, 10)) : '')) : '';
+    return `<tr><td><b>${esc(x.title)}</b> ${x.required ? '' : '<span class="mut">(tuỳ chọn)</span>'}</td>
+      <td>${x.installed ? '<span class="ok">đã cài</span> <span class="mut">' + info + '</span>' : '<span class="warn">chưa có</span>'}</td>
+      <td style="text-align:right">${x.installed ? `<button onclick="removeComp('${k}')">Gỡ</button>` : `<button onclick="openWizard(3)">Tải</button>`}</td></tr>`;
+  }).join('');
+  $('gpuLine').textContent = S.gpu.ok ? `GPU: ${S.gpu.name}, ${(S.gpu.vram_mb / 1024).toFixed(1)} GB` : 'Không có card NVIDIA: chạy bằng CPU';
+  $('autostart').checked = S.autostart_windows;
+  $('tokenRow').innerHTML = S.token_saved ? '<span class="mut grow">Đã nhớ token Hugging Face.</span><button onclick="api().forget_token().then(refresh)">Quên token</button>' : '';
+  $('dataDir').textContent = 'Dữ liệu: ' + S.data_dir;
+}
+async function openSite(i) { const r = await api().open_site(S.sites[i].url); if (!r.ok) alert(r.message); }
+async function addSite() {
+  const r = await api().add_site($('siteName').value, $('siteUrl').value);
+  $('siteMsg').textContent = r.message || '';
+  if (r.ok) { $('siteName').value = ''; $('siteUrl').value = ''; refresh(); }
+}
+async function removeSite(i) { const u = S.sites[i].url; if (confirm('Xoá ' + u + ' khỏi danh sách?')) { await api().remove_site(u); refresh(); } }
+async function removeComp(k) {
+  if (!confirm('Gỡ ' + S.components[k].title + '? Muốn dùng lại phải tải lại.')) return;
+  await api().remove_component(k); refresh();
+}
+async function be(a) { await api().backend(a); setTimeout(refresh, 300); }
+async function showLog() { const el = $('blog'); el.classList.toggle('hidden'); if (!el.classList.contains('hidden')) el.textContent = (await api().backend('log')).log || '(trống)'; }
+function link(w) { api().open_link(w); }
+
+window.addEventListener('pywebviewready', async () => {
+  await refresh();
+  if (S.setup_mode || !S.components.ready) { show('wizard'); go(S.license_accepted ? 3 : 1); if (S.setup_mode) go(1); }
+  else show('dash');
+  if (S.installing) { go(5); polling = setInterval(pollInstall, 700); }
+  setInterval(() => { if (!$('dash').classList.contains('hidden')) refresh(); }, 2500);
+});
+</script>
+</body>
+</html>

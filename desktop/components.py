@@ -1,0 +1,319 @@
+"""Các thành phần nặng tải khi cài (không nằm trong bộ cài) và trạng thái của chúng.
+
+  torch    PyTorch + torchvision (bản CUDA nếu máy có card NVIDIA, bản CPU nếu không)   bắt buộc
+  sam3     trọng số SAM 3 (facebook/sam3, repo có cổng: cần token đã được Meta duyệt)    bắt buộc
+  vitpose  trọng số ViTPose cho skeleton người                                          tuỳ chọn
+  face     model khuôn mặt MediaPipe (50 điểm mặt)                                      tuỳ chọn
+
+Danh sách file, địa chỉ và mã băm của PyTorch và model khuôn mặt do bước build ghim sẵn trong
+desktop/manifest.lock.json. Trọng số trên Hugging Face được ghim theo commit lúc tải, mỗi file kiểm tra theo
+mã băm mà Hugging Face công bố. Chỉ tải file cần cho transformers (bỏ checkpoint trùng .pt/.bin).
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+from . import downloader as D
+from .paths import Paths
+
+COMPONENTS = {
+    "torch": {"title": "PyTorch", "required": True},
+    "sam3": {"title": "Trọng số SAM 3", "required": True},
+    "vitpose": {"title": "Skeleton người (ViTPose)", "required": False},
+    "face": {"title": "Skeleton mặt (MediaPipe)", "required": False},
+}
+TORCH_EXTRACT = 2.1          # bản cài PyTorch chiếm khoảng 2 lần file tải về
+MIN_DRIVER = 528.0           # driver NVIDIA tối thiểu cho PyTorch CUDA 12 trên Windows
+
+
+def load_manifest(paths: Paths) -> dict:
+    if not paths.manifest.exists():
+        raise D.DownloadError("Thiếu desktop/manifest.lock.json (bản build lỗi). Cài lại bằng bộ cài mới.")
+    return json.loads(paths.manifest.read_text(encoding="utf-8"))
+
+
+def _no_window() -> dict:
+    return {"creationflags": 0x08000000} if sys.platform == "win32" else {}   # CREATE_NO_WINDOW
+
+
+@dataclass
+class Gpu:
+    name: str = ""
+    vram_mb: int = 0
+    driver: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.name)
+
+    def driver_too_old(self) -> bool:
+        try:
+            return float(self.driver.split()[0]) < MIN_DRIVER
+        except (ValueError, IndexError):
+            return False
+
+
+def detect_gpu() -> Gpu:
+    exe = shutil.which("nvidia-smi") or (r"C:\Windows\System32\nvidia-smi.exe" if sys.platform == "win32" else None)
+    if not exe or not Path(exe).exists():
+        return Gpu()
+    try:
+        out = subprocess.run([exe, "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=15, **_no_window()).stdout.strip().splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return Gpu()
+    if not out:
+        return Gpu()
+    parts = [p.strip() for p in out[0].split(",")]
+    try:
+        return Gpu(parts[0], int(float(parts[1])), parts[2])
+    except (IndexError, ValueError):
+        return Gpu(parts[0] if parts else "")
+
+
+class Components:
+    def __init__(self, paths: Paths, manifest: Optional[dict] = None, allow_http: tuple[str, ...] = (),
+                 hf_base: str = D.HF):
+        self.paths = paths.ensure()
+        self._manifest = manifest
+        self.allow_http, self.hf_base = allow_http, hf_base
+
+    @property
+    def manifest(self) -> dict:
+        if self._manifest is None:
+            self._manifest = load_manifest(self.paths)
+        return self._manifest
+
+    # --------------------------------------------------------------- state ---
+    def state(self) -> dict:
+        try:
+            return json.loads(self.paths.state.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _save(self, key: str, value: Optional[dict]) -> None:
+        st = self.state()
+        if value is None:
+            st.pop(key, None)
+        else:
+            st[key] = {**value, "installed_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        tmp = self.paths.state.with_suffix(".tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.paths.state)
+
+    def installed(self, key: str) -> bool:
+        st = self.state().get(key)
+        if not st:
+            return False
+        if key == "torch":
+            return (self.paths.packages / "torch" / "__init__.py").exists()
+        if key == "face":
+            return self.paths.face.exists()
+        folder = self.paths.sam3 if key == "sam3" else self.paths.vitpose
+        return all((folder / f).exists() for f in st.get("files", [])) and bool(st.get("files"))
+
+    def status(self) -> dict:
+        st = self.state()
+        out = {}
+        for key, meta in COMPONENTS.items():
+            out[key] = {**meta, "installed": self.installed(key), **{k: v for k, v in (st.get(key) or {}).items() if k != "files"}}
+        out["ready"] = out["torch"]["installed"] and out["sam3"]["installed"]
+        return out
+
+    # -------------------------------------------------------------- plans ---
+    def torch_wheels(self, gpu: Gpu) -> tuple[str, list[dict]]:
+        t = self.manifest["torch"]
+        variant = "cuda" if gpu.ok else "cpu"
+        return variant, t[variant]
+
+    def estimate(self, keys: list[str], gpu: Gpu, token: str = "") -> dict:
+        """Dung lượng tải và dung lượng cần trên ổ đĩa cho các thành phần chưa có."""
+        download = disk = 0
+        detail = {}
+        for key in keys:
+            if self.installed(key):
+                continue
+            if key == "torch":
+                size = sum(w.get("size") or 0 for w in self.torch_wheels(gpu)[1])
+                download += size
+                disk += int(size * (1 + TORCH_EXTRACT))
+            elif key == "face":
+                size = self.manifest["models"]["face"].get("size") or 4_000_000
+                download += size
+                disk += size
+            else:
+                try:
+                    _, files = self.hf_files(key, token)
+                    size = sum(f.get("size") or 0 for f in files)
+                except Exception:  # noqa: BLE001 - chưa có quyền thì chỉ ước lượng
+                    size = self.manifest["models"][key].get("approx_size", 0)
+                download += size
+                disk += size
+            detail[key] = size
+        free = shutil.disk_usage(self.paths.data).free
+        return {"download": download, "disk": disk, "free": free, "enough": free > disk * 1.1 + 500_000_000, "detail": detail}
+
+    def hf_files(self, key: str, token: str = "") -> tuple[str, list[dict]]:
+        m = self.manifest["models"][key]
+        return D.hf_files(m["repo"], token, m.get("revision", "main"), base=self.hf_base, allow_http=self.allow_http)
+
+    # ------------------------------------------------------------ install ---
+    def install(self, key: str, *, gpu: Gpu, token: str = "", progress: Optional[Callable] = None, cancel=None) -> dict:
+        progress = progress or (lambda **_: None)
+        if key == "torch":
+            return self._install_torch(gpu, progress, cancel)
+        if key == "face":
+            return self._install_face(progress, cancel)
+        return self._install_hf(key, token, progress, cancel)
+
+    def _install_torch(self, gpu: Gpu, progress, cancel) -> dict:
+        variant, wheels = self.torch_wheels(gpu)
+        files = []
+        for i, w in enumerate(wheels):
+            dest = self.paths.downloads / w["filename"]
+            D.download(w["url"], dest, sha256=w["sha256"], size=w.get("size"), cancel=cancel, allow_http=self.allow_http,
+                       progress=lambda done, total, n=w["filename"], i=i: progress(file=n, done=done, total=total,
+                                                                                  step=f"Tải {n} ({i + 1}/{len(wheels)})"))
+            files.append(dest)
+        progress(file="", done=0, total=None, step="Đang cài PyTorch (vài phút)...")
+        staging = self.paths.data / "packages.new"
+        shutil.rmtree(staging, ignore_errors=True)
+        python = Path(sys.executable)
+        if python.name.lower() == "pythonw.exe" and python.with_name("python.exe").exists():
+            python = python.with_name("python.exe")
+        cmd = [str(python), "-I", "-m", "pip", "install", "--no-deps", "--no-index", "--no-cache-dir",
+               "--disable-pip-version-check", "--target", str(staging)] + [str(f) for f in files]
+        res = subprocess.run(cmd, capture_output=True, text=True, **_no_window())
+        if res.returncode != 0:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise D.DownloadError("Cài PyTorch thất bại:\n" + (res.stderr or res.stdout)[-1500:])
+        old = self.paths.data / "packages.old"
+        shutil.rmtree(old, ignore_errors=True)
+        if self.paths.packages.exists():
+            self.paths.packages.rename(old)
+        staging.rename(self.paths.packages)
+        shutil.rmtree(old, ignore_errors=True)
+        for f in files:                       # đỡ tốn ổ đĩa: xoá file tải về sau khi cài xong
+            f.unlink(missing_ok=True)
+        info = {"variant": variant, "versions": {w["name"]: w["version"] for w in wheels}}
+        self._save("torch", info)
+        return info
+
+    def _install_face(self, progress, cancel) -> dict:
+        f = self.manifest["models"]["face"]
+        D.download(f["url"], self.paths.face, sha256=f["sha256"], size=f.get("size"), cancel=cancel, allow_http=self.allow_http,
+                   progress=lambda done, total: progress(file=self.paths.face.name, done=done, total=total, step="Tải model khuôn mặt"))
+        info = {"sha256": f["sha256"]}
+        self._save("face", info)
+        return info
+
+    def _install_hf(self, key: str, token: str, progress, cancel) -> dict:
+        m = self.manifest["models"][key]
+        if m.get("gated"):
+            acc = D.hf_check_access(m["repo"], token, base=self.hf_base, allow_http=self.allow_http)
+            if not acc["ok"]:
+                raise D.DownloadError(acc["message"])
+        commit, files = self.hf_files(key, token)
+        final = self.paths.sam3 if key == "sam3" else self.paths.vitpose
+        staging = final.with_name(final.name + ".download")      # giữ lại giữa các lần để tải tiếp
+        marker = staging / ".commit"
+        if staging.exists() and (not marker.exists() or marker.read_text().strip() != commit):
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        marker.write_text(commit)
+        for i, f in enumerate(files):
+            dest = staging / f["path"]
+            D.download(f["url"], dest, sha256=f.get("sha256", ""), git_blob=f.get("git_blob", ""), size=f.get("size"),
+                       token=token, cancel=cancel, allow_http=self.allow_http,
+                       progress=lambda done, total, n=f["path"], i=i: progress(
+                           file=n, done=done, total=total, step=f"Tải {m['repo']}: {n} ({i + 1}/{len(files)})"))
+        marker.unlink()
+        if key == "sam3":
+            shutil.copyfile(self.paths.sam_license, staging / "SAM_LICENSE.txt")
+        shutil.rmtree(final, ignore_errors=True)
+        staging.rename(final)
+        info = {"repo": m["repo"], "commit": commit, "files": [f["path"] for f in files]}
+        self._save(key, info)
+        return info
+
+    def remove(self, key: str) -> None:
+        if key == "torch":
+            shutil.rmtree(self.paths.packages, ignore_errors=True)
+            self.paths.packages.mkdir(parents=True, exist_ok=True)
+        elif key == "face":
+            self.paths.face.unlink(missing_ok=True)
+        else:
+            final = self.paths.sam3 if key == "sam3" else self.paths.vitpose
+            shutil.rmtree(final, ignore_errors=True)
+            shutil.rmtree(final.with_name(final.name + ".download"), ignore_errors=True)
+        self._save(key, None)
+
+    def backend_env(self) -> dict:
+        """Biến môi trường cho backend: chạy hoàn toàn offline, mọi model lấy từ thư mục dữ liệu."""
+        p = self.paths
+        return {
+            "SAM3_ENGINE": "transformers",
+            "SAM3_HF_MODEL": str(p.sam3),
+            "SAM3_POSE_MODEL": str(p.vitpose),
+            "SAM3_FACE_MODEL": str(p.face),
+            "SAM3_PROFILES_DIR": str(p.profiles),
+            "SAM3_LIBRARY_DIR": str(p.library),
+            "SAM3_NO_AUTO_DOWNLOAD": "1",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_HOME": str(p.data / "hf"),
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+
+
+def seed_user_files(paths: Paths) -> dict:
+    """Chép profile và thư viện guideline có sẵn vào thư mục dữ liệu.
+    File bạn đã sửa không bị ghi đè khi cập nhật; file có sẵn bạn chưa đụng tới thì được cập nhật."""
+    record_path = paths.data / "seeded.json"
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = {}
+    copied = kept = 0
+    for src_root, dst_root, skip in ((paths.app / "profiles", paths.profiles, ()),
+                                     (paths.app / "guideline_library", paths.library, ("runs", "learning", "lessons.jsonl"))):
+        if not src_root.exists():
+            continue
+        for src in src_root.rglob("*"):
+            rel = src.relative_to(src_root)
+            if src.is_dir() or rel.parts[0] in skip or "__pycache__" in rel.parts:
+                continue
+            dst = dst_root / rel
+            key = f"{dst_root.name}/{rel.as_posix()}"
+            new = D.sha256_file(src).hexdigest()
+            if dst.exists():
+                cur = D.sha256_file(dst).hexdigest()
+                if cur == new:
+                    record[key] = new
+                    continue
+                if record.get(key) != cur:        # người dùng đã sửa (hoặc tự tạo trùng tên): giữ nguyên
+                    kept += 1
+                    continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            record[key] = new
+            copied += 1
+    record_path.write_text(json.dumps(record, indent=1), encoding="utf-8")
+    return {"copied": copied, "kept": kept}
+
+
+def human(n: Optional[float]) -> str:
+    if not n:
+        return "0 MB"
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+__all__ = ["COMPONENTS", "Components", "Gpu", "detect_gpu", "seed_user_files", "human", "load_manifest"]

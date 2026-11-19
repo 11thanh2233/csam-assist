@@ -1,0 +1,12 @@
+transformers>=4.57
+huggingface_hub
+safetensors
+pywebview>=5.0
+pystray
+keyring
+pip
+absl-py
+flatbuffers
+sounddevice
+matplotlib
+certifi

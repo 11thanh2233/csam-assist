@@ -8,6 +8,7 @@ Cả hai chỉ được nạp khi job có label skeleton.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import urllib.request
 from pathlib import Path
@@ -49,6 +50,9 @@ class ViTPoseEngine(BodyPoseEngine):
         self.lock = threading.Lock()
 
     def load(self) -> "ViTPoseEngine":
+        if os.getenv("SAM3_NO_AUTO_DOWNLOAD") and not Path(self.model_id).exists():
+            raise RuntimeError("Model skeleton người (ViTPose) chưa được tải. Mở bảng điều khiển của app, mục Thành phần, "
+                               "bấm tải 'Skeleton người'.")
         try:
             import scipy  # noqa: F401
         except ImportError as exc:
@@ -96,6 +100,9 @@ class MediaPipeFaceEngine(FaceEngine):
         import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
+        if not self.model_path.exists() and os.getenv("SAM3_NO_AUTO_DOWNLOAD"):
+            raise RuntimeError("Model skeleton mặt (MediaPipe) chưa được tải. Mở bảng điều khiển của app, mục Thành phần, "
+                               "bấm tải 'Skeleton mặt'.")
         if not self.model_path.exists():
             log.info("Đang tải model khuôn mặt của MediaPipe về %s ...", self.model_path)
             self.model_path.parent.mkdir(parents=True, exist_ok=True)
