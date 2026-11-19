@@ -19,7 +19,7 @@ Task có bộ label khác vẫn dùng được ngay qua profile `generic` (promp
 đã được cất vào `profiles/archive/` và `guideline_library/archive/`; xem [Khôi phục quy ước Lab 4](#khôi-phục-quy-ước-skeleton-của-lab-4).
 
 > **Trạng thái kiểm thử.** Toàn bộ luồng đã chạy qua test tự động với model giả lập và một CVAT giả
-> (97 test backend/desktop + 3 test đầu-cuối cho userscript và bản desktop, và trang duyệt guideline đã chạy trong trình duyệt thật). Phần ảnh đã được bạn chạy với SAM3 thật trên
+> (104 test backend/desktop + 4 test đầu-cuối cho userscript và bản desktop, và trang duyệt guideline đã chạy trong trình duyệt thật). Phần ảnh đã được bạn chạy với SAM3 thật trên
 > `cvat.edufun.ai`. Phần skeleton (ViTPose, MediaPipe), tracking và soạn guideline **chưa** chạy với
 > model thật hay trên máy chủ thật; phần gọi LLM chỉ mới chạy với LLM giả trong test. Riêng skeleton theo hai
 > guideline mới: vị trí 50 điểm mặt mới được kiểm trên mô hình mặt chuẩn của MediaPipe (mặt nhìn thẳng), chưa
@@ -97,7 +97,7 @@ Chưa có GPU vẫn thử được giao diện: backend có chế độ `mock` t
 
 ### Cách nhanh trên Windows: bộ cài `.exe` (từ bản 0.6.0)
 
-Tải `SAM3-CVAT-Assist-Setup-<bản>.exe` ở mục **Releases** của repo, chạy, làm theo trình tải ở bước cuối
+Tải `SAM3-CVAT-Assist-Setup-<bản>.exe` ở mục **Releases** của repo (từ 0.7.0 app tự báo và tự cập nhật bản mới), chạy, làm theo trình tải ở bước cuối
 (giấy phép SAM, token Hugging Face, chọn thành phần). Xong là mở **SAM3 CVAT Assist** từ Desktop: bảng điều khiển
 mở CVAT trong cửa sổ riêng, bảng của tool tự hiện. Không cần Python, PowerShell hay Tampermonkey. Chi tiết, dung
 lượng, cách gỡ và các biện pháp an toàn: [docs/DESKTOP.md](docs/DESKTOP.md).

@@ -37,6 +37,44 @@ Mở **SAM3 CVAT Assist** từ Desktop hoặc Start Menu. Bảng điều khiển
 
 Userscript cho Tampermonkey vẫn dùng được song song cho ai thích trình duyệt quen thuộc.
 
+## Đã có bản cũ? Không tải lại thứ đã có (từ 0.7.0)
+
+Bước đầu của trình cài **quét máy** và liệt kê từng thành phần với một trong các trạng thái: *đã có, đúng bản*,
+*cần cập nhật*, *dùng lại file có sẵn*, hoặc *chưa có*, kèm dung lượng phải tải. Những nơi được quét:
+
+- bộ nhớ đệm Hugging Face (`.cache\huggingface\hub`, hoặc `HF_HOME` / `HF_HUB_CACHE`): bản cài tay 0.3.x – 0.5.x
+  tải SAM 3 và ViTPose vào đây;
+- thư mục tool cũ tên `sam3-cvat-assist` hoặc `csam-assist` trong Downloads, Desktop, Documents. Ở chỗ khác thì
+  bấm **Thêm thư mục tool cũ để quét**. App lấy `models\face_landmarker.task`;
+- model đã cài của chính app.
+
+Cách dùng lại:
+
+- **Kiểm trước khi dùng:** file chỉ được dùng lại khi đúng dung lượng và đúng mã băm Hugging Face công bố. File
+  sai thì tải lại.
+- **Không tốn thêm ổ đĩa:** dùng lại bằng liên kết cứng nếu cùng ổ đĩa, không được thì chép.
+- **Token chỉ khi cần:** nếu trọng số SAM 3 đã có đủ trên máy thì không cần token Hugging Face.
+- **PyTorch trong `.venv` cũ không được dùng lại.** Nó gắn với Python của máy đó và không kiểm mã băm lại được,
+  nên an toàn hơn là tải bản đã ghim.
+
+## Cập nhật
+
+- **Bản app mới:** mỗi ngày một lần, app hỏi GitHub Releases của tool. Có bản mới thì nút **Có bản …** hiện trên
+  thanh tiêu đề; mục **Cập nhật app** có ghi chú thay đổi và nút **Tải bản cập nhật**. Sau đó:
+  1. App tải bộ cài từ github.com qua HTTPS và kiểm mã SHA-256 GitHub công bố. Sai mã thì xoá, không chạy.
+  2. Bấm **Cài và mở lại app**: app đóng lại, bộ cài chạy ở chế độ cập nhật (không hỏi gì), xong tự mở lại app.
+  3. PyTorch, trọng số, profile và dữ liệu tự học giữ nguyên. App không bao giờ hạ phiên bản.
+
+  Tắt tự kiểm: bỏ tick **Tự kiểm bản mới mỗi ngày**. Vẫn bấm **Kiểm tra ngay** được.
+- **Thành phần:**
+  - **PyTorch được ghim bản** (`installer/torch-pin.txt`). App chỉ bắt tải lại PyTorch khi bản app mới cần bản
+    khác; bảng điều khiển hiện dòng *"Bản app này cần cập nhật: PyTorch"*.
+  - **Trọng số** có bản mới trên Hugging Face thì hiện *cần cập nhật (tuỳ chọn)*, và chỉ tải các file đã đổi.
+- **Có gì mới:** lần đầu mở app sau khi cập nhật, khung **Có gì mới** liệt kê thay đổi của các bản từ bản bạn đang
+  dùng trước đó, lấy từ `docs/CHANGELOG.md` đi kèm bộ cài, không cần mạng. Xem lại bất cứ lúc nào: **Nhật ký thay đổi**.
+- **Lần lên 0.7.0 phải tải tay** `setup.exe` một lần, vì bản 0.6.0 chưa có nút cập nhật. Chạy bộ cài mới đè lên
+  bản cũ là được. Trình cài thấy PyTorch và trọng số đã có thì bấm **Xong (không cần tải gì)**.
+
 ## Dữ liệu nằm ở đâu
 
 `AppData\Local\SAM3CvatAssist\` (giữ nguyên khi cập nhật app):
@@ -50,8 +88,7 @@ Userscript cho Tampermonkey vẫn dùng được song song cho ai thích trình 
 | `webview\` | đăng nhập CVAT của cửa sổ app |
 | `logs\` | nhật ký app và backend |
 
-Cập nhật app: chạy bộ cài bản mới. Profile và guideline có sẵn được cập nhật, trừ file bạn đã sửa. PyTorch và trọng số
-không phải tải lại.
+Khi cập nhật app: profile và guideline có sẵn được cập nhật, trừ file bạn đã sửa. PyTorch và trọng số không phải tải lại.
 
 Gỡ app: **Settings → Apps → SAM3 CVAT Assist → Uninstall**. Bộ gỡ hỏi riêng có xoá model đã tải (khoảng 9 GB) và
 có xoá dữ liệu của bạn không. Mặc định là giữ.
@@ -99,7 +136,8 @@ có xoá dữ liệu của bạn không. Mặc định là giữ.
    - ghi `manifest.lock.json`.
 3. Biên dịch `SAM3 Assist.exe` (`installer/Launcher.cs`), đóng gói bằng Inno Setup (`installer/sam3-assist.iss`).
 4. Cài im lặng, chạy thử và gỡ trên máy build.
-5. Push tag `v<bản>`: đăng bộ cài, manifest và mã SHA-256 lên Releases.
+5. Push tag `v<bản>`: đăng bộ cài, manifest và mã SHA-256 lên Releases. Ghi chú lấy từ mục `## <bản>` trong
+   `docs/CHANGELOG.md`; thiếu mục đó thì bước đăng báo lỗi.
 
 Phát hành bản mới: sửa `__version__` trong `backend/__init__.py` (và `VERSION` trong userscript), ghi
-`docs/RELEASE_NOTES.md`, rồi `git tag v<bản> && git push origin v<bản>`.
+`docs/CHANGELOG.md` (mục `## <bản>`), rồi `git tag v<bản> && git push origin v<bản>`.

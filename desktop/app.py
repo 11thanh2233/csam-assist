@@ -94,10 +94,21 @@ class DesktopApp:
             self.tray_icon.stop()
 
     def _after_start(self) -> None:
+        self.api._pick_folder = self._pick_folder
         try:
             self.api._prepare()
         except Exception:  # noqa: BLE001
             log.exception("Chuẩn bị dữ liệu lỗi")
+        if not self.setup_mode:
+            try:
+                self.api.check_update()          # tối đa một lần mỗi ngày, tắt được trong bảng điều khiển
+            except Exception:  # noqa: BLE001
+                log.exception("Kiểm bản mới lỗi")
+
+    def _pick_folder(self):
+        kind = getattr(getattr(self.webview, "FileDialog", None), "FOLDER", None) or self.webview.FOLDER_DIALOG
+        res = self.control.create_file_dialog(kind)
+        return res[0] if res else None
 
     def _on_control_closing(self):
         if self.setup_mode or self.quitting or self.tray_icon is None:

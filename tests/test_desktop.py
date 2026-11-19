@@ -270,6 +270,9 @@ class FakeBackend:
     def info(self):
         return {"state": self.state, "message": "Chưa có Trọng số SAM 3."}
 
+    def stop(self):
+        self.state = "stopped"
+
     def request(self, method, path, body, timeout=300):
         self.calls.append((method, path, body))
         return 200, '{"ok": true}'
@@ -317,3 +320,180 @@ def test_control_rules(tmp_path, fake):
     assert api.open_site("https://khac.com")["ok"] is False
     assert api.open_link("evil") is False
     assert "SAM License" in api.license_text()
+
+
+# ------------------------------------------------------------------ 0.7.0 ---
+from desktop import changelog, updater as U  # noqa: E402
+from desktop.control import Settings  # noqa: E402
+
+
+def hf_cache_from(fake, tmp_path, repo="facebook/sam3", windows_copies=False, skip=()):
+    """Bộ nhớ đệm Hugging Face như bản cài tay cũ để lại: blobs/<mã băm> + snapshots/<commit>/<file>."""
+    cache = tmp_path / "hfcache"
+    base = cache / ("models--" + repo.replace("/", "--"))
+    info = fake.hf_info(repo)
+    for s in info["siblings"]:
+        name = s["rfilename"]
+        if name in skip:
+            continue
+        data = fake.files[f"{repo}/{name}"]
+        h = (s.get("lfs") or {}).get("sha256") or s["blobId"]
+        snap = base / "snapshots" / "oldcommit" / name
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        if windows_copies:                                  # Windows không có quyền symlink: file nằm thẳng trong snapshots
+            snap.write_bytes(data)
+        else:
+            (base / "blobs").mkdir(parents=True, exist_ok=True)
+            (base / "blobs" / h).write_bytes(data)
+            snap.symlink_to(base / "blobs" / h)
+    return cache
+
+
+def test_reuse_old_hf_cache_without_token(fake, tmp_path):
+    make_repo(fake)
+    cache = hf_cache_from(fake, tmp_path)
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent)
+    comps = Components(paths, manifest(fake), allow_http=HTTP, hf_base=fake.base, hf_caches=[cache], tool_roots=[])
+    p = comps.plan(["sam3"], Gpu())["sam3"]
+    assert p["action"] == "install" and p["download"] == 0 and p["reuse"] > 0 and not p["needs_token"]
+    info = comps.install("sam3", gpu=Gpu(), token="")           # không token: không phải tải gì
+    assert info["reused_files"] == 4 and comps.installed("sam3")
+    assert not any("/resolve/" in k for k in fake.seen_auth), "đã có đủ trên máy thì không gọi tải"
+    assert (paths.sam3 / "model.safetensors").read_bytes() == fake.files["facebook/sam3/model.safetensors"]
+    assert comps.plan(["sam3"], Gpu())["sam3"]["action"] == "none"
+
+
+def test_reuse_checks_hash_and_downloads_only_missing(fake, tmp_path):
+    make_repo(fake)
+    cache = hf_cache_from(fake, tmp_path, windows_copies=True, skip=("tokenizer.json",))
+    bad = next(cache.rglob("config.json"))
+    bad.write_bytes(b'{"model_type": "sam9"}'[: len(bad.read_bytes())].ljust(len(bad.read_bytes()), b" "))  # cùng cỡ, sai nội dung
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent)
+    comps = Components(paths, manifest(fake), allow_http=HTTP, hf_base=fake.base, hf_caches=[cache], tool_roots=[])
+    assert comps.plan(["sam3"], Gpu(), check_hash=True)["sam3"]["needs_token"]
+    with pytest.raises(D.DownloadError, match="chưa duyệt"):
+        comps.install("sam3", gpu=Gpu(), token=PENDING)         # phải tải phần thiếu: lúc đó mới cần token
+    info = comps.install("sam3", gpu=Gpu(), token=TOKEN)
+    assert info["reused_files"] == 2                              # model.safetensors + LICENSE; config sai mã băm thì tải lại
+    assert (paths.sam3 / "config.json").read_bytes() == fake.files["facebook/sam3/config.json"]
+    assert "/facebook/sam3/resolve/abc123commit/config.json" in fake.seen_auth
+    assert "/cdn/facebook/sam3/model.safetensors" not in fake.seen_auth, "file lớn có sẵn đúng mã băm: không tải"
+
+
+def test_update_downloads_only_changed_weights(fake, tmp_path):
+    make_repo(fake)
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent)
+    comps = Components(paths, manifest(fake), allow_http=HTTP, hf_base=fake.base, hf_caches=[], tool_roots=[])
+    comps.install("sam3", gpu=Gpu(), token=TOKEN)
+    fake.seen_auth.clear()
+    fake.files["facebook/sam3/config.json"] = b'{"model_type": "sam3", "v": 2}'     # bản mới trên Hugging Face
+    p = comps.plan(["sam3"], Gpu())["sam3"]
+    assert p["action"] == "update" and p["download"] == len(fake.files["facebook/sam3/config.json"]) and not p["required"]
+    comps.install("sam3", gpu=Gpu(), token=TOKEN)
+    fetched = [k for k in fake.seen_auth if ("/resolve/" in k or "/cdn/" in k) and "/resolve/main/" not in k]  # main: kiểm quyền
+    assert fetched == ["/facebook/sam3/resolve/abc123commit/config.json"]
+    assert (paths.sam3 / "model.safetensors").exists()
+
+
+def test_torch_pin_and_face_reuse(fake, tmp_path):
+    wheel = fake_wheel()
+    fake.files["torch-0.0.1-py3-none-any.whl"] = wheel
+    old_tool = tmp_path / "Downloads" / "VinUni" / "tool" / "sam3-cvat-assist"
+    (old_tool / "models").mkdir(parents=True)
+    (old_tool / "models" / "face_landmarker.task").write_bytes(b"FACE")
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent)
+    m = manifest(fake, wheel)
+    comps = Components(paths, m, allow_http=HTTP, hf_base=fake.base, hf_caches=[], tool_roots=[tmp_path / "Downloads"])
+    gpu = Gpu("RTX 2060", 6144, "560.1")
+    assert comps.tool_dirs() == [old_tool]
+    face = comps.plan(["face"], gpu)["face"]
+    assert face["download"] == 0 and face["reuse"] == 4
+    comps.install("face", gpu=gpu)
+    assert paths.face.read_bytes() == b"FACE" and comps.state()["face"]["reused_from"]
+    comps.install("torch", gpu=gpu)
+    assert comps.plan(["torch"], gpu)["torch"]["action"] == "none"
+    m["torch"]["cuda"][0]["version"] = "0.0.2"                   # bản app mới ghim PyTorch khác
+    t = comps.plan(["torch"], gpu)["torch"]
+    assert t["action"] == "update" and t["required"] and "0.0.2" in t["reason"]
+    m["torch"]["cuda"][0]["version"] = "0.0.1+cu126"              # cùng bản (nhãn CUDA không tính)
+    assert comps.plan(["torch"], gpu)["torch"]["action"] == "none"
+
+
+class FakeGitHub(http.server.BaseHTTPRequestHandler):
+    release: dict = {}
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path.startswith("/api/latest"):
+            body = json.dumps(FakeGitHub.release).encode()
+        else:
+            body = FakeGitHub.payload
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def test_updater_checks_release_and_hash(tmp_path):
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    FakeGitHub.payload = b"MZ" + b"\0" * 1000
+    sha = hashlib.sha256(FakeGitHub.payload).hexdigest()
+    asset = {"name": "SAM3-CVAT-Assist-Setup-0.7.1.exe", "size": len(FakeGitHub.payload),
+             "browser_download_url": f"{base}/dl/SAM3-CVAT-Assist-Setup-0.7.1.exe"}
+    kw = dict(api=f"{base}/api/latest", allow_http=("127.0.0.1",), prefix=f"{base}/dl/")
+    FakeGitHub.release = {"tag_name": "v0.7.1", "body": "## 0.7.1\n- sửa lỗi", "assets": [dict(asset, digest=f"sha256:{sha}")]}
+    info = U.check("0.7.0", **kw)
+    assert info["available"] and info["auto"] and info["sha256"] == sha
+    assert not U.check("0.7.1", **kw)["available"] and not U.check("0.8.0", **kw)["available"], "không hạ bản"
+    FakeGitHub.release = {"tag_name": "v0.7.1", "body": f"SHA-256 của bộ cài: `{sha}`", "assets": [asset]}
+    assert U.check("0.7.0", **kw)["sha256"] == sha, "lấy mã băm trong ghi chú khi GitHub không có digest"
+    FakeGitHub.release = {"tag_name": "v0.7.1", "body": "", "assets": [asset]}
+    assert not U.check("0.7.0", **kw)["auto"], "không có mã băm: không tự cập nhật"
+    FakeGitHub.release = {"tag_name": "v0.7.1", "body": "", "assets": [dict(asset, digest=f"sha256:{sha}")]}
+    assert not U.check("0.7.0", api=kw["api"], allow_http=kw["allow_http"])["auto"], "địa chỉ tải ngoài github.com: từ chối"
+
+    up = U.Updater(tmp_path / "upd", allow_http=("127.0.0.1",))
+    assert up.start(info)
+    up.thread.join(10)
+    assert Path(up.p["ready"]).read_bytes() == FakeGitHub.payload and not up.p["error"]
+    FakeGitHub.payload = b"not an exe"
+    bad = dict(info, sha256=hashlib.sha256(b"not an exe").hexdigest(), size=10, name="SAM3-CVAT-Assist-Setup-0.7.2.exe")
+    up.start(bad)
+    up.thread.join(10)
+    assert "không phải bộ cài" in up.p["error"] and not (tmp_path / "upd" / bad["name"]).exists()
+    srv.shutdown()
+
+
+def test_whats_new_and_changelog(tmp_path):
+    log = tmp_path / "CHANGELOG.md"
+    log.write_text("# Nhật ký\n\n## 0.7.1 (x)\n- c\n\n## 0.7.0\n- b\n\n## 0.6.0\n- a\n", encoding="utf-8")
+    assert [e["version"] for e in changelog.between(log, "0.6.0", "0.7.1")] == ["0.7.1", "0.7.0"]
+    assert changelog.section(log, "0.7.0") == "- b"
+    real = Path(__file__).resolve().parent.parent / "docs" / "CHANGELOG.md"
+    from backend import __version__
+
+    assert changelog.section(real, __version__), "CHANGELOG phải có mục cho bản hiện tại (bước build dùng làm ghi chú Release)"
+    fresh = Settings(tmp_path / "s1.json")
+    assert fresh.data["last_seen_version"] == __version__, "cài mới: không hiện khung có gì mới"
+    (tmp_path / "s2.json").write_text('{"sites": []}', encoding="utf-8")
+    assert Settings(tmp_path / "s2.json").data["last_seen_version"] == "0.6.0", "có cài đặt cũ: đang lên từ 0.6.0"
+
+
+def test_control_install_skips_when_up_to_date(tmp_path, fake):
+    make_repo(fake)
+    cache = hf_cache_from(fake, tmp_path)
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent)
+    comps = Components(paths, manifest(fake), allow_http=HTTP, hf_base=fake.base, hf_caches=[cache], tool_roots=[])
+    api = ControlApi(paths, comps, FakeBackend("missing"), open_site=lambda o: None, on_quit=lambda: None)
+    api.accept_license()
+    r = api.install(["sam3"])                    # đủ file trong bộ nhớ đệm: không cần token
+    assert r["ok"], r
+    api._installer.thread.join(20)
+    assert not api._installer.p["error"] and comps.installed("sam3")
+    assert "không cần tải" in api.install(["sam3"])["message"]
+    sc = api.scan()
+    assert sc["plan"]["sam3"]["action"] == "none" and "sam3" not in sc["todo"]

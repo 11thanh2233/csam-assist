@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import downloader as D
+from . import reuse as R
 from .paths import Paths
 
 COMPONENTS = {
@@ -80,10 +81,13 @@ def detect_gpu() -> Gpu:
 
 class Components:
     def __init__(self, paths: Paths, manifest: Optional[dict] = None, allow_http: tuple[str, ...] = (),
-                 hf_base: str = D.HF):
+                 hf_base: str = D.HF, hf_caches: Optional[list[Path]] = None, tool_roots: Optional[list[Path]] = None):
         self.paths = paths.ensure()
         self._manifest = manifest
         self.allow_http, self.hf_base = allow_http, hf_base
+        self.extra_dirs: list[Path] = []          # thư mục tool cũ bạn tự thêm để quét
+        self._hf_caches, self._tool_roots = hf_caches, tool_roots
+        self._tool_dirs: Optional[list[Path]] = None
 
     @property
     def manifest(self) -> dict:
@@ -133,32 +137,112 @@ class Components:
         variant = "cuda" if gpu.ok else "cpu"
         return variant, t[variant]
 
-    def estimate(self, keys: list[str], gpu: Gpu, token: str = "") -> dict:
-        """Dung lượng tải và dung lượng cần trên ổ đĩa cho các thành phần chưa có."""
-        download = disk = 0
-        detail = {}
+    @staticmethod
+    def _base(version: str) -> str:
+        return (version or "").split("+")[0]
+
+    def caches(self, repo: str) -> list[Path]:
+        return R.repo_cache(repo, self._hf_caches)
+
+    def tool_dirs(self, refresh: bool = False) -> list[Path]:
+        if self._tool_dirs is None or refresh:
+            self._tool_dirs = R.find_tool_dirs(self.extra_dirs, self._tool_roots)
+        return self._tool_dirs
+
+    def plan(self, keys: list[str], gpu: Gpu, token: str = "", check_hash: bool = False) -> dict:
+        """Việc cần làm cho từng thành phần: none (đã có, đúng bản), install (chưa có), update (có nhưng cần bản khác).
+        Kèm số byte phải tải và số byte dùng lại được từ file có sẵn trên máy.
+        check_hash=False: chỉ so dung lượng (nhanh); khi cài thật mọi file đều được kiểm mã băm."""
+        out = {}
         for key in keys:
-            if self.installed(key):
-                continue
-            if key == "torch":
-                size = sum(w.get("size") or 0 for w in self.torch_wheels(gpu)[1])
-                download += size
-                disk += int(size * (1 + TORCH_EXTRACT))
-            elif key == "face":
-                size = self.manifest["models"]["face"].get("size") or 4_000_000
-                download += size
-                disk += size
+            try:
+                out[key] = getattr(self, f"_plan_{'hf' if key in ('sam3', 'vitpose') else key}")(key, gpu, token, check_hash)
+            except Exception as exc:  # noqa: BLE001 - không kiểm được thì báo, không chặn
+                out[key] = {"action": "install" if not self.installed(key) else "none", "download": 0, "reuse": 0,
+                            "reason": f"Chưa kiểm được: {exc}", "required": not self.installed(key)}
+        return out
+
+    def _plan_torch(self, key, gpu, token, check_hash) -> dict:
+        variant, wheels = self.torch_wheels(gpu)
+        size = sum(w.get("size") or 0 for w in wheels)
+        st = self.state().get("torch") or {}
+        want = self._base(next(w["version"] for w in wheels if w["name"] == "torch"))
+        have = self._base((st.get("versions") or {}).get("torch", ""))
+        if not self.installed("torch"):
+            return {"action": "install", "download": size, "reuse": 0, "required": True,
+                    "reason": f"PyTorch {want} ({'CUDA' if variant == 'cuda' else 'CPU'})"}
+        if have != want:
+            return {"action": "update", "download": size, "reuse": 0, "required": True,
+                    "reason": f"Bản app này dùng PyTorch {want}, máy đang có {have}"}
+        if st.get("variant") == "cpu" and variant == "cuda":
+            return {"action": "update", "download": size, "reuse": 0, "required": False,
+                    "reason": "Máy đã có card NVIDIA: nên đổi sang PyTorch bản CUDA (nhanh hơn nhiều)"}
+        return {"action": "none", "download": 0, "reuse": 0, "required": False, "reason": f"PyTorch {have}: đúng bản"}
+
+    def _face_sources(self) -> list[Path]:
+        return [d / "models" for d in self.tool_dirs()] + [self.paths.models]
+
+    def _plan_face(self, key, gpu, token, check_hash) -> dict:
+        f = self.manifest["models"]["face"]
+        st = self.state().get("face") or {}
+        if self.installed("face") and st.get("sha256") == f["sha256"]:
+            return {"action": "none", "download": 0, "reuse": 0, "required": False, "reason": "đúng bản"}
+        item = {"path": self.paths.face.name, "sha256": f["sha256"], "size": f.get("size")}
+        src = R.find_match(item, self._face_sources(), [], check_hash)
+        action = "update" if self.installed("face") else "install"
+        if src:
+            return {"action": action, "download": 0, "reuse": f.get("size") or 0, "required": action == "update",
+                    "reason": f"dùng lại file có sẵn: {src}", "reuse_from": [str(src.parent)]}
+        return {"action": action, "download": f.get("size") or 4_000_000, "reuse": 0, "required": action == "update",
+                "reason": "model khuôn mặt bản mới" if action == "update" else ""}
+
+    def _hf_folder(self, key: str) -> Path:
+        return self.paths.sam3 if key == "sam3" else self.paths.vitpose
+
+    def _plan_hf(self, key, gpu, token, check_hash) -> dict:
+        m = self.manifest["models"][key]
+        installed = self.installed(key)
+        try:
+            commit, files = self.hf_files(key, token)
+        except Exception:  # noqa: BLE001 - offline hoặc chưa có quyền xem danh sách file
+            if installed:
+                return {"action": "none", "download": 0, "reuse": 0, "required": False, "reason": "không kiểm được bản mới (offline)"}
+            return {"action": "install", "download": m.get("approx_size", 0), "reuse": 0, "required": key == "sam3", "reason": ""}
+        caches = self.caches(m["repo"])
+        folder = self._hf_folder(key)
+        download = reuse = 0
+        reused_from = set()
+        for f in files:
+            src = R.find_match(f, [folder], caches, check_hash)
+            if src:
+                reuse += f.get("size") or 0
+                if folder not in src.parents:
+                    reused_from.add(str(next((c for c in caches if c in src.parents), src.parent)))
             else:
-                try:
-                    _, files = self.hf_files(key, token)
-                    size = sum(f.get("size") or 0 for f in files)
-                except Exception:  # noqa: BLE001 - chưa có quyền thì chỉ ước lượng
-                    size = self.manifest["models"][key].get("approx_size", 0)
-                download += size
-                disk += size
-            detail[key] = size
+                download += f.get("size") or 0
+        st = self.state().get(key) or {}
+        if installed and download == 0:
+            return {"action": "none", "download": 0, "reuse": 0, "required": False, "commit": commit,
+                    "reason": "đúng bản mới nhất" if st.get("commit") == commit else "các file không đổi"}
+        action = "update" if installed else "install"
+        reason = ("có bản trọng số mới trên Hugging Face: chỉ tải các file đã đổi" if action == "update"
+                  else ("dùng lại file đã tải ở bản cũ" if reuse else ""))
+        return {"action": action, "download": download, "reuse": reuse, "commit": commit, "reason": reason,
+                "required": action == "install" and key == "sam3", "reuse_from": sorted(reused_from),
+                "needs_token": bool(m.get("gated")) and download > 0}
+
+    def estimate(self, keys: list[str], gpu: Gpu, token: str = "") -> dict:
+        """Dung lượng tải và dung lượng cần trên ổ đĩa cho những thành phần thật sự phải làm."""
+        plan = self.plan(keys, gpu, token)
+        download = disk = 0
+        for key, p in plan.items():
+            if p["action"] == "none":
+                continue
+            download += p["download"]
+            disk += int(p["download"] * (1 + TORCH_EXTRACT)) if key == "torch" else p["download"]
         free = shutil.disk_usage(self.paths.data).free
-        return {"download": download, "disk": disk, "free": free, "enough": free > disk * 1.1 + 500_000_000, "detail": detail}
+        return {"download": download, "disk": disk, "free": free, "enough": free > disk * 1.1 + 500_000_000,
+                "detail": {k: p["download"] for k, p in plan.items()}, "plan": plan}
 
     def hf_files(self, key: str, token: str = "") -> tuple[str, list[dict]]:
         m = self.manifest["models"][key]
@@ -208,6 +292,14 @@ class Components:
 
     def _install_face(self, progress, cancel) -> dict:
         f = self.manifest["models"]["face"]
+        item = {"path": self.paths.face.name, "sha256": f["sha256"], "size": f.get("size")}
+        src = R.find_match(item, [d / "models" for d in self.tool_dirs()], [])
+        if src and src != self.paths.face.resolve():
+            progress(file=src.name, done=0, total=None, step=f"Dùng lại model khuôn mặt có sẵn: {src}")
+            R.place(src, self.paths.face)
+            info = {"sha256": f["sha256"], "reused_from": str(src)}
+            self._save("face", info)
+            return info
         D.download(f["url"], self.paths.face, sha256=f["sha256"], size=f.get("size"), cancel=cancel, allow_http=self.allow_http,
                    progress=lambda done, total: progress(file=self.paths.face.name, done=done, total=total, step="Tải model khuôn mặt"))
         info = {"sha256": f["sha256"]}
@@ -216,20 +308,36 @@ class Components:
 
     def _install_hf(self, key: str, token: str, progress, cancel) -> dict:
         m = self.manifest["models"][key]
-        if m.get("gated"):
-            acc = D.hf_check_access(m["repo"], token, base=self.hf_base, allow_http=self.allow_http)
-            if not acc["ok"]:
-                raise D.DownloadError(acc["message"])
         commit, files = self.hf_files(key, token)
-        final = self.paths.sam3 if key == "sam3" else self.paths.vitpose
+        final = self._hf_folder(key)
+        caches = self.caches(m["repo"])
         staging = final.with_name(final.name + ".download")      # giữ lại giữa các lần để tải tiếp
         marker = staging / ".commit"
         if staging.exists() and (not marker.exists() or marker.read_text().strip() != commit):
             shutil.rmtree(staging)
         staging.mkdir(parents=True, exist_ok=True)
         marker.write_text(commit)
+        access_checked = not m.get("gated")
+        reused = 0
         for i, f in enumerate(files):
             dest = staging / f["path"]
+            if dest.exists():
+                try:
+                    D.verify(dest, f.get("sha256", ""), f.get("git_blob", ""), f.get("size"))
+                    continue
+                except D.DownloadError:
+                    dest.unlink()
+            progress(file=f["path"], done=0, total=None, step=f"Kiểm file có sẵn trên máy: {f['path']}")
+            src = R.find_match(f, [final], caches)            # kiểm cả mã băm trước khi dùng lại
+            if src:
+                R.place(src, dest)
+                reused += 1
+                continue
+            if not access_checked:                             # chỉ cần token khi thật sự phải tải
+                acc = D.hf_check_access(m["repo"], token, base=self.hf_base, allow_http=self.allow_http)
+                if not acc["ok"]:
+                    raise D.DownloadError(acc["message"])
+                access_checked = True
             D.download(f["url"], dest, sha256=f.get("sha256", ""), git_blob=f.get("git_blob", ""), size=f.get("size"),
                        token=token, cancel=cancel, allow_http=self.allow_http,
                        progress=lambda done, total, n=f["path"], i=i: progress(
@@ -239,7 +347,7 @@ class Components:
             shutil.copyfile(self.paths.sam_license, staging / "SAM_LICENSE.txt")
         shutil.rmtree(final, ignore_errors=True)
         staging.rename(final)
-        info = {"repo": m["repo"], "commit": commit, "files": [f["path"] for f in files]}
+        info = {"repo": m["repo"], "commit": commit, "files": [f["path"] for f in files], "reused_files": reused}
         self._save(key, info)
         return info
 

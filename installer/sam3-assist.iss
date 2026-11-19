@@ -93,6 +93,8 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#ExeName}"; Tasks: desktopic
 [Run]
 Filename: "{app}\{#ExeName}"; Parameters: "--setup"; StatusMsg: "Đang mở trình tải PyTorch và trọng số SAM 3..."; Flags: waituntilterminated skipifsilent
 Filename: "{app}\{#ExeName}"; Description: "Mở {#AppName}"; Flags: postinstall nowait skipifsilent
+; Cập nhật từ trong app (bộ cài chạy /SILENT /update=1): xong thì mở lại app.
+Filename: "{app}\{#ExeName}"; Flags: nowait; Check: IsUpdate
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\app"
@@ -110,6 +112,11 @@ begin
     or (RegQueryStringValue(HKCU, WebView2Key, 'pv', v) and (v <> '') and (v <> '0.0.0.0'));
 end;
 
+function IsUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:update|0}') = '1';
+end;
+
 function HasVcRedist(): Boolean;
 var installed: Cardinal;
 begin
@@ -120,6 +127,8 @@ end;
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+  if IsUpdate() then
+    exit;                                     // cập nhật từ trong app: máy đã chạy được bản trước
   if not HasVcRedist() then
     SuppressibleMsgBox('Máy chưa có Microsoft Visual C++ Redistributable (x64). PyTorch cần nó để chạy.' + #13#10#13#10 +
       'Hãy tải và cài (cần quyền admin) từ trang chính thức của Microsoft:' + #13#10 +

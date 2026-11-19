@@ -16,6 +16,8 @@ from . import credstore
 from . import downloader as D
 from .backend_proc import BackendProcess
 from .bridge import is_local, normalize_site
+from . import changelog
+from . import updater as U
 from .components import COMPONENTS, Components, Gpu, detect_gpu, human, seed_user_files
 from .paths import Paths
 
@@ -29,6 +31,7 @@ SAM3_REPO = "facebook/sam3"
 class Settings:
     def __init__(self, path: Path):
         self.path = path
+        self.existed = path.exists()
         try:
             self.data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -36,6 +39,11 @@ class Settings:
         self.data.setdefault("sites", list(DEFAULT_SITES))
         self.data.setdefault("autostart_backend", True)
         self.data.setdefault("license_accepted", "")
+        self.data.setdefault("auto_update_check", True)
+        self.data.setdefault("scan_dirs", [])
+        if "last_seen_version" not in self.data:
+            # Cài mới: không có gì để báo. Có cài đặt mà chưa có mục này: đang cập nhật từ 0.6.0 (bản desktop đầu tiên).
+            self.data["last_seen_version"] = "0.6.0" if self.existed else __version__
 
     def save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -74,9 +82,11 @@ class Installer:
     def _run(self, keys, gpu, token) -> None:
         order = [k for k in ("torch", "sam3", "vitpose", "face") if k in keys]
         try:
+            self._progress(step="Quét máy: tìm file đã có, so với bản cần dùng...")
+            plan = self.comps.plan(order, gpu, token)
             for key in order:
-                if self.comps.installed(key):
-                    self._progress(step=f"{COMPONENTS[key]['title']}: đã có, bỏ qua")
+                if plan[key]["action"] == "none":
+                    self._progress(step=f"{COMPONENTS[key]['title']}: đã có, đúng bản, không tải")
                     continue
                 self.p["results"][key] = self.comps.install(key, gpu=gpu, token=token, progress=self._progress, cancel=self.cancel)
                 self._progress(step=f"{COMPONENTS[key]['title']}: xong")
@@ -97,7 +107,11 @@ class ControlApi:
                  on_quit: Callable[[], None], setup_mode: bool = False):
         self._paths, self._comps, self._backend = paths, comps, backend
         self._settings = Settings(paths.settings)
+        comps.extra_dirs = [Path(d) for d in self._settings.data["scan_dirs"]]
         self._installer = Installer(comps)
+        self._updater = U.Updater(paths.downloads / "update")
+        self._update_info: dict = self._settings.data.get("update_cache") or {}
+        self._pick_folder: Optional[Callable[[], Optional[str]]] = None
         self._open_site, self._on_quit = open_site, on_quit
         self._setup_mode = setup_mode
         self._gpu: Optional[Gpu] = None
@@ -122,6 +136,123 @@ class ControlApi:
             "keyring": credstore.available(), "autostart_windows": autostart_enabled(),
             "data_dir": str(self._paths.data), "installing": self._installer.p["running"],
         }
+
+    # ------------------------------------------------------ quét thành phần ---
+    def scan(self, refresh=False):
+        """Đã có gì, đúng bản chưa, dùng lại được gì từ bản cũ, cần tải bao nhiêu."""
+        gpu = self._gpu_info()
+        self._comps.tool_dirs(refresh=bool(refresh))
+        plan = self._comps.plan(list(COMPONENTS), gpu, self._token)
+        for p in plan.values():
+            p["download_h"], p["reuse_h"] = human(p["download"]), human(p["reuse"])
+        todo = [k for k, p in plan.items() if p["action"] != "none" and (p.get("required") or self._comps.installed(k))]
+        from . import reuse as R
+        return {"plan": plan, "todo": todo, "required": [k for k in todo if plan[k].get("required")],
+                "tool_dirs": [str(d) for d in self._comps.tool_dirs()], "hf_caches": [str(d) for d in R.hf_cache_dirs()],
+                "scan_dirs": self._settings.data["scan_dirs"], "python": sys.version.split()[0], "app": __version__}
+
+    def add_scan_folder(self):
+        folder = self._pick_folder() if self._pick_folder else None
+        if not folder:
+            return self.scan()
+        dirs = [d for d in self._settings.data["scan_dirs"] if d != folder] + [folder]
+        self._settings.data["scan_dirs"] = dirs
+        self._settings.save()
+        self._comps.extra_dirs = [Path(d) for d in dirs]
+        return self.scan(refresh=True)
+
+    def remove_scan_folder(self, folder):
+        self._settings.data["scan_dirs"] = [d for d in self._settings.data["scan_dirs"] if d != folder]
+        self._settings.save()
+        self._comps.extra_dirs = [Path(d) for d in self._settings.data["scan_dirs"]]
+        return self.scan(refresh=True)
+
+    # ------------------------------------------------------------ cập nhật ---
+    def check_update(self, force=False):
+        st = self._settings.data
+        if not force and (not st.get("auto_update_check") or not U.due(st.get("last_update_check", 0))):
+            return self._update_view()
+        try:
+            info = U.check(__version__)
+            info["checked"] = time.strftime("%Y-%m-%d %H:%M")
+            self._update_info = info
+            st["update_cache"], st["last_update_check"] = info, time.time()
+            st.pop("update_error", None)
+        except Exception as exc:  # noqa: BLE001 - mất mạng: thử lại lần sau
+            st["update_error"] = f"Không kiểm được bản mới: {exc}"
+        self._settings.save()
+        return self._update_view()
+
+    def _update_view(self):
+        info = dict(self._update_info or {})
+        if U.parse_version(info.get("version", "0")) <= U.parse_version(__version__):
+            info["available"] = False                 # vừa cập nhật xong: thông tin cũ không còn đúng
+        info["skipped"] = info.get("version") == self._settings.data.get("skip_version")
+        info["size_h"] = human(info.get("size"))
+        info["error"] = self._settings.data.get("update_error", "")
+        info["auto_check"] = self._settings.data.get("auto_update_check", True)
+        info["current"] = __version__
+        return info
+
+    def set_auto_update(self, on):
+        self._settings.data["auto_update_check"] = bool(on)
+        self._settings.save()
+        return bool(on)
+
+    def skip_update(self, version):
+        self._settings.data["skip_version"] = str(version)
+        self._settings.save()
+        return True
+
+    def download_update(self):
+        info = self._update_info or {}
+        if not info.get("available") or not info.get("auto"):
+            return {"ok": False, "message": info.get("reason") or "Không có bản mới để tải."}
+        return {"ok": self._updater.start(info), "message": ""}
+
+    def update_progress(self):
+        p = dict(self._updater.p)
+        p["done_h"], p["total_h"] = human(p["done"]), human(p["total"])
+        p["percent"] = round(100 * p["done"] / p["total"], 1) if p["total"] else None
+        return p
+
+    def install_update(self):
+        ready = self._updater.p.get("ready")
+        if not ready or not Path(ready).exists():
+            return {"ok": False, "message": "Chưa tải xong bộ cài."}
+        if self._installer.p["running"]:
+            return {"ok": False, "message": "Đang tải thành phần, đợi xong rồi cập nhật."}
+        self._backend.stop()
+        self._updater.launch(Path(ready))
+        self._on_quit()
+        return {"ok": True}
+
+    def open_release_page(self):
+        page = (self._update_info or {}).get("page") or ""
+        if not page.startswith(f"https://github.com/{U.REPO}/"):
+            page = f"https://github.com/{U.REPO}/releases"
+        import webbrowser
+
+        webbrowser.open(page)
+        return True
+
+    def cancel_update(self):
+        self._updater.cancel.set()
+        return True
+
+    # ----------------------------------------------------------- có gì mới ---
+    def whats_new(self):
+        seen = self._settings.data.get("last_seen_version", __version__)
+        entries = changelog.between(self._paths.app / "docs" / "CHANGELOG.md", seen, __version__)
+        return {"show": bool(entries) and not self._setup_mode, "from": seen, "to": __version__, "entries": entries}
+
+    def mark_seen(self):
+        self._settings.data["last_seen_version"] = __version__
+        self._settings.save()
+        return True
+
+    def changelog_all(self):
+        return changelog.between(self._paths.app / "docs" / "CHANGELOG.md", "0.0.0", __version__)
 
     def license_text(self):
         return self._paths.sam_license.read_text(encoding="utf-8")
@@ -154,16 +285,19 @@ class ControlApi:
     # ------------------------------------------------------------ actions ---
     def install(self, keys):
         keys = [k for k in keys if k in COMPONENTS]
-        if not self._settings.data.get("license_accepted") and "sam3" in keys:
-            return {"ok": False, "message": "Cần đồng ý giấy phép SAM trước khi tải trọng số SAM 3."}
-        if "sam3" in keys and not self._comps.installed("sam3") and not self._token:
-            return {"ok": False, "message": "Cần kiểm tra token Hugging Face trước."}
-        est = self._comps.estimate(keys, self._gpu_info(), self._token)
+        plan = self._comps.plan(keys, self._gpu_info(), self._token)
+        todo = [k for k in keys if plan[k]["action"] != "none"]
+        if not todo:
+            return {"ok": False, "message": "Các thành phần đã chọn đều đã có và đúng bản, không cần tải gì."}
+        if "sam3" in todo and not self._settings.data.get("license_accepted"):
+            return {"ok": False, "message": "Cần đồng ý giấy phép SAM trước khi cài trọng số SAM 3."}
+        if "sam3" in todo and plan["sam3"].get("needs_token") and not self._token:
+            return {"ok": False, "message": "Cần kiểm tra token Hugging Face trước (một phần trọng số SAM 3 phải tải)."}
+        est = self._comps.estimate(todo, self._gpu_info(), self._token)
         if not est["enough"]:
             return {"ok": False, "message": f"Ổ đĩa còn {human(est['free'])}, cần khoảng {human(est['disk'])}. Dọn bớt rồi thử lại."}
-        if "torch" in keys and not self._comps.installed("torch"):
-            self._backend.stop()                     # backend đang giữ file PyTorch cũ
-        return {"ok": self._installer.start(keys, self._gpu_info(), self._token), "message": ""}
+        self._backend.stop()                         # backend đang giữ file PyTorch / trọng số sắp được thay
+        return {"ok": self._installer.start(todo, self._gpu_info(), self._token), "message": ""}
 
     def install_progress(self):
         p = dict(self._installer.p)

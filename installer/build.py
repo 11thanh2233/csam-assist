@@ -138,6 +138,10 @@ def pip_report(reqs: list[str], index: str | None, extra: list[str] | None = Non
 
 def torch_candidates() -> list[tuple[str, dict, dict]]:
     """Các bản PyTorch CUDA cho Windows/Python 3.12, mới nhất trước; cùng bản thì CUDA thấp trước (hợp nhiều driver hơn)."""
+    # Ghim bản PyTorch (installer/torch-pin.txt): bản app mới không bắt người dùng tải lại 2,5 GB chỉ vì
+    # PyTorch vừa ra bản mới. Muốn nâng PyTorch thì sửa file này; app sẽ báo cần cập nhật.
+    pin_file = ROOT / "installer" / "torch-pin.txt"
+    pin = pin_file.read_text(encoding="utf-8").strip() if pin_file.exists() else ""
     found = []
     for tag in TORCH_INDEXES:
         try:
@@ -147,6 +151,15 @@ def torch_candidates() -> list[tuple[str, dict, dict]]:
             continue
         t = next(i for i in items if i["name"] == "torch")
         tv = next(i for i in items if i["name"] == "torchvision")
+        if pin and t["version"].split("+")[0] != pin:
+            log(f"{tag}: mới nhất là {t['version']}, khác bản ghim {pin}")
+            try:
+                items = pip_report([f"torch=={pin}", "torchvision"], f"https://download.pytorch.org/whl/{tag}")
+            except subprocess.CalledProcessError:
+                log(f"{tag}: không có torch {pin}")
+                continue
+            t = next(i for i in items if i["name"] == "torch")
+            tv = next(i for i in items if i["name"] == "torchvision")
         base = tuple(int(x) for x in re.findall(r"\d+", t["version"].split("+")[0])[:3])
         log(f"{tag}: torch {t['version']}, torchvision {tv['version']}")
         found.append((base, TORCH_INDEXES.index(tag), tag, t, tv))
@@ -274,7 +287,7 @@ def main() -> None:
     clean = lambda ws: [{k: v for k, v in w.items() if not k.startswith("_")} for w in ws]  # noqa: E731
     manifest = {
         "version": version(), "python": PY_VERSION,
-        "torch": {"cuda_index": tag, "cuda_arch": arch, "cuda": clean(cuda), "cpu": clean(cpu)},
+        "torch": {"pin": base_t, "cuda_index": tag, "cuda_arch": arch, "cuda": clean(cuda), "cpu": clean(cpu)},
         "models": {
             "sam3": {"repo": "facebook/sam3", "revision": "main", "gated": True, "approx_size": 3_450_000_000},
             "vitpose": {"repo": "usyd-community/vitpose-base-simple", "revision": "main", "approx_size": 360_000_000},

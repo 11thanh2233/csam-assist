@@ -11,8 +11,9 @@ body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",sys
 header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--card)}
 header h1{font-size:17px;margin:0;font-weight:600}
 header .v{color:var(--mut);font-size:12px}
-.pill{margin-left:auto;padding:3px 10px;border-radius:999px;background:var(--chip);font-size:12px}
+.pill{padding:3px 10px;border-radius:999px;background:var(--chip);font-size:12px}
 .pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.bad{color:var(--bad)}
+#updBadge{margin-left:auto}
 main{padding:18px 22px;max-width:980px;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
 .card h2{font-size:15px;margin:0 0 10px;font-weight:600}
@@ -20,10 +21,12 @@ main{padding:18px 22px;max-width:980px;margin:0 auto}
 .grow{flex:1}
 button{font:inherit;padding:6px 14px;border-radius:7px;border:1px solid var(--line);background:var(--chip);color:var(--ink);cursor:pointer}
 button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.small{padding:3px 10px;font-size:12.5px}
 button:disabled{opacity:.5;cursor:default}
 button.link{border:none;background:none;color:var(--acc);padding:0;text-decoration:underline}
 input[type=text],input[type=password]{font:inherit;padding:6px 9px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .mut{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.small-text{font-size:12.5px}
 .steps{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
 .steps span{padding:3px 10px;border-radius:999px;background:var(--chip);color:var(--mut);font-size:12px}
 .steps span.on{background:var(--acc);color:#fff}
@@ -38,20 +41,35 @@ td{padding:7px 4px;border-top:1px solid var(--line);vertical-align:middle}
 tr:first-child td{border-top:none}
 .hidden{display:none!important}
 label.chk{display:flex;gap:8px;align-items:flex-start;margin:6px 0}
-ol{margin:6px 0 6px 20px;padding:0}
+ol,ul.list{margin:6px 0 6px 20px;padding:0}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;background:var(--chip)}
+.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.acc{color:var(--acc)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:10;padding:20px}
+.modal .box{background:var(--card);border-radius:12px;max-width:720px;width:100%;max-height:85vh;overflow:auto;padding:20px 22px;border:1px solid var(--line)}
+.notes h3{font-size:14px;margin:14px 0 4px}
+.notes ul{margin:4px 0 4px 20px;padding:0}
+.banner{border-left:4px solid var(--acc)}
 </style>
 </head>
 <body>
-<header><h1>SAM3 CVAT Assist</h1><span class="v" id="ver"></span><span class="pill" id="pill">Đang tải...</span></header>
+<header><h1>SAM3 CVAT Assist</h1><span class="v" id="ver"></span>
+  <button id="updBadge" class="primary small hidden" onclick="showDash();document.getElementById('updCard').scrollIntoView()">Có bản mới</button>
+  <span class="pill" id="pill">Đang tải...</span></header>
 <main>
   <!-- ================= TRÌNH CÀI ================= -->
   <section id="wizard" class="hidden">
     <div class="steps" id="stepbar"></div>
 
     <div class="card step" data-step="1">
-      <h2>1. Kiểm tra máy</h2>
+      <h2>1. Kiểm tra máy và quét những gì đã có</h2>
       <div id="machine"></div>
-      <div class="row" style="margin-top:12px"><span class="grow"></span><button class="primary" onclick="go(2)">Tiếp</button></div>
+      <div id="scanBox" class="mut">Đang quét máy...</div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="addScanFolder()" title="Ví dụ thư mục sam3-cvat-assist của bản cài tay cũ">Thêm thư mục tool cũ để quét</button>
+        <button onclick="runScan(true)">Quét lại</button>
+        <span class="grow"></span>
+        <button id="nothingBtn" class="hidden" onclick="finishWizard()">Xong (không cần tải gì)</button>
+        <button class="primary" id="step1Next" onclick="afterScan()">Tiếp</button></div>
     </div>
 
     <div class="card step" data-step="2">
@@ -66,24 +84,27 @@ ol{margin:6px 0 6px 20px;padding:0}
 
     <div class="card step" data-step="3">
       <h2>3. Token Hugging Face</h2>
-      <p>SAM 3 nằm trong repo có cổng của Meta. Cần làm một lần:</p>
-      <ol>
-        <li>Có tài khoản Hugging Face (<button class="link" onclick="link('signup')">tạo tài khoản</button>).</li>
-        <li>Mở <button class="link" onclick="link('sam3')">huggingface.co/facebook/sam3</button>, điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).</li>
-        <li>Tạo token loại <b>Read</b> tại <button class="link" onclick="link('tokens')">Settings → Access Tokens</button> rồi dán vào đây.</li>
-      </ol>
-      <div class="row"><input type="password" id="token" class="grow" placeholder="hf_..." autocomplete="off">
-        <button class="primary" onclick="checkToken()">Kiểm tra</button></div>
-      <label class="chk" id="rememberRow"><input type="checkbox" id="remember"> <span>Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.</span></label>
-      <div id="tokenMsg" style="margin-top:6px"></div>
-      <div class="row" style="margin-top:12px"><button onclick="go(2)">Quay lại</button><span class="grow"></span>
-        <button onclick="skipToken()" title="Meta chưa duyệt? Cài phần còn lại trước, nhập token sau trong app.">Cài trước, nhập token sau</button>
+      <div id="tokenNotNeeded" class="ok hidden" style="margin-bottom:8px"></div>
+      <div id="tokenNeeded">
+        <p>SAM 3 nằm trong repo có cổng của Meta. Cần làm một lần:</p>
+        <ol>
+          <li>Có tài khoản Hugging Face (<button class="link" onclick="link('signup')">tạo tài khoản</button>).</li>
+          <li>Mở <button class="link" onclick="link('sam3')">huggingface.co/facebook/sam3</button>, điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).</li>
+          <li>Tạo token loại <b>Read</b> tại <button class="link" onclick="link('tokens')">Settings → Access Tokens</button> rồi dán vào đây.</li>
+        </ol>
+        <div class="row"><input type="password" id="token" class="grow" placeholder="hf_..." autocomplete="off">
+          <button class="primary" onclick="checkToken()">Kiểm tra</button></div>
+        <label class="chk" id="rememberRow"><input type="checkbox" id="remember"> <span>Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.</span></label>
+        <div id="tokenMsg" style="margin-top:6px"></div>
+      </div>
+      <div class="row" style="margin-top:12px"><button onclick="go(S.license_accepted ? 1 : 2)">Quay lại</button><span class="grow"></span>
+        <button id="skipTokenBtn" onclick="skipToken()" title="Meta chưa duyệt? Cài phần còn lại trước, nhập token sau trong app.">Cài trước, nhập token sau</button>
         <button class="primary" id="tokenNext" disabled onclick="go(4)">Tiếp</button></div>
     </div>
 
     <div class="card step" data-step="4">
       <h2>4. Chọn thành phần</h2>
-      <p class="mut">Chỉ tải phần nặng cần dùng. Thư viện nhỏ đã có sẵn trong bộ cài.</p>
+      <p class="mut">Chỉ tải phần nặng còn thiếu hoặc cần cập nhật. Phần đã có đúng bản, hoặc dùng lại được từ bản cũ, không tải lại.</p>
       <table id="pick"></table>
       <div id="estimate" style="margin-top:10px" class="mut"></div>
       <div class="row" style="margin-top:12px"><button onclick="go(3)">Quay lại</button><span class="grow"></span>
@@ -106,6 +127,8 @@ ol{margin:6px 0 6px 20px;padding:0}
 
   <!-- ================= BẢNG ĐIỀU KHIỂN ================= -->
   <section id="dash" class="hidden">
+    <div class="card banner hidden" id="todoBanner"></div>
+
     <div class="card">
       <h2>Mở CVAT</h2>
       <table id="sites"></table>
@@ -128,7 +151,19 @@ ol{margin:6px 0 6px 20px;padding:0}
     <div class="card">
       <h2>Thành phần</h2>
       <table id="comps"></table>
-      <div class="row" style="margin-top:10px"><span class="grow mut" id="gpuLine"></span><button onclick="openWizard(3)">Tải thêm thành phần</button></div>
+      <div class="row" style="margin-top:10px"><span class="grow mut" id="gpuLine"></span>
+        <button onclick="checkComponents()">Kiểm tra cập nhật thành phần</button>
+        <button onclick="openWizard(1)">Quét và tải thành phần</button></div>
+    </div>
+
+    <div class="card" id="updCard">
+      <h2>Cập nhật app</h2>
+      <div id="updBox" class="mut">...</div>
+      <div class="bar hidden" id="ubar" style="margin:10px 0"><div></div></div>
+      <div class="row" style="margin-top:8px">
+        <label class="chk grow" style="margin:0"><input type="checkbox" id="autoUpd" onchange="api().set_auto_update(this.checked)"> <span>Tự kiểm bản mới mỗi ngày (hỏi GitHub Releases của tool)</span></label>
+        <button onclick="whatsNewAll()">Nhật ký thay đổi</button>
+        <button onclick="checkUpdate(true)">Kiểm tra ngay</button></div>
     </div>
 
     <div class="card">
@@ -146,12 +181,37 @@ ol{margin:6px 0 6px 20px;padding:0}
     </div>
   </section>
 </main>
+
+<div class="modal hidden" id="newsModal"><div class="box">
+  <h2 style="margin-top:0" id="newsTitle">Có gì mới</h2>
+  <div class="notes" id="newsBody"></div>
+  <div class="row" style="margin-top:14px"><span class="grow"></span><button class="primary" onclick="closeNews()">Đã xem</button></div>
+</div></div>
+
 <script>
 const api = () => window.pywebview.api;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let S = null, step = 1, tokenOk = false, skipSam = false, polling = null;
-const OPTIONAL = {vitpose: true, face: true};
+let S = null, SCAN = null, step = 1, tokenOk = false, skipSam = false, polling = null, upoll = null;
+const KEYS = ['torch', 'sam3', 'vitpose', 'face'];
+const CHOICE = {};       // lựa chọn của người dùng ở bước 4
+
+// Markdown đơn giản cho ghi chú: tiêu đề, danh sách, **đậm**, `mã`.
+function md(text) {
+  const inline = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  let html = '', inList = false;
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trimEnd();
+    const item = line.match(/^\s*[-*]\s+(.*)$/);
+    if (item) { if (!inList) { html += '<ul>'; inList = true; } html += '<li>' + inline(item[1]) + '</li>'; continue; }
+    if (inList && /^\s{2,}\S/.test(line)) { html = html.replace(/<\/li>$/, ' ' + inline(line.trim()) + '</li>'); continue; }
+    if (inList) { html += '</ul>'; inList = false; }
+    const h = line.match(/^#{1,4}\s+(.*)$/);
+    if (h) html += '<h3>' + inline(h[1]) + '</h3>';
+    else if (line.trim()) html += '<p>' + inline(line) + '</p>';
+  }
+  return html + (inList ? '</ul>' : '');
+}
 
 async function refresh() {
   S = await api().status();
@@ -162,32 +222,73 @@ async function refresh() {
                    error: 'Backend lỗi', stopped: 'Backend đang tắt'}[b.state] || b.state;
   renderDash();
 }
-
 function show(which) { $('wizard').classList.toggle('hidden', which !== 'wizard'); $('dash').classList.toggle('hidden', which !== 'dash'); }
+function showDash() { show('dash'); refresh(); }
+
+// --------------------------------------------------------------- quét ---
+const ACTION = {none: ['ok', 'đã có, đúng bản'], install: ['warn', 'chưa có'], update: ['acc', 'cần cập nhật']};
+function compLine(k, p) {
+  const t = S.components[k].title;
+  let tag = ACTION[p.action] || ['', p.action];
+  if (p.action !== 'none' && p.reuse > 0 && p.download === 0) tag = ['ok', 'dùng lại file có sẵn'];
+  const parts = [];
+  if (p.action !== 'none') {
+    if (p.download) parts.push('tải ' + p.download_h);
+    if (p.reuse) parts.push('dùng lại ' + p.reuse_h + ' đã có trên máy');
+    if (!p.download && !p.reuse) parts.push('không cần tải');
+  }
+  const opt = p.action === 'update' && !p.required ? ' <span class="mut">(tuỳ chọn)</span>' : '';
+  return `<tr><td><b>${esc(t)}</b>${opt}</td><td><span class="tag ${tag[0]}">${tag[1]}</span> <span class="mut small-text">${esc(parts.join(', '))}</span>
+    ${p.reason ? `<div class="mut small-text">${esc(p.reason)}</div>` : ''}</td></tr>`;
+}
+async function runScan(refreshDirs) {
+  $('scanBox').innerHTML = '<span class="mut">Đang quét máy (bộ nhớ đệm Hugging Face, thư mục tool cũ, model đã cài)...</span>';
+  SCAN = await api().scan(!!refreshDirs);
+  renderScan();
+}
+function renderScan() {
+  const plan = SCAN.plan;
+  let html = '<table>' + KEYS.map((k) => compLine(k, plan[k])).join('') + '</table>';
+  const where = [...SCAN.hf_caches.map((d) => 'Bộ nhớ đệm Hugging Face: ' + d), ...SCAN.tool_dirs.map((d) => 'Thư mục tool cũ: ' + d)];
+  html += `<details style="margin-top:8px"><summary class="mut small-text">Đã quét ${where.length} nơi</summary><ul class="list small-text mut">` +
+    (where.map((w) => '<li>' + esc(w) + '</li>').join('') || '<li>Không thấy bộ nhớ đệm hay thư mục tool cũ nào.</li>') + '</ul>' +
+    (SCAN.scan_dirs.length ? '<div class="small-text">Thư mục bạn thêm: ' + SCAN.scan_dirs.map((d) =>
+      `${esc(d)} <button class="link small-text" data-d="${esc(d)}" onclick="removeScanFolder(this.dataset.d)">bỏ</button>`).join(', ') + '</div>' : '') + '</details>';
+  $('scanBox').innerHTML = html;
+  const nothing = SCAN.todo.length === 0 && S.components.ready;
+  $('nothingBtn').classList.toggle('hidden', !nothing);
+  $('step1Next').textContent = nothing ? 'Vẫn muốn chọn thành phần' : 'Tiếp';
+  if (S.setup_mode && nothing) $('nothingBtn').classList.add('primary');
+}
+async function addScanFolder() { SCAN = await api().add_scan_folder(); renderScan(); }
+async function removeScanFolder(d) { SCAN = await api().remove_scan_folder(d); renderScan(); }
+function afterScan() {
+  if (!S.license_accepted) return go(2);
+  go(3);
+}
 
 // ------------------------------------------------------------ trình cài ---
-const STEP_NAMES = ['Kiểm tra máy', 'Giấy phép', 'Token', 'Thành phần', 'Tải và cài'];
+const STEP_NAMES = ['Quét máy', 'Giấy phép', 'Token', 'Thành phần', 'Tải và cài'];
 function go(n) {
   step = n;
   $('stepbar').innerHTML = STEP_NAMES.map((t, i) => `<span class="${i + 1 === n ? 'on' : ''}">${i + 1}. ${t}</span>`).join('');
   document.querySelectorAll('.step').forEach((el) => el.classList.toggle('hidden', +el.dataset.step !== n));
-  if (n === 1) renderMachine();
+  if (n === 1) { renderMachine(); runScan(false); }
   if (n === 2 && $('license').textContent === 'Đang tải...') api().license_text().then((t) => { $('license').textContent = t; });
-  if (n === 3) { $('rememberRow').classList.toggle('hidden', !S.keyring); if (S.components.sam3.installed) { tokenOk = true; $('tokenNext').disabled = false; } }
+  if (n === 3) renderToken();
   if (n === 4) renderPick();
 }
-function openWizard(n) { show('wizard'); go(S.license_accepted ? Math.max(n, 3) : 1); }
+function openWizard(n) { show('wizard'); go(n); }
 
 function renderMachine() {
   const g = S.gpu, lines = [];
-  if (!g.ok) lines.push('<p class="warn"><b>Không thấy card NVIDIA.</b> Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm: mỗi ảnh có thể mất vài chục giây. Nếu máy có card NVIDIA, hãy <button class="link" onclick="link(\'nvidia\')">cài driver mới</button> rồi mở lại.</p>');
+  if (!g.ok) lines.push('<p class="warn"><b>Không thấy card NVIDIA.</b> Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm. Nếu máy có card NVIDIA, hãy <button class="link" onclick="link(\'nvidia\')">cài driver mới</button> rồi mở lại.</p>');
   else {
     lines.push(`<p class="ok">Card: <b>${esc(g.name)}</b>, ${(g.vram_mb / 1024).toFixed(1)} GB VRAM, driver ${esc(g.driver)}.</p>`);
     if (g.driver_old) lines.push('<p class="warn">Driver NVIDIA cũ, PyTorch CUDA 12 có thể không chạy. Nên <button class="link" onclick="link(\'nvidia\')">cập nhật driver</button>.</p>');
     if (g.small) lines.push('<p class="warn">VRAM dưới 6 GB: SAM 3 có thể thiếu bộ nhớ với ảnh lớn.</p>');
   }
-  lines.push(`<p class="mut">Dữ liệu và model sẽ nằm ở: ${esc(S.data_dir)}</p>`);
-  lines.push('<p class="mut">Cần mạng Internet trong lúc cài. Dung lượng cần được tính ở bước 4.</p>');
+  lines.push(`<p class="mut small-text">Python và thư viện nhỏ của app: có sẵn trong bộ cài, cập nhật cùng app. Dữ liệu và model: ${esc(S.data_dir)}</p>`);
   $('machine').innerHTML = lines.join('');
 }
 
@@ -196,6 +297,19 @@ async function acceptLicense() {
   await api().accept_license(); S.license_accepted = true; go(3);
 }
 
+function renderToken() {
+  $('rememberRow').classList.toggle('hidden', !S.keyring);
+  const p = SCAN && SCAN.plan.sam3;
+  const notNeeded = p && (p.action === 'none' || !p.needs_token);
+  $('tokenNotNeeded').classList.toggle('hidden', !notNeeded);
+  $('tokenNeeded').classList.toggle('hidden', !!notNeeded);
+  $('skipTokenBtn').classList.toggle('hidden', !!notNeeded);
+  if (notNeeded) {
+    $('tokenNotNeeded').textContent = p.action === 'none' ? 'Trọng số SAM 3 đã có và đúng bản: không cần token.'
+      : 'Đã tìm thấy đủ trọng số SAM 3 trên máy (sẽ kiểm mã băm khi cài): không cần token.';
+    $('tokenNext').disabled = false;
+  } else $('tokenNext').disabled = !tokenOk;
+}
 async function checkToken() {
   $('tokenMsg').innerHTML = '<span class="mut">Đang kiểm tra...</span>';
   const r = await api().check_token($('token').value, $('remember').checked);
@@ -203,32 +317,37 @@ async function checkToken() {
   $('tokenMsg').innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${esc(r.message)}</span>`;
   $('tokenNext').disabled = !r.ok;
   $('token').value = '';
+  if (r.ok) SCAN = await api().scan(false);
 }
 function skipToken() { skipSam = true; go(4); }
 
 async function renderPick() {
-  const c = S.components;
-  const rows = ['torch', 'sam3', 'vitpose', 'face'].map((k) => {
-    const comp = c[k], locked = k === 'torch' || (k === 'sam3' && !skipSam);
-    const blocked = k === 'sam3' && skipSam && !comp.installed;
-    const on = comp.installed ? false : (k === 'sam3' ? !skipSam : (locked || OPTIONAL[k]));
-    const note = {torch: S.gpu.ok ? 'bản CUDA cho card NVIDIA' : 'bản CPU (không có card NVIDIA)', sam3: blocked ? 'nhập token sau trong app' : 'bắt buộc',
-                  vitpose: 'cho job skeleton người', face: 'cho job 50 điểm mặt'}[k];
-    return `<tr><td style="width:28px"><input type="checkbox" data-k="${k}" ${on ? 'checked' : ''} ${(locked || comp.installed || blocked) ? 'disabled' : ''} onchange="OPTIONAL['${k}']=this.checked;estimate()"></td>
-      <td><b>${esc(comp.title)}</b> <span class="mut">${esc(note)}</span></td>
-      <td class="mut" id="sz-${k}">${comp.installed ? '<span class="ok">đã có</span>' : ''}</td></tr>`;
-  });
-  $('pick').innerHTML = rows.join('');
+  if (!SCAN) SCAN = await api().scan(false);
+  const plan = SCAN.plan;
+  $('pick').innerHTML = KEYS.map((k) => {
+    const p = plan[k], c = S.components[k];
+    const blocked = k === 'sam3' && skipSam && p.needs_token;
+    const locked = p.action === 'none' || blocked || (p.required && p.action !== 'none');
+    let on = CHOICE[k];
+    if (on === undefined) on = p.action !== 'none' && (p.required || p.action === 'update' || (!c.required && p.action === 'install'));
+    if (blocked) on = false;
+    if (p.required && p.action !== 'none' && !blocked) on = true;
+    CHOICE[k] = on;
+    const note = blocked ? 'nhập token sau trong app' : ({torch: S.gpu.ok ? 'bản CUDA' : 'bản CPU', sam3: 'bắt buộc', vitpose: 'cho job skeleton người', face: 'cho job 50 điểm mặt'}[k]);
+    return `<tr><td style="width:28px"><input type="checkbox" data-k="${k}" ${on ? 'checked' : ''} ${locked ? 'disabled' : ''}
+        onchange="CHOICE['${k}']=this.checked;estimate()"></td>${compLine(k, p).replace(/^<tr>|<\/tr>$/g, '').replace('</b>', '</b> <span class="mut small-text">' + esc(note) + '</span>')}</tr>`;
+  }).join('');
   estimate();
 }
-function picked() { return [...document.querySelectorAll('#pick input[data-k]')].filter((x) => x.checked).map((x) => x.dataset.k); }
+function picked() { return KEYS.filter((k) => CHOICE[k] && SCAN.plan[k].action !== 'none'); }
 async function estimate() {
+  const keys = picked();
+  if (!keys.length) { $('estimate').textContent = 'Không có gì cần tải.'; $('installBtn').disabled = true; return; }
   $('estimate').textContent = 'Đang tính dung lượng...';
-  const e = await api().estimate(picked());
-  Object.entries(e.detail_h).forEach(([k, v]) => { const el = $('sz-' + k); if (el) el.textContent = v; });
+  const e = await api().estimate(keys);
   $('estimate').innerHTML = `Tải về khoảng <b>${e.download_h}</b>, cần khoảng <b>${e.disk_h}</b> trên ổ đĩa (còn trống ${e.free_h}). ` +
     (e.enough ? '' : '<span class="bad">Không đủ chỗ trống.</span>');
-  $('installBtn').disabled = !e.enough || !picked().length;
+  $('installBtn').disabled = !e.enough;
 }
 
 async function startInstall() {
@@ -250,12 +369,12 @@ async function pollInstall() {
     clearInterval(polling);
     $('cancelBtn').classList.add('hidden');
     if (p.error) { $('perr').textContent = p.error; $('retryBtn').classList.remove('hidden'); }
-    else { $('doneBtn').classList.remove('hidden'); await refresh(); }
+    else { $('doneBtn').classList.remove('hidden'); SCAN = null; await refresh(); }
   }
 }
 async function finishWizard() {
   if (S.setup_mode) { await api().finish_setup(); return; }
-  show('dash'); refresh();
+  showDash(); checkComponents();
 }
 
 // ------------------------------------------------------ bảng điều khiển ---
@@ -267,19 +386,28 @@ function renderDash() {
   const b = S.backend;
   $('bstate').innerHTML = `<span class="${{running: 'ok', error: 'bad', missing: 'warn', starting: 'warn'}[b.state] || 'mut'}">${esc(b.message || b.state)}</span>` +
     (b.url ? ` <span class="mut">(${esc(b.url)})</span>` : '');
-  const c = S.components;
-  $('comps').innerHTML = ['torch', 'sam3', 'vitpose', 'face'].map((k) => {
-    const x = c[k];
+  const c = S.components, plan = SCAN ? SCAN.plan : null;
+  $('comps').innerHTML = KEYS.map((k) => {
+    const x = c[k], p = plan && plan[k];
     const info = x.installed ? (k === 'torch' ? `${esc(x.variant || '')} ${esc(Object.values(x.versions || {}).join(', '))}` : (x.commit ? 'commit ' + esc(String(x.commit).slice(0, 10)) : '')) : '';
+    let state = x.installed ? '<span class="ok">đã cài</span>' : '<span class="warn">chưa có</span>';
+    if (p && x.installed && p.action === 'update') state = `<span class="tag acc">cần cập nhật${p.required ? '' : ' (tuỳ chọn)'}</span> <span class="mut small-text">${esc(p.reason || '')} · tải ${esc(p.download_h)}</span>`;
+    const btn = !x.installed || (p && p.action === 'update') ? `<button onclick="updateOne('${k}')">${x.installed ? 'Cập nhật' : 'Tải'}</button>` : `<button onclick="removeComp('${k}')">Gỡ</button>`;
     return `<tr><td><b>${esc(x.title)}</b> ${x.required ? '' : '<span class="mut">(tuỳ chọn)</span>'}</td>
-      <td>${x.installed ? '<span class="ok">đã cài</span> <span class="mut">' + info + '</span>' : '<span class="warn">chưa có</span>'}</td>
-      <td style="text-align:right">${x.installed ? `<button onclick="removeComp('${k}')">Gỡ</button>` : `<button onclick="openWizard(3)">Tải</button>`}</td></tr>`;
+      <td>${state} <span class="mut small-text">${info}</span></td><td style="text-align:right">${btn}</td></tr>`;
   }).join('');
+  const req = SCAN ? SCAN.required : [];
+  $('todoBanner').classList.toggle('hidden', !req.length);
+  if (req.length) $('todoBanner').innerHTML = `<b>Bản app này cần cập nhật: ${req.map((k) => esc(c[k].title)).join(', ')}.</b>
+      <span class="mut">${req.map((k) => esc(SCAN.plan[k].reason)).join('; ')}</span>
+      <div class="row" style="margin-top:8px"><span class="grow"></span><button class="primary" onclick="openWizard(1)">Cập nhật ngay</button></div>`;
   $('gpuLine').textContent = S.gpu.ok ? `GPU: ${S.gpu.name}, ${(S.gpu.vram_mb / 1024).toFixed(1)} GB` : 'Không có card NVIDIA: chạy bằng CPU';
   $('autostart').checked = S.autostart_windows;
   $('tokenRow').innerHTML = S.token_saved ? '<span class="mut grow">Đã nhớ token Hugging Face.</span><button onclick="api().forget_token().then(refresh)">Quên token</button>' : '';
-  $('dataDir').textContent = 'Dữ liệu: ' + S.data_dir;
+  $('dataDir').textContent = 'Dữ liệu: ' + S.data_dir + ' · Python ' + (SCAN ? SCAN.python : '');
 }
+async function checkComponents() { SCAN = await api().scan(true); renderDash(); }
+function updateOne(k) { KEYS.forEach((x) => { CHOICE[x] = x === k; }); openWizard(1); }
 async function openSite(i) { const r = await api().open_site(S.sites[i].url); if (!r.ok) alert(r.message); }
 async function addSite() {
   const r = await api().add_site($('siteName').value, $('siteUrl').value);
@@ -289,16 +417,75 @@ async function addSite() {
 async function removeSite(i) { const u = S.sites[i].url; if (confirm('Xoá ' + u + ' khỏi danh sách?')) { await api().remove_site(u); refresh(); } }
 async function removeComp(k) {
   if (!confirm('Gỡ ' + S.components[k].title + '? Muốn dùng lại phải tải lại.')) return;
-  await api().remove_component(k); refresh();
+  await api().remove_component(k); SCAN = null; refresh();
 }
 async function be(a) { await api().backend(a); setTimeout(refresh, 300); }
 async function showLog() { const el = $('blog'); el.classList.toggle('hidden'); if (!el.classList.contains('hidden')) el.textContent = (await api().backend('log')).log || '(trống)'; }
 function link(w) { api().open_link(w); }
 
+// ------------------------------------------------------------ cập nhật ---
+let U = null;
+async function checkUpdate(force) { $('updBox').textContent = 'Đang kiểm tra...'; U = await api().check_update(!!force); renderUpdate(); }
+function renderUpdate() {
+  if (!U) return;
+  $('autoUpd').checked = U.auto_check;
+  const avail = U.available && !(U.skipped && !U.forceShow);
+  $('updBadge').classList.toggle('hidden', !U.available || U.skipped);
+  $('updBadge').textContent = 'Có bản ' + (U.version || '');
+  let html = `Đang dùng bản <b>${esc(U.current)}</b>.`;
+  if (U.error) html += ` <span class="warn">${esc(U.error)}</span>`;
+  if (U.available) {
+    html += ` <span class="tag acc">Có bản mới ${esc(U.version)}</span>${U.size ? ' <span class="mut">(' + esc(U.size_h) + ')</span>' : ''}
+      <div class="notes" style="margin-top:8px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 12px">${md(U.notes)}</div>
+      <p class="mut small-text">Cập nhật chỉ thay phần app. PyTorch, trọng số, profile và dữ liệu tự học giữ nguyên. App sẽ tự đóng, cài rồi mở lại.</p>`;
+    html += U.auto ? `<div class="row"><span class="grow"></span><button onclick="skipVersion()">Bỏ qua bản này</button>
+        <button id="updDl" class="primary" onclick="downloadUpdate()">Tải bản cập nhật</button>
+        <button id="updGo" class="primary hidden" onclick="installUpdate()">Cài và mở lại app</button></div>`
+      : `<p class="warn">${esc(U.reason)}</p><div class="row"><span class="grow"></span><button onclick="openReleasePage()">Mở trang Releases</button></div>`;
+  } else if (U.checked) html += ` <span class="ok">Đây là bản mới nhất</span> <span class="mut small-text">(kiểm lúc ${esc(U.checked)})</span>`;
+  $('updBox').innerHTML = html;
+}
+async function skipVersion() { await api().skip_update(U.version); U.skipped = true; renderUpdate(); }
+function openReleasePage() { api().open_release_page(); }
+async function downloadUpdate() {
+  const r = await api().download_update();
+  if (!r.ok) { alert(r.message); return; }
+  $('ubar').classList.remove('hidden'); $('updDl').disabled = true;
+  clearInterval(upoll); upoll = setInterval(async () => {
+    const p = await api().update_progress();
+    $('ubar').firstElementChild.style.width = (p.percent || 0) + '%';
+    if (!p.running) {
+      clearInterval(upoll);
+      if (p.error) { alert(p.error); $('updDl').disabled = false; }
+      else if (p.ready) { $('updDl').classList.add('hidden'); $('updGo').classList.remove('hidden'); }
+    }
+  }, 600);
+}
+async function installUpdate() {
+  if (!confirm('App sẽ đóng, cài bản ' + U.version + ' rồi tự mở lại. Tiếp tục?')) return;
+  const r = await api().install_update();
+  if (!r.ok) alert(r.message);
+}
+
+// ----------------------------------------------------------- có gì mới ---
+function showNews(title, entries) {
+  $('newsTitle').textContent = title;
+  $('newsBody').innerHTML = entries.map((e) => `<h3>Bản ${esc(e.version)}${e.title ? ' <span class="mut">' + esc(e.title) + '</span>' : ''}</h3>${md(e.body)}`).join('');
+  $('newsModal').classList.remove('hidden');
+}
+async function closeNews() { $('newsModal').classList.add('hidden'); await api().mark_seen(); }
+async function whatsNewAll() { showNews('Nhật ký thay đổi', await api().changelog_all()); }
+
 window.addEventListener('pywebviewready', async () => {
   await refresh();
-  if (S.setup_mode || !S.components.ready) { show('wizard'); go(S.license_accepted ? 3 : 1); if (S.setup_mode) go(1); }
-  else show('dash');
+  if (S.setup_mode || !S.components.ready) { show('wizard'); go(1); }
+  else {
+    show('dash');
+    const n = await api().whats_new();
+    if (n.show) showNews(`Đã cập nhật lên bản ${n.to}: có gì mới`, n.entries);
+    SCAN = await api().scan(false); renderDash();
+    U = await api().check_update(false); renderUpdate();
+  }
   if (S.installing) { go(5); polling = setInterval(pollInstall, 700); }
   setInterval(() => { if (!$('dash').classList.contains('hidden')) refresh(); }, 2500);
 });

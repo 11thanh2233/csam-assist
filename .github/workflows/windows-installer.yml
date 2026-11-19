@@ -42,6 +42,7 @@ jobs:
           node tests/userscript_smoke.cjs
           node tests/userscript_smoke_v2.cjs
           node tests/desktop_shim_smoke.cjs
+          node tests/desktop_control_smoke.cjs
 
   windows:
     needs: test
@@ -128,6 +129,18 @@ jobs:
           if (-not (Test-Path "$app\SAM3 Assist.exe")) { Get-Content install.log -Tail 40; throw "chưa cài được" }
           & "$app\runtime\python.exe" -I -c "import desktop.components as c, desktop.paths as p; m = c.load_manifest(p.Paths()); print('manifest', m['version'], m['torch']['cuda_index'])"
           if ($LASTEXITCODE -ne 0) { throw "app đã cài không chạy" }
+          & "$app\runtime\python.exe" -I -c "from desktop import updater as U; i = U.check('0.0.1'); print('GitHub Releases:', i['version'], 'tự cập nhật được' if i['auto'] else i['reason'])"
+          # Cập nhật như từ trong app: cài đè ở chế độ /update=1, xong phải tự mở lại app
+          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/update=1", "/LOG=update.log" -Wait
+          $relaunched = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            $procs = Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" | Where-Object { $_.ExecutablePath -like "$app*" }
+            if ($procs) { $relaunched = $true; $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; break }
+            Start-Sleep 1
+          }
+          if (-not $relaunched) { Get-Content update.log -Tail 30; throw "cập nhật xong không tự mở lại app" }
+          Write-Host "cập nhật /update=1: app tự mở lại OK"
+          Start-Sleep 2
           Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
           Start-Sleep 3
           if (Test-Path "$app\runtime") { throw "gỡ cài đặt chưa sạch" }
@@ -151,7 +164,9 @@ jobs:
           if ("v$env:VERSION" -ne "$env:GITHUB_REF_NAME") { throw "Tag $env:GITHUB_REF_NAME khác phiên bản v$env:VERSION trong backend/__init__.py" }
           $exe = (Get-ChildItem dist\*.exe)[0].FullName
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
-          $notes = (Get-Content docs\RELEASE_NOTES.md -Raw) + "`n`nSHA-256 của bộ cài: ``$hash``"
+          $section = & build\runtime\python.exe -I -c "import sys; from desktop.changelog import section; print(section(r'docs/CHANGELOG.md', sys.argv[1]))" $env:VERSION
+          if (-not $section) { throw "docs/CHANGELOG.md chưa có mục ## $env:VERSION" }
+          $notes = ($section -join "`n") + "`n`nHướng dẫn cài: docs/DESKTOP.md`n`nSHA-256 của bộ cài: ``$hash``"
           Set-Content -Path notes.md -Value $notes -Encoding utf8
           gh release create $env:GITHUB_REF_NAME $exe build\app\desktop\manifest.lock.json build\build-info.json `
             --title "SAM3 CVAT Assist $env:VERSION" --notes-file notes.md
