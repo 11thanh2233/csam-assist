@@ -253,11 +253,11 @@ def test_seed_keeps_user_edits(tmp_path):
     paths = Paths(tmp_path / "data", app_dir=app).ensure()
     assert seed_user_files(paths)["copied"] == 3
     assert not (paths.library / "learning" / "model.json").exists(), "không chép dữ liệu tự học của máy build"
-    (paths.profiles / "a.yaml").write_text("của tôi")             # người dùng sửa
+    (paths.profiles / "a.yaml").write_text("của tôi", encoding="utf-8")             # người dùng sửa
     (app / "profiles" / "a.yaml").write_text("v2")                # bản cập nhật
     (app / "profiles" / "b.yaml").write_text("v2")
     res = seed_user_files(paths)
-    assert (paths.profiles / "a.yaml").read_text() == "của tôi" and (paths.profiles / "b.yaml").read_text() == "v2"
+    assert (paths.profiles / "a.yaml").read_text(encoding="utf-8") == "của tôi" and (paths.profiles / "b.yaml").read_text() == "v2"
     assert res == {"copied": 1, "kept": 1}
 
 
