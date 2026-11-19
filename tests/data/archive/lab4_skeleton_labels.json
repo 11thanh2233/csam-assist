@@ -1,0 +1,232 @@
+[
+  {
+    "name": "person",
+    "id": 61,
+    "color": "#ff6a4d",
+    "type": "skeleton",
+    "sublabels": [
+      {
+        "name": "nose",
+        "attributes": [],
+        "type": "points",
+        "color": "#f2c12e",
+        "id": 62
+      },
+      {
+        "name": "left_eye",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 63
+      },
+      {
+        "name": "right_eye",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 64
+      },
+      {
+        "name": "left_ear",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 65
+      },
+      {
+        "name": "right_ear",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 66
+      },
+      {
+        "name": "left_shoulder",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 67
+      },
+      {
+        "name": "right_shoulder",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 68
+      },
+      {
+        "name": "left_elbow",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 69
+      },
+      {
+        "name": "right_elbow",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 70
+      },
+      {
+        "name": "left_wrist",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 71
+      },
+      {
+        "name": "right_wrist",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 72
+      },
+      {
+        "name": "left_hip",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 73
+      },
+      {
+        "name": "right_hip",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 74
+      },
+      {
+        "name": "left_knee",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 75
+      },
+      {
+        "name": "right_knee",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 76
+      },
+      {
+        "name": "left_ankle",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 77
+      },
+      {
+        "name": "right_ankle",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 78
+      }
+    ],
+    "svg": "<line x1=\"60.5\" y1=\"93.97\" x2=\"59.5\" y2=\"73.28\" data-type=\"edge\" data-node-from=\"16\" data-node-to=\"14\"></line><line x1=\"59.5\" y1=\"73.28\" x2=\"58.0\" y2=\"51.72\" data-type=\"edge\" data-node-from=\"14\" data-node-to=\"12\"></line><line x1=\"39.5\" y1=\"93.97\" x2=\"40.5\" y2=\"73.28\" data-type=\"edge\" data-node-from=\"17\" data-node-to=\"15\"></line><line x1=\"40.5\" y1=\"73.28\" x2=\"42.0\" y2=\"51.72\" data-type=\"edge\" data-node-from=\"15\" data-node-to=\"13\"></line><line x1=\"58.0\" y1=\"51.72\" x2=\"42.0\" y2=\"51.72\" data-type=\"edge\" data-node-from=\"12\" data-node-to=\"13\"></line><line x1=\"64.0\" y1=\"21.55\" x2=\"58.0\" y2=\"51.72\" data-type=\"edge\" data-node-from=\"6\" data-node-to=\"12\"></line><line x1=\"36.0\" y1=\"21.55\" x2=\"42.0\" y2=\"51.72\" data-type=\"edge\" data-node-from=\"7\" data-node-to=\"13\"></line><line x1=\"64.0\" y1=\"21.55\" x2=\"36.0\" y2=\"21.55\" data-type=\"edge\" data-node-from=\"6\" data-node-to=\"7\"></line><line x1=\"64.0\" y1=\"21.55\" x2=\"69.75\" y2=\"37.59\" data-type=\"edge\" data-node-from=\"6\" data-node-to=\"8\"></line><line x1=\"36.0\" y1=\"21.55\" x2=\"30.25\" y2=\"37.59\" data-type=\"edge\" data-node-from=\"7\" data-node-to=\"9\"></line><line x1=\"69.75\" y1=\"37.59\" x2=\"72.75\" y2=\"52.59\" data-type=\"edge\" data-node-from=\"8\" data-node-to=\"10\"></line><line x1=\"30.25\" y1=\"37.59\" x2=\"27.25\" y2=\"52.59\" data-type=\"edge\" data-node-from=\"9\" data-node-to=\"11\"></line><line x1=\"53.25\" y1=\"6.9\" x2=\"46.75\" y2=\"6.9\" data-type=\"edge\" data-node-from=\"2\" data-node-to=\"3\"></line><line x1=\"50.0\" y1=\"8.97\" x2=\"53.25\" y2=\"6.9\" data-type=\"edge\" data-node-from=\"1\" data-node-to=\"2\"></line><line x1=\"50.0\" y1=\"8.97\" x2=\"46.75\" y2=\"6.9\" data-type=\"edge\" data-node-from=\"1\" data-node-to=\"3\"></line><line x1=\"53.25\" y1=\"6.9\" x2=\"57.25\" y2=\"8.62\" data-type=\"edge\" data-node-from=\"2\" data-node-to=\"4\"></line><line x1=\"46.75\" y1=\"6.9\" x2=\"42.75\" y2=\"8.62\" data-type=\"edge\" data-node-from=\"3\" data-node-to=\"5\"></line><line x1=\"57.25\" y1=\"8.62\" x2=\"64.0\" y2=\"21.55\" data-type=\"edge\" data-node-from=\"4\" data-node-to=\"6\"></line><line x1=\"42.75\" y1=\"8.62\" x2=\"36.0\" y2=\"21.55\" data-type=\"edge\" data-node-from=\"5\" data-node-to=\"7\"></line><circle r=\"1.5\" cx=\"50.0\" cy=\"8.97\" data-type=\"element node\" data-element-id=\"1\" data-node-id=\"1\" data-label-id=\"62\"></circle><circle r=\"1.5\" cx=\"53.25\" cy=\"6.9\" data-type=\"element node\" data-element-id=\"2\" data-node-id=\"2\" data-label-id=\"63\"></circle><circle r=\"1.5\" cx=\"46.75\" cy=\"6.9\" data-type=\"element node\" data-element-id=\"3\" data-node-id=\"3\" data-label-id=\"64\"></circle><circle r=\"1.5\" cx=\"57.25\" cy=\"8.62\" data-type=\"element node\" data-element-id=\"4\" data-node-id=\"4\" data-label-id=\"65\"></circle><circle r=\"1.5\" cx=\"42.75\" cy=\"8.62\" data-type=\"element node\" data-element-id=\"5\" data-node-id=\"5\" data-label-id=\"66\"></circle><circle r=\"1.5\" cx=\"64.0\" cy=\"21.55\" data-type=\"element node\" data-element-id=\"6\" data-node-id=\"6\" data-label-id=\"67\"></circle><circle r=\"1.5\" cx=\"36.0\" cy=\"21.55\" data-type=\"element node\" data-element-id=\"7\" data-node-id=\"7\" data-label-id=\"68\"></circle><circle r=\"1.5\" cx=\"69.75\" cy=\"37.59\" data-type=\"element node\" data-element-id=\"8\" data-node-id=\"8\" data-label-id=\"69\"></circle><circle r=\"1.5\" cx=\"30.25\" cy=\"37.59\" data-type=\"element node\" data-element-id=\"9\" data-node-id=\"9\" data-label-id=\"70\"></circle><circle r=\"1.5\" cx=\"72.75\" cy=\"52.59\" data-type=\"element node\" data-element-id=\"10\" data-node-id=\"10\" data-label-id=\"71\"></circle><circle r=\"1.5\" cx=\"27.25\" cy=\"52.59\" data-type=\"element node\" data-element-id=\"11\" data-node-id=\"11\" data-label-id=\"72\"></circle><circle r=\"1.5\" cx=\"58.0\" cy=\"51.72\" data-type=\"element node\" data-element-id=\"12\" data-node-id=\"12\" data-label-id=\"73\"></circle><circle r=\"1.5\" cx=\"42.0\" cy=\"51.72\" data-type=\"element node\" data-element-id=\"13\" data-node-id=\"13\" data-label-id=\"74\"></circle><circle r=\"1.5\" cx=\"59.5\" cy=\"73.28\" data-type=\"element node\" data-element-id=\"14\" data-node-id=\"14\" data-label-id=\"75\"></circle><circle r=\"1.5\" cx=\"40.5\" cy=\"73.28\" data-type=\"element node\" data-element-id=\"15\" data-node-id=\"15\" data-label-id=\"76\"></circle><circle r=\"1.5\" cx=\"60.5\" cy=\"93.97\" data-type=\"element node\" data-element-id=\"16\" data-node-id=\"16\" data-label-id=\"77\"></circle><circle r=\"1.5\" cx=\"39.5\" cy=\"93.97\" data-type=\"element node\" data-element-id=\"17\" data-node-id=\"17\" data-label-id=\"78\"></circle>",
+    "attributes": []
+  },
+  {
+    "name": "face",
+    "id": 79,
+    "color": "#33ddff",
+    "type": "skeleton",
+    "sublabels": [
+      {
+        "name": "left_eye_outer",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 80
+      },
+      {
+        "name": "left_eye_inner",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 81
+      },
+      {
+        "name": "left_eye_upper",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 82
+      },
+      {
+        "name": "left_eye_lower",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 83
+      },
+      {
+        "name": "right_eye_outer",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 84
+      },
+      {
+        "name": "right_eye_inner",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 85
+      },
+      {
+        "name": "right_eye_upper",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 86
+      },
+      {
+        "name": "right_eye_lower",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 87
+      },
+      {
+        "name": "nose_tip",
+        "attributes": [],
+        "type": "points",
+        "color": "#f2c12e",
+        "id": 88
+      },
+      {
+        "name": "mouth_left",
+        "attributes": [],
+        "type": "points",
+        "color": "#e8473c",
+        "id": 89
+      },
+      {
+        "name": "mouth_right",
+        "attributes": [],
+        "type": "points",
+        "color": "#2e6fd6",
+        "id": 90
+      },
+      {
+        "name": "lip_upper",
+        "attributes": [],
+        "type": "points",
+        "color": "#f2c12e",
+        "id": 91
+      },
+      {
+        "name": "lip_lower",
+        "attributes": [],
+        "type": "points",
+        "color": "#f2c12e",
+        "id": 92
+      }
+    ],
+    "svg": "<line x1=\"80.0\" y1=\"26.47\" x2=\"69.05\" y2=\"21.47\" data-type=\"edge\" data-node-from=\"1\" data-node-to=\"3\"></line><line x1=\"69.05\" y1=\"21.47\" x2=\"58.1\" y2=\"26.47\" data-type=\"edge\" data-node-from=\"3\" data-node-to=\"2\"></line><line x1=\"58.1\" y1=\"26.47\" x2=\"69.05\" y2=\"30.59\" data-type=\"edge\" data-node-from=\"2\" data-node-to=\"4\"></line><line x1=\"69.05\" y1=\"30.59\" x2=\"80.0\" y2=\"26.47\" data-type=\"edge\" data-node-from=\"4\" data-node-to=\"1\"></line><line x1=\"15.24\" y1=\"26.47\" x2=\"26.19\" y2=\"21.47\" data-type=\"edge\" data-node-from=\"5\" data-node-to=\"7\"></line><line x1=\"26.19\" y1=\"21.47\" x2=\"37.14\" y2=\"26.47\" data-type=\"edge\" data-node-from=\"7\" data-node-to=\"6\"></line><line x1=\"37.14\" y1=\"26.47\" x2=\"26.19\" y2=\"30.59\" data-type=\"edge\" data-node-from=\"6\" data-node-to=\"8\"></line><line x1=\"26.19\" y1=\"30.59\" x2=\"15.24\" y2=\"26.47\" data-type=\"edge\" data-node-from=\"8\" data-node-to=\"5\"></line><line x1=\"64.29\" y1=\"81.76\" x2=\"47.62\" y2=\"78.53\" data-type=\"edge\" data-node-from=\"10\" data-node-to=\"12\"></line><line x1=\"47.62\" y1=\"78.53\" x2=\"30.95\" y2=\"81.76\" data-type=\"edge\" data-node-from=\"12\" data-node-to=\"11\"></line><line x1=\"30.95\" y1=\"81.76\" x2=\"47.62\" y2=\"87.65\" data-type=\"edge\" data-node-from=\"11\" data-node-to=\"13\"></line><line x1=\"47.62\" y1=\"87.65\" x2=\"64.29\" y2=\"81.76\" data-type=\"edge\" data-node-from=\"13\" data-node-to=\"10\"></line><line x1=\"47.62\" y1=\"59.41\" x2=\"47.62\" y2=\"78.53\" data-type=\"edge\" data-node-from=\"9\" data-node-to=\"12\"></line><circle r=\"1.5\" cx=\"80.0\" cy=\"26.47\" data-type=\"element node\" data-element-id=\"1\" data-node-id=\"1\" data-label-id=\"80\"></circle><circle r=\"1.5\" cx=\"58.1\" cy=\"26.47\" data-type=\"element node\" data-element-id=\"2\" data-node-id=\"2\" data-label-id=\"81\"></circle><circle r=\"1.5\" cx=\"69.05\" cy=\"21.47\" data-type=\"element node\" data-element-id=\"3\" data-node-id=\"3\" data-label-id=\"82\"></circle><circle r=\"1.5\" cx=\"69.05\" cy=\"30.59\" data-type=\"element node\" data-element-id=\"4\" data-node-id=\"4\" data-label-id=\"83\"></circle><circle r=\"1.5\" cx=\"15.24\" cy=\"26.47\" data-type=\"element node\" data-element-id=\"5\" data-node-id=\"5\" data-label-id=\"84\"></circle><circle r=\"1.5\" cx=\"37.14\" cy=\"26.47\" data-type=\"element node\" data-element-id=\"6\" data-node-id=\"6\" data-label-id=\"85\"></circle><circle r=\"1.5\" cx=\"26.19\" cy=\"21.47\" data-type=\"element node\" data-element-id=\"7\" data-node-id=\"7\" data-label-id=\"86\"></circle><circle r=\"1.5\" cx=\"26.19\" cy=\"30.59\" data-type=\"element node\" data-element-id=\"8\" data-node-id=\"8\" data-label-id=\"87\"></circle><circle r=\"1.5\" cx=\"47.62\" cy=\"59.41\" data-type=\"element node\" data-element-id=\"9\" data-node-id=\"9\" data-label-id=\"88\"></circle><circle r=\"1.5\" cx=\"64.29\" cy=\"81.76\" data-type=\"element node\" data-element-id=\"10\" data-node-id=\"10\" data-label-id=\"89\"></circle><circle r=\"1.5\" cx=\"30.95\" cy=\"81.76\" data-type=\"element node\" data-element-id=\"11\" data-node-id=\"11\" data-label-id=\"90\"></circle><circle r=\"1.5\" cx=\"47.62\" cy=\"78.53\" data-type=\"element node\" data-element-id=\"12\" data-node-id=\"12\" data-label-id=\"91\"></circle><circle r=\"1.5\" cx=\"47.62\" cy=\"87.65\" data-type=\"element node\" data-element-id=\"13\" data-node-id=\"13\" data-label-id=\"92\"></circle>",
+    "attributes": []
+  }
+]

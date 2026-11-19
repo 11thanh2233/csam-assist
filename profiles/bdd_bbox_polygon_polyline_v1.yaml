@@ -77,25 +77,28 @@ labels:
     aliases: [crosswalk]
     shape: polyline
     prompts: ["crosswalk"]
-    polyline_mode: centerline    # hoặc long_edges: hai mép dài của crosswalk. Hỏi mentor quy ước của lớp.
+    polyline_mode: long_edges    # hai đường thẳng theo hai mép dài của cả vùng crosswalk
     join_dashes: false
     group: lane
   - name: lane/double white
     aliases: [double white]
     shape: polyline
     prompts: ["double white line"]
+    polyline_mode: edges         # hai đường theo hai mép ngoài của cả cặp vạch
     lane: {kind: double, color: white}
     group: lane
   - name: lane/double yellow
     aliases: [double yellow]
     shape: polyline
     prompts: ["double yellow line"]
+    polyline_mode: edges         # hai đường theo hai mép ngoài của cả cặp vạch
     lane: {kind: double, color: yellow}
     group: lane
   - name: lane/double other
     aliases: [double other]
     shape: polyline
     prompts: []                  # suy ra: vạch đôi có màu không phải trắng/vàng
+    polyline_mode: edges
     lane: {kind: double, color: other}
     group: lane
   - name: lane/road curb
@@ -164,6 +167,14 @@ rules:
     epsilon: 1.5
     min_length_px: 20
     exclusive_region_label: lane/crosswalk   # vạch nằm trong crosswalk không tính là vạch làn
+    double_merge_px: 12  # hai nét cách nhau tới mức này được gom thành một vạch đôi
+    crosswalk_merge_px: 40  # các sọc cách nhau tới mức này được gom thành một crosswalk
+    edge_step_px: 8      # khoảng cách lấy điểm dọc theo mép vạch đôi
+
+  # Mask "vạch đơn" thật ra gồm hai nét song song thì chuyển sang vạch đôi cùng màu
+  lane_kind:
+    enabled: true
+    min_fraction: 0.5    # tỉ lệ chiều dài phải thấy hai nét
 
   # Kiểm tra màu vạch từ pixel thật; lệch với prompt thì đổi class và gắn cờ UNCERTAIN_CLASS
   lane_color:

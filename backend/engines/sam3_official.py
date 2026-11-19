@@ -94,20 +94,21 @@ class Sam3OfficialEngine(Engine):
             return self._collect(out, threshold)
 
     def segment_box(
-        self, state: Any, box_xyxy: list[float], prompt: Optional[str], threshold: float
+        self, state: Any, box_xyxy: list[float], prompt: Optional[str], threshold: float,
+        negatives: Optional[list[list[float]]] = None,
     ) -> list[Instance]:
         height, width = state["_assist_hw"]
-        x1, y1, x2, y2 = box_xyxy
-        # Sam3Processor nhận hộp dạng [cx, cy, w, h] đã chuẩn hoá về 0..1.
-        norm = [
-            (x1 + x2) / 2 / width,
-            (y1 + y2) / 2 / height,
-            (x2 - x1) / width,
-            (y2 - y1) / height,
-        ]
+
+        def to_norm(b: list[float]) -> list[float]:
+            # Sam3Processor nhận hộp dạng [cx, cy, w, h] đã chuẩn hoá về 0..1.
+            x1, y1, x2, y2 = b
+            return [(x1 + x2) / 2 / width, (y1 + y2) / 2 / height, (x2 - x1) / width, (y2 - y1) / height]
+
         with self._lock, self._ctx():
             self.processor.reset_all_prompts(state)
             if prompt:
                 self.processor.set_text_prompt(state=state, prompt=prompt)
-            out = self.processor.add_geometric_prompt(box=norm, label=True, state=state)
+            for neg in negatives or []:   # hộp mẫu âm: label=False
+                self.processor.add_geometric_prompt(box=to_norm(neg), label=False, state=state)
+            out = self.processor.add_geometric_prompt(box=to_norm(box_xyxy), label=True, state=state)
             return self._collect(out, threshold)

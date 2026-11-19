@@ -166,3 +166,112 @@ def test_unknown_labels_fall_back_to_generic(store):
     result = pipeline.propose(ScriptedEngine(script), {}, np.zeros((H, W, 3), np.uint8), profile, cfgs, [])
     assert sorted(p["label_name"] for p in result["proposals"]) == ["forklift", "pallet"]
     assert all(p["type"] == "polygon" for p in result["proposals"])
+
+
+def test_bad_prompt_is_skipped_with_warning(store):
+    """Một prompt làm model báo lỗi (vd. quá dài) không được làm hỏng cả lượt gợi ý."""
+    labels = cvat_labels(["biển báo giao thông đường bộ", "car"], kind="rectangle")
+    profile = store.get("generic", [l["name"] for l in labels])
+    cfgs = resolve_labels(profile, labels)
+    script = {
+        "biển báo giao thông đường bộ": ValueError("prompt quá dài cho SAM3 (36 token, tối đa 32)"),
+        "car": [(rect(100, 100, 300, 300), 0.9)],
+    }
+    result = pipeline.propose(ScriptedEngine(script), {}, np.zeros((H, W, 3), np.uint8), profile, cfgs, [])
+    assert [p["label_name"] for p in result["proposals"]] == ["car"]
+    assert any("biển báo" in w and "quá dài" in w for w in result["warnings"])
+
+
+def _line_dist(pts, p0, p1):
+    """Khoảng cách có dấu từ các điểm tới đường thẳng p0-p1."""
+    d = np.asarray(p1, float) - np.asarray(p0, float)
+    n = np.array([-d[1], d[0]]) / np.linalg.norm(d)
+    return (np.asarray(pts, float).reshape(-1, 2) - p0) @ n
+
+
+def test_double_yellow_two_outer_edges_full_length(store):
+    """Ảnh 1 của người dùng: vạch đôi vàng chéo -> hai polyline dọc hai mép ngoài, kéo suốt chiều dài."""
+    p0, p1 = np.array([120.0, 700.0]), np.array([760.0, 120.0])
+    d = (p1 - p0) / np.linalg.norm(p1 - p0)
+    n = np.array([-d[1], d[0]])
+    strips = []
+    for off in (-10, 10):  # hai nét, tâm cách nhau 20px, mỗi nét dày 8px
+        canvas = np.zeros((H, W), np.uint8)
+        a, b = p0 + n * off, p1 + n * off
+        cv2.line(canvas, tuple(np.round(a).astype(int)), tuple(np.round(b).astype(int)), 1, 8)
+        strips.append(canvas.astype(bool))
+    image = np.full((H, W, 3), 30, np.uint8)
+    for m in strips:
+        image[m] = (230, 190, 40)
+    labels = cvat_labels(BDD_NAMES)
+    profile = store.get("auto", BDD_NAMES)
+    cfgs = resolve_labels(profile, labels)
+    script = {"double yellow line": [(strips[0], 0.9), (strips[1], 0.88)]}
+    result = pipeline.propose(ScriptedEngine(script), {}, image, profile, cfgs, [])
+    lines = by_label(result, "lane/double yellow")
+    assert len(lines) == 2, [(p["label_name"], len(p["points"])) for p in result["proposals"]]
+    offsets = sorted(float(np.median(_line_dist(l["points"], p0, p1))) for l in lines)
+    assert -16 <= offsets[0] <= -12 and 12 <= offsets[1] <= 16, offsets  # mép ngoài ở ±14px
+    length = np.linalg.norm(p1 - p0)
+    for l in lines:
+        pts = np.array(l["points"]).reshape(-1, 2)
+        assert G.polyline_length(pts) > 0.95 * length
+        assert pts[0][1] > pts[-1][1]  # vẽ từ gần xe ra xa
+
+
+def test_two_single_strips_become_double(store):
+    """SAM3 trả hai nét song song cho prompt vạch đơn -> chuyển sang vạch đôi cùng màu."""
+    strips = []
+    for x in (600, 620):
+        canvas = np.zeros((H, W), np.uint8)
+        cv2.line(canvas, (x, H - 5), (x + 40, 380), 1, 7)
+        strips.append(canvas.astype(bool))
+    image = np.full((H, W, 3), 30, np.uint8)
+    for m in strips:
+        image[m] = (230, 190, 40)
+    labels = cvat_labels(BDD_NAMES)
+    profile = store.get("auto", BDD_NAMES)
+    cfgs = resolve_labels(profile, labels)
+    script = {"yellow lane line": [(strips[0], 0.9), (strips[1], 0.9)]}
+    result = pipeline.propose(ScriptedEngine(script), {}, image, profile, cfgs, [])
+    assert not by_label(result, "lane/single yellow")
+    doubles = by_label(result, "lane/double yellow")
+    assert len(doubles) == 2 and all(any(f["code"] == "UNCERTAIN_CLASS" for f in p["flags"]) for p in doubles)
+
+
+def test_crosswalk_two_long_edges_across_all_stripes(store):
+    """Ảnh 2 của người dùng: các sọc riêng lẻ -> hai đường thẳng theo mép trên và mép dưới của cả vùng."""
+    top = lambda x: 300 + 0.05 * x      # mép trên hơi nghiêng
+    bottom = lambda x: 440 + 0.08 * x   # mép dưới nghiêng khác (phối cảnh)
+    stripes = []
+    for i, x in enumerate(range(260, 1180, 90)):
+        canvas = np.zeros((H, W), np.uint8)
+        lean = (i - 5) * 4
+        poly = np.array([[x + lean, top(x)], [x + 45 + lean, top(x + 45)], [x + 45, bottom(x + 45)], [x, bottom(x)]])
+        cv2.fillPoly(canvas, [np.round(poly).astype(np.int32)], 1)
+        stripes.append(canvas.astype(bool))
+    image = np.full((H, W, 3), 90, np.uint8)
+    for m in stripes:
+        image[m] = (240, 240, 240)
+    labels = cvat_labels(BDD_NAMES)
+    profile = store.get("auto", BDD_NAMES)
+    cfgs = resolve_labels(profile, labels)
+    script = {
+        "crosswalk": [(m, 0.85) for m in stripes],
+        "white lane line": [(stripes[3], 0.8)],  # SAM3 nhầm một sọc là vạch làn -> phải bị loại
+    }
+    result = pipeline.propose(ScriptedEngine(script), {}, image, profile, cfgs, [])
+    assert not by_label(result, "lane/single white")
+    edges = by_label(result, "lane/crosswalk")
+    assert len(edges) == 2, len(edges)
+    for e in edges:
+        pts = np.array(e["points"]).reshape(-1, 2)
+        assert len(pts) == 2  # đường thẳng
+        assert pts[0][0] < pts[-1][0]  # vẽ từ trái sang phải
+        assert pts[0][0] <= 270 and pts[-1][0] >= 1215  # kéo từ sọc đầu tới sọc cuối
+    upper, lower = sorted((np.array(e["points"]).reshape(-1, 2) for e in edges), key=lambda p: p[:, 1].mean())
+    # Mép thật: đường qua góc trên (dưới) của sọc đầu và sọc cuối.
+    first_top, last_top = (240.0, top(260)), (1225.0, top(1145) + 0.05 * 45)
+    first_bot, last_bot = (260.0, bottom(260)), (1205.0, bottom(1205))
+    for (x, y), (a, b) in ((upper[0], first_top), (upper[-1], last_top), (lower[0], first_bot), (lower[-1], last_bot)):
+        assert abs(x - a) <= 25 and abs(y - b) <= 5, ((x, y), (a, b))

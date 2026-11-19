@@ -11,6 +11,20 @@ sys.path.insert(0, str(ROOT))
 os.environ["SAM3_ENGINE"] = "mock"
 os.environ["SAM3_API_KEY"] = ""
 
+# Thư viện guideline tạm cho test: không ghi bài học vào thư mục thật của repo.
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+_LIB = Path(tempfile.mkdtemp(prefix="sam3-assist-lib-"))
+shutil.copytree(ROOT / "guideline_library", _LIB, dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("runs", "lessons.jsonl"))
+os.environ["SAM3_LIBRARY_DIR"] = str(_LIB)
+# Profile tạm: nạp guideline trong test ghi profile mới, không được ghi vào thư mục profiles/ thật.
+_PROFILES = Path(tempfile.mkdtemp(prefix="sam3-assist-profiles-"))
+shutil.copytree(ROOT / "profiles", _PROFILES, dirs_exist_ok=True)
+os.environ["SAM3_PROFILES_DIR"] = str(_PROFILES)
+os.environ["GUIDELINE_LLM"] = "none"
+
 from backend.engines.base import Engine, Instance  # noqa: E402
 from backend.profiles import ProfileStore  # noqa: E402
 
@@ -29,9 +43,12 @@ class ScriptedEngine(Engine):
         return {}
 
     def segment_text(self, state, prompt, threshold):
-        return [Instance(m, s) for m, s in self.script.get(prompt, []) if s >= threshold]
+        result = self.script.get(prompt, [])
+        if isinstance(result, Exception):
+            raise result
+        return [Instance(m, s) for m, s in result if s >= threshold]
 
-    def segment_box(self, state, box_xyxy, prompt, threshold):
+    def segment_box(self, state, box_xyxy, prompt, threshold, negatives=None):
         return [Instance(m, s) for m, s in self.script.get("__box__", [])]
 
 
@@ -66,3 +83,12 @@ SEG_NAMES = [
     "road", "sidewalk", "building", "wall", "fence", "pole", "traffic_light", "traffic_sign", "vegetation",
     "terrain", "sky", "person", "rider", "car", "truck", "bus", "train", "motorcycle", "bicycle",
 ]
+
+
+@pytest.fixture()
+def library(tmp_path):
+    """Một thư viện guideline sạch (chỉ có guideline mẫu và bài học khởi đầu) cho từng test."""
+    from backend.guideline.library import Library
+
+    shutil.copytree(ROOT / "guideline_library", tmp_path / "lib", ignore=shutil.ignore_patterns("runs", "lessons.jsonl"))
+    return Library(tmp_path / "lib")

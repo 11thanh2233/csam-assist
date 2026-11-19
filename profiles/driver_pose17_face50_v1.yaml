@@ -1,0 +1,200 @@
+# Profile cho hai guideline:
+#   - HumanPose17_Annotation_Guideline_V1   (skeleton person, 17 keypoint, người lái trong cabin)
+#   - Face_Landmark50_Annotation_Guideline_V1 (50 landmark khuôn mặt chia thành 7 skeleton)
+# Một task có thể chỉ có label person, chỉ có 7 label mặt, hoặc cả hai: tool dùng những label có trong task.
+#
+# Ghép LABEL với task: đúng tên/alias, tên label chứa tên/alias (person_vf17), dãy số của các điểm, rồi số điểm.
+# Ghép điểm với task: theo tên, rồi theo số trong tên, rồi theo thứ tự (xem docs/PROFILES.md).
+# Vì vậy sublabel đặt tên "2", "right_eye" hay "Right Eye (R)" đều nhận được.
+id: driver_pose17_face50_v1
+title: "Người lái: HumanPose-17 + Facial Landmark-50"
+description: "Trái/phải theo phía của ẢNH. Mỗi ảnh một người lái. Visible / Occluded / Outside theo guideline."
+guideline: "HumanPose17_Annotation_Guideline_V1.docx, Face_Landmark50_Annotation_Guideline_V1.docx"
+mode: keypoints
+# Thay cho profile skeleton của Lab 4. Hai profile cùng dùng label `person` với trái/phải ngược nhau, nên khi file cũ
+# còn nằm trong profiles/ thì tool bỏ qua file cũ. Muốn quay lại Lab 4: xem profiles/archive/README.md.
+supersedes: [coco_pose_face_lab_v1]
+
+defaults:
+  threshold: 0.5        # độ tin cậy SAM3 khi tìm người
+
+labels:
+  # ---------------------------------------------------------------- người ---
+  - name: person
+    # Tên label trong task thật thường khác guideline (ví dụ person_vf17). Tool ghép theo: đúng tên/alias, tên label CHỨA
+    # tên/alias, dãy số của các điểm, rồi số điểm. Không nhận ra thì chọn tay ở tab Label.
+    aliases: ["driver", "human", "body", "pose", "nguoi lai"]
+    shape: skeleton
+    kind: body            # ViTPose đặt 17 khớp; tool xếp lại trái/phải theo phía của ảnh
+    prompts: ["person", "doll"]   # hình minh hoạ của guideline dùng búp bê (baby doll) nên tìm cả hai; sửa ở tab Label nếu cần
+    # id = số thứ tự trong guideline; source = khớp của model. R (số chẵn 2-16) ở bên PHẢI ảnh, L (số lẻ 3-17) ở bên TRÁI ảnh.
+    keypoints:
+      - {id: 1,  name: "1",  source: nose}
+      - {id: 2,  name: "2",  source: right_eye}
+      - {id: 3,  name: "3",  source: left_eye}
+      - {id: 4,  name: "4",  source: right_ear}
+      - {id: 5,  name: "5",  source: left_ear}
+      - {id: 6,  name: "6",  source: right_shoulder}
+      - {id: 7,  name: "7",  source: left_shoulder}
+      - {id: 8,  name: "8",  source: right_elbow}
+      - {id: 9,  name: "9",  source: left_elbow}
+      - {id: 10, name: "10", source: right_wrist}
+      - {id: 11, name: "11", source: left_wrist}
+      - {id: 12, name: "12", source: right_hip}
+      - {id: 13, name: "13", source: left_hip}
+      - {id: 14, name: "14", source: right_knee}
+      - {id: 15, name: "15", source: left_knee}
+      - {id: 16, name: "16", source: right_ankle}
+      - {id: 17, name: "17", source: left_ankle}
+    # 18 cạnh của guideline (không có cạnh mắt-mắt)
+    edges: [[1,2],[1,3],[2,4],[3,5],[4,6],[5,7],[6,7],[6,8],[7,9],[8,10],[9,11],[6,12],[7,13],[12,13],[12,14],[13,15],[14,16],[15,17]]
+
+  # ----------------------------------------------------------------- mặt ---
+  # MediaPipe đặt 478 điểm trên mặt. Mỗi landmark của guideline là một vị trí trên một ĐƯỜNG nối các điểm MediaPipe:
+  #   path = các điểm MediaPipe theo thứ tự từ TRÁI sang PHẢI trên ảnh
+  #   t    = vị trí trên đường đó (0 = đầu, 1 = cuối)
+  #   by   = chord: t tính theo chiều rộng giữa hai đầu mút (ví dụ 1/4 chiều rộng mắt)
+  #          length: t tính theo chiều dài dọc đường (ví dụ chia đều lông mày)
+  # "trai" / "phai" là phía trái / phải của khuôn mặt TRÊN ẢNH.
+  - name: longmaytrai     # 0-4: bờ trên lông mày bên trái ảnh, 0 = đuôi ngoài, 4 = đầu trong
+    aliases: ["left eyebrow", "eyebrow left", "left brow", "brow left"]
+    shape: skeleton
+    kind: face
+    contour: open
+    face_side: left
+    min_visible: 3        # thấy dưới 3/5 điểm: Outside cả skeleton (guideline mục 3.1)
+    keypoints:
+      - {id: 0, path: &brow_l [70, 63, 105, 66, 107], t: 0.0,  by: length}
+      - {id: 1, path: *brow_l, t: 0.25, by: length}
+      - {id: 2, path: *brow_l, t: 0.5,  by: length}
+      - {id: 3, path: *brow_l, t: 0.75, by: length}
+      - {id: 4, path: *brow_l, t: 1.0,  by: length}
+
+  - name: longmayphai     # 5-9: bờ trên lông mày bên phải ảnh, 5 = đầu trong, 9 = đuôi ngoài
+    aliases: ["right eyebrow", "eyebrow right", "right brow", "brow right"]
+    shape: skeleton
+    kind: face
+    contour: open
+    face_side: right
+    min_visible: 3
+    keypoints:
+      - {id: 5, path: &brow_r [336, 296, 334, 293, 300], t: 0.0,  by: length}
+      - {id: 6, path: *brow_r, t: 0.25, by: length}
+      - {id: 7, path: *brow_r, t: 0.5,  by: length}
+      - {id: 8, path: *brow_r, t: 0.75, by: length}
+      - {id: 9, path: *brow_r, t: 1.0,  by: length}
+
+  - name: songmui         # 10-13: 10 = đỉnh sống mũi ngang khoé mắt trong, 13 = chân sống mũi (trên lỗ mũi, chưa tới chóp mũi)
+    aliases: ["nose bridge", "nose"]
+    shape: skeleton
+    kind: face
+    contour: open
+    min_visible: 2
+    keypoints:
+      # Đường giữa mũi của MediaPipe đi từ giữa hai lông mày (168) tới đỉnh chóp mũi (4). Điểm 10 nằm ngay trên mức khoé mắt
+      # trong, điểm 13 dừng trước chóp mũi; ba đoạn bằng nhau. Chỉnh t nếu trên ảnh thật điểm 10 hoặc 13 bị cao/thấp.
+      - {id: 10, path: &nose [168, 6, 197, 195, 5, 4], t: 0.07,  by: length}
+      - {id: 11, path: *nose, t: 0.357, by: length}
+      - {id: 12, path: *nose, t: 0.643, by: length}
+      - {id: 13, path: *nose, t: 0.93,  by: length}
+
+  - name: mattrai         # 14-21: 14 = khoé ngoài, 15-17 mí trên (1/4, 1/2, 3/4), 18 = khoé trong, 19-21 mí dưới vòng về
+    aliases: ["left eye", "eye left"]
+    shape: skeleton
+    kind: face
+    contour: closed
+    face_side: left
+    min_visible: 4
+    keypoints:
+      - {id: 14, path: &eye_l_up [33, 246, 161, 160, 159, 158, 157, 173, 133], t: 0.0,  by: chord}
+      - {id: 15, path: *eye_l_up, t: 0.25, by: chord}
+      - {id: 16, path: *eye_l_up, t: 0.5,  by: chord}
+      - {id: 17, path: *eye_l_up, t: 0.75, by: chord}
+      - {id: 18, path: *eye_l_up, t: 1.0,  by: chord}
+      - {id: 19, path: &eye_l_low [33, 7, 163, 144, 145, 153, 154, 155, 133], t: 0.75, by: chord}
+      - {id: 20, path: *eye_l_low, t: 0.5,  by: chord}
+      - {id: 21, path: *eye_l_low, t: 0.25, by: chord}
+
+  - name: matphai         # 22-29: 22 = khoé trong, 23-25 mí trên, 26 = khoé ngoài, 27-29 mí dưới vòng về
+    aliases: ["right eye", "eye right"]
+    shape: skeleton
+    kind: face
+    contour: closed
+    face_side: right
+    min_visible: 4
+    keypoints:
+      - {id: 22, path: &eye_r_up [362, 398, 384, 385, 386, 387, 388, 466, 263], t: 0.0,  by: chord}
+      - {id: 23, path: *eye_r_up, t: 0.25, by: chord}
+      - {id: 24, path: *eye_r_up, t: 0.5,  by: chord}
+      - {id: 25, path: *eye_r_up, t: 0.75, by: chord}
+      - {id: 26, path: *eye_r_up, t: 1.0,  by: chord}
+      - {id: 27, path: &eye_r_low [362, 382, 381, 380, 374, 373, 390, 249, 263], t: 0.75, by: chord}
+      - {id: 28, path: *eye_r_low, t: 0.5,  by: chord}
+      - {id: 29, path: *eye_r_low, t: 0.25, by: chord}
+
+  - name: moingoai        # 30-41: 30, 36 = hai khoé miệng; 31-35 bờ trên theo tỉ lệ 0,18-0,36-0,50-0,66-0,84; 37-41 bờ dưới chia đều, vòng về
+    aliases: ["outer lip", "lip outer", "outer lips", "outer mouth", "mouth outer"]
+    shape: skeleton
+    kind: face
+    contour: closed
+    min_visible: 6
+    keypoints:
+      - {id: 30, path: &lip_out_up [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291], t: 0.0,  by: chord}
+      - {id: 31, path: *lip_out_up, t: 0.18, by: chord}
+      - {id: 32, path: *lip_out_up, t: 0.36, by: chord}
+      - {id: 33, path: *lip_out_up, t: 0.5,  by: chord}
+      - {id: 34, path: *lip_out_up, t: 0.66, by: chord}
+      - {id: 35, path: *lip_out_up, t: 0.84, by: chord}
+      - {id: 36, path: *lip_out_up, t: 1.0,  by: chord}
+      - {id: 37, path: &lip_out_low [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291], t: 0.8333, by: chord}
+      - {id: 38, path: *lip_out_low, t: 0.6667, by: chord}
+      - {id: 39, path: *lip_out_low, t: 0.5,    by: chord}
+      - {id: 40, path: *lip_out_low, t: 0.3333, by: chord}
+      - {id: 41, path: *lip_out_low, t: 0.1667, by: chord}
+
+  - name: moitrong        # 42-49: 42, 46 = hai khoé; 43-45 mép trong môi trên (1/4, 1/2, 3/4); 47-49 mép trong môi dưới vòng về
+    aliases: ["inner lip", "lip inner", "inner lips", "inner mouth", "mouth inner"]
+    shape: skeleton
+    kind: face
+    contour: closed
+    inside_of: moingoai   # tab Kiểm tra: moitrong phải nằm trong moingoai
+    min_visible: 4
+    keypoints:
+      - {id: 42, path: &lip_in_up [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308], t: 0.0,  by: chord}
+      - {id: 43, path: *lip_in_up, t: 0.25, by: chord}
+      - {id: 44, path: *lip_in_up, t: 0.5,  by: chord}
+      - {id: 45, path: *lip_in_up, t: 0.75, by: chord}
+      - {id: 46, path: *lip_in_up, t: 1.0,  by: chord}
+      - {id: 47, path: &lip_in_low [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308], t: 0.75, by: chord}
+      - {id: 48, path: *lip_in_low, t: 0.5,  by: chord}
+      - {id: 49, path: *lip_in_low, t: 0.25, by: chord}
+
+rules:
+  pose:
+    lr_convention: image      # R/L theo phía của ảnh, không theo giải phẫu (guideline mục 1). "anatomical" = theo người.
+    max_people: 1             # mặc định chỉ gán người lái; 0 = gán mọi người tìm được
+    pick: largest             # nhiều người: lấy người chiếm diện tích lớn nhất, gắn cờ UNCERTAIN_SCOPE để bạn xác nhận
+    min_person_height_px: 0   # guideline này không đặt ngưỡng kích thước
+    # Trạng thái suy từ độ tin cậy của model (0..1). Giá trị khởi đầu, chỉnh sau khi thử trên ảnh thật:
+    visible_score: 0.6        # >= mức này: Visible
+    occluded_score: 0.35      # giữa hai mức: Occluded (luôn gắn cờ ATTRIBUTE_CHECK); dưới mức này: Outside
+    coincident_px: 2          # hai khớp Visible cách nhau dưới mức này: gắn cờ (guideline: không thể trùng toạ độ)
+
+  face:
+    max_faces: 1              # nhiều hơn một mặt: chọn mặt lớn nhất (người lái), gắn cờ UNCERTAIN_SCOPE
+    min_face_px: 20
+    # Mặt nghiêng, đo bằng tỉ lệ khoảng cách ngang từ chóp mũi tới hai khoé mắt ngoài (mặt nhìn thẳng: gần 1).
+    # MediaPipe: 1 = chóp mũi, 33 / 263 = khoé ngoài mắt bên trái / phải ảnh.
+    #   ratio          : từ mức này, lông mày và mắt phía xa được gắn cờ UNCERTAIN_BOUNDARY (vẫn Visible) để soi kỹ
+    #   occluded_ratio : từ mức này, chóp mũi gần như đè lên khoé mắt phía xa -> đặt Occluded + cờ ATTRIBUTE_CHECK
+    # Giá trị khởi đầu, chưa đo trên ảnh thật: chỉnh sau khi thử.
+    yaw: {nose: 1, left_corner: 33, right_corner: 263, ratio: 2.5, occluded_ratio: 5.0}
+    # Vật che mặt do SAM3 tìm. Điểm nằm dưới vật che -> Occluded. Skeleton còn thấy dưới `min_visible` điểm -> Outside cả skeleton.
+    # Kính trong suốt không nằm trong danh sách: guideline coi là Visible.
+    occluders: ["sunglasses", "hand", "face mask"]
+
+  dedup:
+    existing_iou: 0.5         # trùng với skeleton đã có (ví dụ pre-label) -> gắn cờ, bỏ tick
+
+  qa:
+    one_per_label: true       # mỗi label đúng một skeleton trên mỗi ảnh (một người lái, đủ 7 skeleton mặt)

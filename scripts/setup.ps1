@@ -2,6 +2,7 @@
 #   .\scripts\setup.ps1                 # chỉ phần chung (đủ để chạy mock)
 #   .\scripts\setup.ps1 sam3            # + PyTorch + gói sam3 chính thức của Meta
 #   .\scripts\setup.ps1 transformers    # + PyTorch + SAM3 qua Hugging Face transformers
+#   .\scripts\setup.ps1 skeleton        # + MediaPipe cho skeleton khuôn mặt (chạy SAU một trong hai dòng trên)
 # Nếu PowerShell chặn script: Set-ExecutionPolicy -Scope Process Bypass
 param([string]$Mode = "base")
 $ErrorActionPreference = "Stop"
@@ -24,6 +25,13 @@ if ($Mode -eq "sam3") {
     pip install "huggingface_hub[cli]"
 } elseif ($Mode -eq "transformers") {
     pip install --upgrade transformers "huggingface_hub[cli]"
+}
+
+if ($Mode -eq "skeleton") {
+    # Cài không kèm opencv-contrib-python để không đụng opencv-python-headless đang có (cả hai cùng cung cấp cv2).
+    pip install --no-deps mediapipe
+    pip install absl-py flatbuffers certifi sounddevice matplotlib scipy
+    python -c "import mediapipe; from mediapipe.tasks.python import vision; print('MediaPipe', mediapipe.__version__, 'OK')"
 }
 
 if (-not (Test-Path ".env")) { Copy-Item .env.example .env }

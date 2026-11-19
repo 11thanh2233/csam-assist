@@ -48,12 +48,30 @@ class MockEngine(Engine):
         return [Instance(mask=canvas.astype(bool), score=score)] if score >= threshold else []
 
     def segment_box(
-        self, state: Any, box_xyxy: list[float], prompt: Optional[str], threshold: float
+        self, state: Any, box_xyxy: list[float], prompt: Optional[str], threshold: float,
+        negatives: Optional[list[list[float]]] = None,
     ) -> list[Instance]:
+        """Vật trong hộp, cộng hai "vật tương tự" đặt cạnh bên trái/phải (để thử Tìm tương tự). Hộp mẫu âm: bỏ vật trùng nó."""
         h, w = state["h"], state["w"]
         x1, y1, x2, y2 = [int(round(v)) for v in box_xyxy]
-        canvas = np.zeros((h, w), np.uint8)
-        center = ((x1 + x2) // 2, (y1 + y2) // 2)
-        axes = (max(1, (x2 - x1) // 2 - 1), max(1, (y2 - y1) // 2 - 1))
-        cv2.ellipse(canvas, center, axes, 0, 0, 360, 1, -1)
-        return [Instance(mask=canvas.astype(bool), score=0.95)]
+        bw = x2 - x1
+        out = []
+        for shift, score in ((0, 0.95), (int(bw * 1.6), 0.8), (-int(bw * 1.6), 0.75)):
+            cx = (x1 + x2) // 2 + shift
+            if shift and not (bw // 2 <= cx < w - bw // 2):
+                continue
+            box = [cx - bw / 2, y1, cx + bw / 2, y2]
+            if any(_iou(box, n) >= 0.3 for n in negatives or []):
+                continue
+            canvas = np.zeros((h, w), np.uint8)
+            cv2.ellipse(canvas, (cx, (y1 + y2) // 2), (max(1, bw // 2 - 1), max(1, (y2 - y1) // 2 - 1)), 0, 0, 360, 1, -1)
+            out.append(Instance(mask=canvas.astype(bool), score=score))
+        return out
+
+
+def _iou(a: list[float], b: list[float]) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0

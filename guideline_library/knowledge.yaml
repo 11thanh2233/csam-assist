@@ -1,0 +1,318 @@
+# Kiến thức rút từ các guideline mẫu trong reference/. Tool dùng file này để soạn bản nháp khi không có LLM,
+# và làm tài liệu nền khi có LLM. Sửa hoặc thêm tuỳ ý; thay đổi có hiệu lực ở lần soạn kế tiếp.
+
+# Định nghĩa class đã được các guideline mẫu chốt. Khoá = tên chuẩn hoá (chữ thường, khoảng trắng).
+definitions:
+  pedestrian: "Người đi bộ: đang đứng, đi, chạy, ngồi hoặc có tư thế khác. Không bao gồm vật dụng cá nhân như túi xách, ba lô, ô."
+  person: "Người đi bộ, đứng hoặc ngồi không thuộc rider."
+  rider: "Người đang điều khiển hoặc ngồi trên phương tiện hai bánh."
+  car: "Ô tô con và xe van dùng để chở người."
+  truck: "Xe tải và xe van dùng để chở hàng."
+  bus: "Các loại xe buýt."
+  train: "Tàu hoả."
+  motorcycle: "Xe máy."
+  bicycle: "Xe đạp."
+  traffic light: "Đèn tín hiệu giao thông. Phần cột hoặc giá đỡ không thuộc class này."
+  traffic sign: "Biển báo giao thông. Phần cột hoặc giá đỡ không thuộc class này."
+  pole: "Cột và giá đỡ dạng mảnh (cột đèn, cột biển báo)."
+  road: "Phần mặt đường dành cho phương tiện."
+  sidewalk: "Lối đi bộ hoặc phần vỉa hè tách khỏi mặt đường."
+  building: "Bề mặt thuộc công trình, toà nhà."
+  wall: "Tường độc lập hoặc tường ranh giới, kết cấu kín/đặc."
+  fence: "Hàng rào dạng thanh, lưới hoặc kết cấu có khoảng hở."
+  vegetation: "Cây, bụi cây, tán lá."
+  terrain: "Bề mặt địa hình tự nhiên như đất, cỏ thấp."
+  sky: "Bầu trời."
+  crosswalk: "Vạch kẻ đường dành cho người đi bộ sang đường."
+  curb: "Đường biên bó vỉa, phân cách mặt đường với vỉa hè hoặc khu vực liền kề."
+  lane line: "Vạch kẻ làn đường, gồm cả nét đứt và nét liền."
+  face: "Khuôn mặt người thật trong cảnh."
+  longmaytrai: "Lông mày phía TRÁI ảnh, 5 điểm 0-4 trên bờ trên (ranh giới lông mày và da trán), chia đều 4 đoạn; 0 = đuôi ngoài, 4 = đầu trong. Contour hở."
+  longmayphai: "Lông mày phía PHẢI ảnh, 5 điểm 5-9 trên bờ trên, chia đều 4 đoạn; 5 = đầu trong, 9 = đuôi ngoài. Contour hở."
+  songmui: "Sống mũi, 4 điểm 10-13 chia đều; 10 = đỉnh sống mũi (điểm lõm giữa hai mắt, ngang khoé mắt trong), 13 = chân sống mũi, phía trên lỗ mũi, chưa chạm chóp mũi. Contour hở."
+  mattrai: "Mắt phía TRÁI ảnh, contour kín 8 điểm 14-21 trên bờ mi; 14 = khoé ngoài, 18 = khoé trong; mí trên 15-17 từ trái sang phải ở 1/4, 1/2, 3/4 chiều rộng mắt; mí dưới 19-21 vòng về."
+  matphai: "Mắt phía PHẢI ảnh, contour kín 8 điểm 22-29 trên bờ mi; 22 = khoé trong, 26 = khoé ngoài; mí trên 23-25 từ trái sang phải; mí dưới 27-29 vòng về."
+  moingoai: "Môi ngoài, contour kín 12 điểm 30-41 trên ranh giới môi đỏ và da; 30 và 36 là hai khoé miệng, 33 và 39 là mốc giữa; bờ trên 31-35 theo tỉ lệ 0,18 / 0,36 / 0,50 / 0,66 / 0,84 chiều rộng môi; bờ dưới 37-41 chia đều từ phải sang trái."
+  moitrong: "Môi trong, contour kín 8 điểm 42-49 trên mép trong môi, luôn nằm hoàn toàn trong môi ngoài; 42 và 46 là hai khoé, 44 và 48 là mốc giữa. Miệng đóng vẫn đủ 8 điểm, các cặp trên/dưới được trùng nhau."
+  double white: "Vạch kẻ đường đôi màu trắng, dùng cho cả vạch nét đứt và nét liền."
+  double yellow: "Vạch kẻ đường đôi màu vàng, dùng cho cả vạch nét đứt và nét liền."
+  double other: "Vạch kẻ đường đôi không phải trắng hoặc vàng, dùng cho cả vạch nét đứt và nét liền."
+  single white: "Vạch kẻ đường đơn màu trắng, dùng cho cả vạch nét đứt và nét liền."
+  single yellow: "Vạch kẻ đường đơn màu vàng, dùng cho cả vạch nét đứt và nét liền."
+  single other: "Vạch kẻ đường đơn không phải trắng hoặc vàng, dùng cho cả vạch nét đứt và nét liền."
+  road curb: "Đường biên bó vỉa, phân cách mặt đường với vỉa hè hoặc khu vực liền kề."
+  direct: "Vùng mặt đường mà xe đang di chuyển hoặc có thể tiếp tục di chuyển trực tiếp, không cần chuyển làn hay đổi hướng."
+  alternative: "Vùng mặt đường xe có thể chuyển sang khi đường có nhiều làn cùng chiều; không vẽ đường ngược chiều."
+  traffic_light: "Đèn tín hiệu giao thông. Phần cột hoặc giá đỡ không thuộc class này."
+  traffic_sign: "Biển báo giao thông. Phần cột hoặc giá đỡ không thuộc class này."
+
+# Quy tắc phân biệt các cặp dễ nhầm (thứ tự trong cặp không quan trọng).
+pairs:
+  - {a: car, b: truck, rule: "Phân loại theo loại phương tiện thực tế: van chở người là car, van chở hàng là truck. Không đủ bằng chứng thì tạo Issue UNCERTAIN_CLASS."}
+  - {a: car, b: van, rule: "Van chở người gán car; van chở hàng gán truck."}
+  - {a: truck, b: van, rule: "Van chở hàng gán truck; van chở người gán car."}
+  - {a: truck, b: bus, rule: "Phân loại theo loại phương tiện thực tế; không đủ bằng chứng thì tạo Issue."}
+  - {a: person, b: rider, rule: "Rider là người đang điều khiển hoặc ngồi trên phương tiện; người đi bộ, đứng hoặc ngồi không trên phương tiện là person."}
+  - {a: pedestrian, b: rider, rule: "Rider là người đang điều khiển hoặc ngồi trên phương tiện hai bánh; còn lại là pedestrian."}
+  - {a: road, b: sidewalk, rule: "Road là phần mặt đường cho phương tiện; sidewalk là lối đi bộ tách khỏi mặt đường."}
+  - {a: building, b: wall, rule: "Building là bề mặt thuộc công trình; wall là tường độc lập hoặc tường ranh giới."}
+  - {a: wall, b: fence, rule: "Wall kín/đặc; fence dạng thanh, lưới, có khoảng hở."}
+  - {a: vegetation, b: terrain, rule: "Vegetation là cây, bụi, tán lá; terrain là đất, cỏ thấp."}
+  - {a: tree, b: bush, rule: "Cả hai thuộc vegetation nếu taxonomy không tách riêng."}
+  - {a: pole, b: traffic light, rule: "Vẽ riêng phần đèn tín hiệu và phần cột/giá đỡ theo đúng class."}
+  - {a: pole, b: traffic sign, rule: "Vẽ riêng phần biển và phần cột/giá đỡ theo đúng class."}
+  - {a: motorcycle, b: bicycle, rule: "Phân loại theo loại xe thực tế (có động cơ hay không); quá bé không phân biệt được thì tạo Issue LOW_VISIBILITY."}
+
+# Bảng Issue type dùng chung cho mọi guideline của lớp.
+issue_types:
+  - {code: UNCERTAIN_CLASS, example: "car/van vs truck"}
+  - {code: UNCERTAIN_BOUNDARY, example: "không rõ extent do occlusion"}
+  - {code: UNCERTAIN_SCOPE, example: "không chắc object có thuộc phạm vi bài"}
+  - {code: ATTRIBUTE_CHECK, example: "không chắc occluded / truncated"}
+  - {code: LOW_VISIBILITY, example: "thiếu sáng, ngược sáng, mưa, sương mù, quá bé, motion blur"}
+
+reviewer_criteria:
+  - {name: Taxonomy, check: "Đúng class, không class ngoài scope"}
+  - {name: Completeness, check: "Không thiếu, không thừa object/vùng rõ ràng"}
+  - {name: Geometry Accuracy, check: "Shape sát đối tượng, đúng hình học"}
+  - {name: Attributes, check: "Attribute đúng quy tắc"}
+  - {name: Consistency, check: "Áp dụng thống nhất giữa các thành viên và xuyên suốt batch"}
+  - {name: Escalation, check: "Case chưa có rule được đưa mentor/lead chốt, không tự đặt rule"}
+
+# Bài học khởi đầu: các quyết định mà guideline mẫu hoặc người duyệt đã chốt trong các bộ trước.
+# `question` = khoá câu hỏi mà bài học trả lời (để lần sau tool điền sẵn); `tags` = bối cảnh áp dụng.
+seed_lessons:
+  - {question: reflections, answer: not_label, tags: [any],
+     text: "Không gán reflection, bóng đổ, poster, hình trên billboard/màn hình, tượng thành object thật (cả 3 guideline ảnh đều quy định)."}
+  - {question: occlusion_box, answer: visible, tags: [detection],
+     text: "Detection trên ảnh tĩnh: box bao sát phần cần annotate và bật occluded khi bị che (guideline BBox)."}
+  - {question: occlusion_box, answer: amodal, tags: [tracking],
+     text: "Tracking: box vẫn ở vị trí toàn thân ước lượng khi bị che một phần, kèm occluded; đổi quy ước giữa chừng làm box co giật (guideline Lab 5)."}
+  - {question: truncated_attr, answer: "yes", tags: [detection],
+     text: "Object bị cắt bởi biên ảnh: bật truncated (guideline BBox)."}
+  - {question: "min_size", answer: "none", tags: [keypoints],
+     text: "Keypoint người lái: không đặt ngưỡng kích thước. Ảnh chỉ có một đối tượng cần gán (người lái), khó quan sát thì tạo Issue LOW_VISIBILITY (HumanPose-17, Facial Landmark-50)."}
+  - {question: kp_lr, answer: image, tags: [keypoints],
+     text: "Trái/phải theo phía của ẢNH: R (số chẵn) ở bên phải ảnh, L (số lẻ) ở bên trái ảnh, bất kể người quay mặt, quay lưng hay vặn mình; không suy luận theo tay/chân giải phẫu (HumanPose-17). Với mặt: 'trai'/'phai' theo khuôn mặt nhìn thấy trên ảnh (Facial Landmark-50)."}
+  - {question: kp_scope, answer: driver, tags: [keypoints],
+     text: "Mỗi ảnh chỉ gán một người / một khuôn mặt: người lái. Không có người lái thì bỏ qua ảnh; có người thứ hai thì không gán người đó (HumanPose-17, Facial Landmark-50)."}
+  - {question: "line_mode:crosswalk", answer: long_edges, tags: [detection],
+     text: "Crosswalk vẽ hai polyline theo hai mép dài của cả vùng, không vẽ tim từng sọc (người duyệt sửa ở bộ BBox/Polyline)."}
+  - {question: "line_mode:double", answer: edges, tags: [detection],
+     text: "Vạch đôi vẽ hai polyline theo hai mép ngoài của cả cặp vạch, kéo suốt chiều dài (người duyệt sửa ở bộ BBox/Polyline)."}
+  - {question: "line_mode:*", answer: centerline, tags: [detection],
+     text: "Vạch đơn và curb vẽ một polyline theo tim vạch, không nối tắt qua vùng không có vạch."}
+  - {question: low_visibility, answer: issue, tags: [any],
+     text: "Object khó quan sát (tối, mờ, quá bé): vẫn gán nếu xác định được class, và tạo Issue LOW_VISIBILITY; không đoán cho xong."}
+  - {tags: [keypoints],
+     text: "Ba trạng thái bằng property có sẵn của CVAT: Visible (thấy trực tiếp), Occluded (bị che nhưng nằm trong khung hình và suy ra được từ điểm liền kề, tư thế, tỉ lệ), Outside (ngoài khung hình hoặc không còn căn cứ ước lượng). Không dùng Hidden thay Outside: Hidden chỉ ẩn hiển thị, không lưu vào dữ liệu."}
+  - {tags: [keypoints],
+     text: "Sai số cho phép: ±5 pixel với điểm Visible, ±20 pixel với điểm Occluded."}
+  - {tags: [keypoints],
+     text: "Hai điểm Visible không thể trùng toạ độ: tách đúng vị trí, hoặc đánh lại trạng thái cho điểm không thực sự thấy. Ngoại lệ của mặt: mắt nhắm và miệng đóng thì các cặp mí trên/mí dưới, môi trên/môi dưới được trùng nhau."}
+  - {tags: [keypoints],
+     text: "Skeleton mặt bị che: còn thấy từ nửa số điểm (mắt 4/8, lông mày 3/5, môi ngoài 6/12, môi trong 4/8, sống mũi 2/4) thì đặt đủ contour, điểm không thấy là Occluded; thấy ít hơn thì chỉ đặt đủ khi có bằng chứng thị giác, không thì Outside cả skeleton. Kính trong suốt vẫn là Visible; kính râm đen không xác định được điểm là Outside."}
+  - {tags: [keypoints],
+     text: "Mặt nghiêng mạnh: không dồn các điểm của nửa mặt phía xa về giữa mặt; ước lượng được thì Occluded, không thì Outside cả skeleton đó."}
+  - {tags: [tracking],
+     text: "Khuất ≤ 60 frame và chắc cùng người thì giữ ID; lâu hơn hoặc không chắc thì track mới và ghi vào báo cáo."}
+  - {tags: [tracking],
+     text: "Keyframe ở frame đầu/cuối, chỗ đổi hướng, đổi tốc độ, đổi kích thước, ngay trước và sau khi bị che; box nội suy có IoU < 0,7 là trôi."}
+  - {tags: [semantic],
+     text: "Semantic segmentation: hai class không cùng chiếm một pixel; không để sót pixel giữa các vùng đã rõ; không lấp vùng chưa rõ bằng class suy đoán."}
+  - {tags: [any],
+     text: "Chỉ annotate class trong taxonomy: không tự tạo class mới, không đổi tên, không gộp class theo cảm tính."}
+  - {tags: [any],
+     text: "Case không chắc: majority voting trong nhóm trước, rồi tạo Issue theo 5 loại chuẩn gửi mentor; không tự đặt rule mới."}
+
+# Màu label. Bảng 19 class lấy từ color map của guideline Semantic Segmentation; class khác được gán màu tự động.
+colors:
+  road: "#804080"
+  sidewalk: "#f423e8"
+  building: "#464646"
+  wall: "#66669c"
+  fence: "#be9999"
+  pole: "#999999"
+  traffic light: "#faaa1e"
+  traffic sign: "#dcdc00"
+  vegetation: "#6b8e23"
+  terrain: "#98fb98"
+  sky: "#4682b4"
+  person: "#dc143c"
+  pedestrian: "#dc143c"
+  rider: "#ff0000"
+  car: "#00008e"
+  truck: "#000046"
+  bus: "#003c64"
+  train: "#005064"
+  motorcycle: "#0000e6"
+  bicycle: "#770b20"
+
+# Guideline mẫu đã thôi dùng: file trong reference/ có tên này (nếu còn sót sau khi cập nhật) không được đọc nữa.
+retired_references: [lab4_keypoint_pose]
+
+# Mẫu skeleton để tạo label kiểu skeleton trong CVAT. Toạ độ (0-100) là vị trí điểm trong khung mẫu của CVAT;
+# edges đánh số từ 1 theo thứ tự points. `aliases`: tên khác của label, để nhận ra label task đã có (vd. person_vf17). Tên điểm là SỐ đúng như hai guideline quy định:
+#   - person: 17 điểm 1-17 của HumanPose-17. R (số chẵn) nằm bên PHẢI ảnh, L (số lẻ) bên TRÁI ảnh; 18 cạnh.
+#     Màu điểm theo hình minh hoạ của guideline (mũi đỏ, mắt xanh dương, tai xanh ngọc, vai tím, cổ tay vàng, hông hồng, gối xanh lá, cổ chân xám).
+#   - 7 skeleton mặt của Facial Landmark-50: Point ID chạy liên tục 0-49, không reset theo từng skeleton.
+#     Màu từng skeleton theo chú giải trong hình của guideline (đỏ, xanh dương, vàng, tím hồng, xanh ngọc, xanh lá, cam).
+#     Điểm đầu của mỗi skeleton tô vàng (songmui: trắng) để thấy chiều đánh số (vòng kín: cùng chiều kim đồng hồ từ điểm trái nhất).
+# Mẫu của Lab 4 (person 17 điểm tên COCO, face 13 điểm) nằm trong guideline_library/archive/.
+skeletons:
+  person:
+    aliases: ["driver", "human", "body", "pose", "nguoi lai"]
+    color: '#ff6a4d'
+    points:
+    - {name: "1", x: 50.0, y: 8.97, color: '#e53935'}
+    - {name: "2", x: 53.25, y: 6.9, color: '#1e4fd8'}
+    - {name: "3", x: 46.75, y: 6.9, color: '#1e4fd8'}
+    - {name: "4", x: 57.25, y: 8.62, color: '#22d3ee'}
+    - {name: "5", x: 42.75, y: 8.62, color: '#22d3ee'}
+    - {name: "6", x: 64.0, y: 21.55, color: '#6b21a8'}
+    - {name: "7", x: 36.0, y: 21.55, color: '#6b21a8'}
+    - {name: "8", x: 69.75, y: 37.59, color: '#f58a1f'}
+    - {name: "9", x: 30.25, y: 37.59, color: '#facc15'}
+    - {name: "10", x: 72.75, y: 52.59, color: '#facc15'}
+    - {name: "11", x: 27.25, y: 52.59, color: '#facc15'}
+    - {name: "12", x: 58.0, y: 51.72, color: '#e91eb4'}
+    - {name: "13", x: 42.0, y: 51.72, color: '#e91eb4'}
+    - {name: "14", x: 59.5, y: 73.28, color: '#22c55e'}
+    - {name: "15", x: 40.5, y: 73.28, color: '#22c55e'}
+    - {name: "16", x: 60.5, y: 93.97, color: '#e5e7eb'}
+    - {name: "17", x: 39.5, y: 93.97, color: '#e5e7eb'}
+    edges: [[1, 2], [1, 3], [2, 4], [3, 5], [4, 6], [5, 7], [6, 7], [6, 8], [7, 9], [8, 10], [9, 11], [6, 12], [7, 13], [12, 13], [12, 14], [13, 15], [14, 16], [15, 17]]
+  longmaytrai:
+    aliases: ["left eyebrow", "eyebrow left", "left brow", "brow left"]
+    color: '#ef4444'
+    points:
+    - {name: "0", x: 10.0, y: 56.91, color: '#facc15'}
+    - {name: "1", x: 28.03, y: 46.83, color: '#ef4444'}
+    - {name: "2", x: 48.37, y: 43.09, color: '#ef4444'}
+    - {name: "3", x: 69.2, y: 43.45, color: '#ef4444'}
+    - {name: "4", x: 90.0, y: 44.65, color: '#ef4444'}
+    edges: [[1, 2], [2, 3], [3, 4], [4, 5]]
+  longmayphai:
+    aliases: ["right eyebrow", "eyebrow right", "right brow", "brow right"]
+    color: '#4f9df7'
+    points:
+    - {name: "5", x: 10.0, y: 44.65, color: '#facc15'}
+    - {name: "6", x: 30.8, y: 43.45, color: '#4f9df7'}
+    - {name: "7", x: 51.63, y: 43.09, color: '#4f9df7'}
+    - {name: "8", x: 71.97, y: 46.83, color: '#4f9df7'}
+    - {name: "9", x: 90.0, y: 56.91, color: '#4f9df7'}
+    edges: [[1, 2], [2, 3], [3, 4], [4, 5]]
+  songmui:
+    aliases: ["nose bridge", "nose"]
+    color: '#facc15'
+    points:
+    - {name: "10", x: 50.0, y: 10.0, color: '#ffffff'}
+    - {name: "11", x: 50.0, y: 36.7, color: '#facc15'}
+    - {name: "12", x: 50.0, y: 63.3, color: '#facc15'}
+    - {name: "13", x: 50.0, y: 90.0, color: '#facc15'}
+    edges: [[1, 2], [2, 3], [3, 4]]
+  mattrai:
+    aliases: ["left eye", "eye left"]
+    color: '#e040fb'
+    points:
+    - {name: "14", x: 10.0, y: 49.08, color: '#facc15'}
+    - {name: "15", x: 30.18, y: 42.6, color: '#e040fb'}
+    - {name: "16", x: 50.24, y: 40.95, color: '#e040fb'}
+    - {name: "17", x: 70.23, y: 42.07, color: '#e040fb'}
+    - {name: "18", x: 90.0, y: 51.18, color: '#e040fb'}
+    - {name: "19", x: 69.82, y: 57.4, color: '#e040fb'}
+    - {name: "20", x: 49.77, y: 59.05, color: '#e040fb'}
+    - {name: "21", x: 29.83, y: 56.02, color: '#e040fb'}
+    edges: [[1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 1]]
+  matphai:
+    aliases: ["right eye", "eye right"]
+    color: '#22d3ee'
+    points:
+    - {name: "22", x: 10.0, y: 51.18, color: '#facc15'}
+    - {name: "23", x: 29.77, y: 42.07, color: '#22d3ee'}
+    - {name: "24", x: 49.76, y: 40.95, color: '#22d3ee'}
+    - {name: "25", x: 69.82, y: 42.6, color: '#22d3ee'}
+    - {name: "26", x: 90.0, y: 49.08, color: '#22d3ee'}
+    - {name: "27", x: 70.17, y: 56.02, color: '#22d3ee'}
+    - {name: "28", x: 50.23, y: 59.05, color: '#22d3ee'}
+    - {name: "29", x: 30.18, y: 57.4, color: '#22d3ee'}
+    edges: [[1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 1]]
+  moingoai:
+    aliases: ["outer lip", "lip outer", "outer lips", "outer mouth", "mouth outer"]
+    color: '#3fd43f'
+    points:
+    - {name: "30", x: 10.0, y: 49.91, color: '#facc15'}
+    - {name: "31", x: 24.4, y: 39.16, color: '#3fd43f'}
+    - {name: "32", x: 38.8, y: 35.49, color: '#3fd43f'}
+    - {name: "33", x: 50.0, y: 36.54, color: '#3fd43f'}
+    - {name: "34", x: 62.8, y: 35.71, color: '#3fd43f'}
+    - {name: "35", x: 77.2, y: 40.03, color: '#3fd43f'}
+    - {name: "36", x: 90.0, y: 49.91, color: '#3fd43f'}
+    - {name: "37", x: 76.66, y: 58.4, color: '#3fd43f'}
+    - {name: "38", x: 63.34, y: 62.97, color: '#3fd43f'}
+    - {name: "39", x: 50.0, y: 64.51, color: '#3fd43f'}
+    - {name: "40", x: 36.66, y: 62.97, color: '#3fd43f'}
+    - {name: "41", x: 23.34, y: 58.4, color: '#3fd43f'}
+    edges: [[1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10], [10, 11], [11, 12], [12, 1]]
+  moitrong:
+    aliases: ["inner lip", "lip inner", "inner lips", "inner mouth", "mouth inner"]
+    color: '#ff9f1c'
+    points:
+    - {name: "42", x: 10.0, y: 50.14, color: '#facc15'}
+    - {name: "43", x: 30.0, y: 45.54, color: '#ff9f1c'}
+    - {name: "44", x: 50.0, y: 45.54, color: '#ff9f1c'}
+    - {name: "45", x: 70.0, y: 45.54, color: '#ff9f1c'}
+    - {name: "46", x: 90.0, y: 50.14, color: '#ff9f1c'}
+    - {name: "47", x: 70.0, y: 53.15, color: '#ff9f1c'}
+    - {name: "48", x: 50.0, y: 54.46, color: '#ff9f1c'}
+    - {name: "49", x: 30.0, y: 53.15, color: '#ff9f1c'}
+    edges: [[1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 1]]
+
+# Các bộ skeleton đi cùng nhau: một câu hỏi tạo cả bộ.
+#   detect      = khái niệm tool tìm trong ảnh mẫu để gợi ý có nên tạo bộ này không
+#   definitions = định nghĩa dùng cho label của bộ khi task là keypoint (thay cho định nghĩa chung ở trên)
+#   rules       = các dòng luật riêng của bộ, đưa vào mục "Skeleton" của bản nháp (mã luật = kp.<bộ>.<id>)
+skeleton_sets:
+  pose17:
+    title: "HumanPose-17: skeleton person, 17 điểm"
+    guideline: "HumanPose17_Annotation_Guideline_V1"
+    detect: person
+    labels: [person]
+    definitions:
+      person: "Người lái. Một skeleton 17 keypoint đặt tên 1-17: 1 mũi; 2/3 mắt; 4/5 tai; 6/7 vai; 8/9 khuỷu; 10/11 cổ tay; 12/13 hông; 14/15 gối; 16/17 cổ chân. Số chẵn là R, số lẻ là L."
+    rules:
+      - {id: head, text: "Vùng đầu. 1 – Nose: chóp mũi; mặt nghiêng vẫn là chóp mũi, không dời về giữa mặt. 2/3 – Eye: tâm đồng tử (mắt nhắm: tâm khe mí). 4/5 – Ear: ống tai, không phải chóp hay dái tai; tóc phủ kín tai mà ước lượng được thì Occluded, không thì Outside."}
+      - {id: arms, text: "Chi trên. 6/7 – Shoulder: tâm khớp vai, tại điểm xoay của cánh tay. 8/9 – Elbow: tâm khớp khuỷu. 10/11 – Wrist: tâm khớp cổ tay, ở nếp gấp cổ tay; tay trên vô-lăng vẫn không dời lên vành vô-lăng."}
+      - {id: legs, text: "Thân và chi dưới. 12/13 – Hip: tâm khớp háng, không phải mép ngoài hông hay cạp quần. 14/15 – Knee: tâm khớp gối, giữa xương bánh chè. 16/17 – Ankle: tâm khớp cổ chân, ngang mắt cá."}
+      - {id: chain, text: "Người lái vặn mình hoặc quay lưng: không đảo quy ước R/L. Kiểm tra chéo: chuỗi vai–khuỷu–cổ tay và hông–gối–cổ chân mỗi phía phải liền mạch, không bắt chéo sang bên kia thân."}
+      - {id: occluder, text: "Bị che bởi đồ vật (ghế, cần số, dây an toàn) hoặc bởi chính cơ thể do góc camera chéo: còn khớp liền kề thấy rõ để nội suy thì đặt điểm và gán Occluded; không còn dấu hiệu để nội suy thì Outside."}
+      - {id: prelabel, text: "Pre-label sai nhiều: kéo cả cụm keypoint về đúng chỗ và điền đúng trạng thái; không giữ nguyên vì 'gần đúng'."}
+  face50:
+    title: "Facial Landmark-50: 7 skeleton mặt, 50 điểm"
+    guideline: "Face_Landmark50_Annotation_Guideline_V1"
+    detect: face
+    labels: [longmaytrai, longmayphai, songmui, mattrai, matphai, moingoai, moitrong]
+    rules:
+      - {id: ids, text: "Đủ 7 skeleton và 50 điểm. Point ID chạy liên tục 0–49 qua cả 7 skeleton, không reset theo từng skeleton. Tên label viết liền, không dấu, không viết hoa, không đổi."}
+      - {id: order, text: "Vòng kín (mắt, môi) có toạ độ chạy cùng chiều kim đồng hồ, bắt đầu từ điểm trái nhất: bờ trên từ trái sang phải, rồi vòng về theo bờ dưới."}
+      - {id: threshold, text: "Cả một bộ phận bị che: còn thấy từ mattrai/matphai 4/8, longmaytrai/longmayphai 3/5, moingoai 6/12, moitrong 4/8, songmui 2/4 điểm thì đặt đủ contour, điểm không thấy đánh Occluded. Thấy ít hơn: đặt đủ nếu có đủ bằng chứng thị giác; còn không thì Outside cả skeleton."}
+      - {id: turned, text: "Mặt nghiêng mạnh: lông mày và mắt phía xa bị che, pre-label thường dồn cụm điểm về giữa mặt. Chỉnh từng cụm cho hợp lý, không dồn điểm về giữa mặt; không ước lượng được thì Outside skeleton đó."}
+      - {id: eye_closed, text: "Nheo hoặc nhắm mắt: vẫn đủ 8 điểm thành vòng kín; mí trên và mí dưới nằm sát hoặc trùng nhau theo khe mí (các cặp 15–21, 16–20, 17–19 được trùng), hai khoé vẫn đúng vị trí. Visible nếu còn xác định được khe mí; chỉ Occluded khi mắt bị vật khác che."}
+      - {id: mouth, text: "Miệng mở: moitrong tách khỏi moingoai, ôm khoang miệng thật; thấy răng hoặc lưỡi thì đặt lên mép môi; làm điểm 44 và 48 trước rồi chia các điểm còn lại. Miệng đóng: moitrong vẫn đủ 8 điểm dọc đường khép môi, các cặp 43–49, 44–48, 45–47 được trùng hoặc gần trùng; không xoá moitrong, không Outside chỉ vì miệng đóng."}
+      - {id: occluder, text: "Bị che bởi kính, tay, vô-lăng, dây an toàn: đeo kính mà vẫn xác định được điểm thì Visible; bị che nhưng ước lượng được thì Occluded; không xác định hoặc suy luận được (ví dụ kính râm đen) thì Outside. Không đặt điểm lên vật che hoặc ra ngoài vùng khuôn mặt."}
+      - {id: prelabel, text: "Pre-label đã đúng: giữ nguyên vị trí nhưng vẫn phải đặt trạng thái cho cả 50 điểm."}
+
+# Bảng Issue type và tiêu chí reviewer riêng cho bài keypoint (hai guideline HumanPose-17 và Facial Landmark-50).
+issue_types_keypoints:
+  - {code: UNCERTAIN_CLASS, example: "không chắc điểm thuộc R hay L khi người lái vặn mình/quay lưng; không chắc nhóm điểm thuộc mattrai hay matphai khi mặt nghiêng mạnh"}
+  - {code: UNCERTAIN_BOUNDARY, example: "không rõ vị trí điểm do bị vô-lăng, ghế, quần áo, gọng kính, tay che"}
+  - {code: UNCERTAIN_SCOPE, example: "không xác định được ai là người lái; có skeleton hoặc khuôn mặt thứ hai (hành khách, phản chiếu); ảnh không có mặt"}
+  - {code: ATTRIBUTE_CHECK, example: "không chắc Visible / Occluded / Outside"}
+  - {code: LOW_VISIBILITY, example: "thiếu sáng, ngược sáng, loá kính, nhoè, mặt quá nhỏ, không phân biệt được người với ghế"}
+
+reviewer_criteria_keypoints:
+  - {name: Taxonomy & Completeness, check: "Đúng label và số điểm (person: 17 sublabel 1–17; mặt: 7 skeleton, 50 điểm); không bỏ sót người lái, không skeleton thừa; mọi điểm có trạng thái"}
+  - {name: Keypoint Accuracy, check: "Vị trí trong sai số cho phép so với vị trí chuẩn: ±5 px điểm Visible, ±20 px điểm Occluded"}
+  - {name: Left/Right & Topology, check: "R bên phải ảnh, L bên trái ảnh; chuỗi vai–khuỷu–cổ tay và hông–gối–cổ chân đúng thứ tự, không bắt chéo; mắt không bắt chéo, moitrong nằm trong moingoai"}
+  - {name: Consistency, check: "Áp dụng thống nhất giữa các thành viên và xuyên suốt batch"}
+  - {name: Escalation, check: "Case chưa có rule được đưa mentor/lead chốt, không tự đặt rule"}

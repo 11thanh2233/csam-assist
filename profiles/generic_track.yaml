@@ -1,0 +1,26 @@
+# Profile dự phòng cho theo dõi: dùng khi label của task không khớp profile tracking nào.
+# Mọi label rectangle (hoặc any) được theo dõi, prompt = tên label.
+id: generic_track
+title: "Tracking - theo label của task"
+description: "Prompt = tên label. Luật mặc định giống profile MOT."
+mode: tracking
+
+defaults:
+  threshold: 0.5
+
+labels: []
+
+rules:
+  tracking:
+    match_iou: 0.3
+    reid_max_gap_frames: 60
+    reid_min_appearance: 0.75
+    reid_max_distance: 1.5
+    min_track_frames: 5
+    smooth_window: 5
+    amodal: {enabled: true, shrink_ratio: 0.8, history: 15}
+    occluded_overlap: 0.15
+    merge_iou: 0.6
+    keyframe_iou: 0.8
+    max_keyframe_gap: 20
+    dense_keyframes_per_100: 50

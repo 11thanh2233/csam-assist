@@ -3,6 +3,7 @@
 #   bash scripts/setup.sh                 # chỉ phần chung (đủ để chạy SAM3_ENGINE=mock)
 #   bash scripts/setup.sh sam3            # + PyTorch + gói sam3 chính thức của Meta
 #   bash scripts/setup.sh transformers    # + PyTorch + SAM3 qua Hugging Face transformers
+#   bash scripts/setup.sh skeleton        # + MediaPipe cho skeleton khuôn mặt (chạy SAU một trong hai dòng trên)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,6 +29,13 @@ if [ "$MODE" = "sam3" ]; then
   pip install "huggingface_hub[cli]"
 elif [ "$MODE" = "transformers" ]; then
   pip install --upgrade transformers "huggingface_hub[cli]"
+fi
+
+if [ "$MODE" = "skeleton" ]; then
+  # Cài không kèm opencv-contrib-python để không đụng opencv-python-headless đang có (cả hai cùng cung cấp cv2).
+  pip install --no-deps mediapipe
+  pip install absl-py flatbuffers certifi sounddevice matplotlib scipy
+  python -c "import mediapipe; from mediapipe.tasks.python import vision; print('MediaPipe', mediapipe.__version__, 'OK')"
 fi
 
 [ -f .env ] || cp .env.example .env

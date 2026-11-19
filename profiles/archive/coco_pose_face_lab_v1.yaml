@@ -1,0 +1,61 @@
+# Profile cho: Quy ước nhãn — Lab Ngày 4 (Keypoint & Pose)
+# Skeleton người 17 điểm COCO + skeleton khuôn mặt 13 điểm của lab.
+# Tool ghép điểm theo TÊN với các điểm của skeleton trong task, nên thứ tự trong task không quan trọng,
+# nhưng tên phải đúng từng chữ như guideline.
+id: coco_pose_face_lab_v1
+title: "Keypoint & Pose - người 17 điểm COCO + mặt 13 điểm (Lab 4)"
+description: "Cờ v theo COCO: thấy = bình thường, che mà đoán chắc = occluded, ngoài ảnh/không đoán được = outside."
+guideline: GUIDELINE_Checkpoint_Skeleton.md
+mode: keypoints
+match_labels: [person]
+
+defaults:
+  threshold: 0.5        # độ tin cậy SAM3 khi tìm người
+
+labels:
+  - name: person
+    shape: skeleton
+    kind: body            # dùng model tư thế người (ViTPose, đầu ra theo thứ tự COCO)
+    prompts: ["person"]   # SAM3 tìm người; poster, gương, màn hình cần bạn bỏ tick
+    keypoints: [nose, left_eye, right_eye, left_ear, right_ear, left_shoulder, right_shoulder,
+                left_elbow, right_elbow, left_wrist, right_wrist, left_hip, right_hip,
+                left_knee, right_knee, left_ankle, right_ankle]
+    # 19 cạnh, đánh số từ 1 theo danh sách trên (giống file COCO và guideline mục 1)
+    edges: [[16,14],[14,12],[17,15],[15,13],[12,13],[6,12],[7,13],[6,7],[6,8],[7,9],
+            [8,10],[9,11],[2,3],[1,2],[1,3],[2,4],[3,5],[4,6],[5,7]]
+
+  - name: face
+    shape: skeleton
+    kind: face            # dùng MediaPipe FaceLandmarker (478 điểm); `index` = số thứ tự điểm của MediaPipe
+    keypoints:
+      # "left"/"right" là của NGƯỜI trong ảnh (guideline). Với mặt nhìn thẳng camera, mắt trái nằm bên phải ảnh.
+      - {name: left_eye_outer,  index: 263}
+      - {name: left_eye_inner,  index: 362}
+      - {name: left_eye_upper,  index: 386}
+      - {name: left_eye_lower,  index: 374}
+      - {name: right_eye_outer, index: 33}
+      - {name: right_eye_inner, index: 133}
+      - {name: right_eye_upper, index: 159}
+      - {name: right_eye_lower, index: 145}
+      - {name: nose_tip,        index: 1}
+      - {name: mouth_left,      index: 291}
+      - {name: mouth_right,     index: 61}
+      - {name: lip_upper,       index: 0}
+      - {name: lip_lower,       index: 17}
+    edges: [[1,3],[3,2],[2,4],[4,1],[5,7],[7,6],[6,8],[8,5],[10,12],[12,11],[11,13],[13,10],[9,12]]
+
+rules:
+  pose:
+    min_person_height_px: 60  # guideline: người cao dưới 60px không gán, đếm vào báo cáo
+    # Cờ v suy từ độ tin cậy của model tư thế (0..1). Đây là giá trị khởi đầu, chỉnh sau khi thử:
+    visible_score: 0.6        # >= mức này: thấy (v = 2)
+    occluded_score: 0.35      # giữa hai mức: occluded (v = 1), luôn gắn cờ vis_flag để bạn kiểm tra
+                              # dưới mức này: outside (v = 0) -- "không đoán bừa"
+    lr_check: true            # gắn cờ lr_swap khi vai và hông ngược thứ tự trái/phải, hoặc hai chân bắt chéo
+
+  face:
+    min_face_px: 20           # bỏ qua khuôn mặt hẹp hơn mức này (lab không quy định; chỉnh nếu cần)
+    profile_yaw_ratio: 2.5    # mặt nghiêng mạnh: mắt xa camera -> occluded (guideline mục 5, "Mặt nghiêng")
+
+  dedup:
+    existing_iou: 0.5         # trùng với skeleton đã có trên frame -> gắn cờ, bỏ tick

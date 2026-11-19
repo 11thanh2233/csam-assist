@@ -1,0 +1,543 @@
+[
+ {
+  "name": "person",
+  "id": 101,
+  "color": "#ff6a4d",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "1",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 102
+   },
+   {
+    "name": "2",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 103
+   },
+   {
+    "name": "3",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 104
+   },
+   {
+    "name": "4",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 105
+   },
+   {
+    "name": "5",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 106
+   },
+   {
+    "name": "6",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 107
+   },
+   {
+    "name": "7",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 108
+   },
+   {
+    "name": "8",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 109
+   },
+   {
+    "name": "9",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 110
+   },
+   {
+    "name": "10",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 111
+   },
+   {
+    "name": "11",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 112
+   },
+   {
+    "name": "12",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 113
+   },
+   {
+    "name": "13",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 114
+   },
+   {
+    "name": "14",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 115
+   },
+   {
+    "name": "15",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 116
+   },
+   {
+    "name": "16",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 117
+   },
+   {
+    "name": "17",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 118
+   }
+  ]
+ },
+ {
+  "name": "longmaytrai",
+  "id": 119,
+  "color": "#2e6fd6",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "0",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 120
+   },
+   {
+    "name": "1",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 121
+   },
+   {
+    "name": "2",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 122
+   },
+   {
+    "name": "3",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 123
+   },
+   {
+    "name": "4",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 124
+   }
+  ]
+ },
+ {
+  "name": "longmayphai",
+  "id": 125,
+  "color": "#2e6fd6",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "5",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 126
+   },
+   {
+    "name": "6",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 127
+   },
+   {
+    "name": "7",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 128
+   },
+   {
+    "name": "8",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 129
+   },
+   {
+    "name": "9",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 130
+   }
+  ]
+ },
+ {
+  "name": "songmui",
+  "id": 131,
+  "color": "#2e6fd6",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "10",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 132
+   },
+   {
+    "name": "11",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 133
+   },
+   {
+    "name": "12",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 134
+   },
+   {
+    "name": "13",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 135
+   }
+  ]
+ },
+ {
+  "name": "mattrai",
+  "id": 136,
+  "color": "#2e6fd6",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "14",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 137
+   },
+   {
+    "name": "15",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 138
+   },
+   {
+    "name": "16",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 139
+   },
+   {
+    "name": "17",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 140
+   },
+   {
+    "name": "18",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 141
+   },
+   {
+    "name": "19",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 142
+   },
+   {
+    "name": "20",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 143
+   },
+   {
+    "name": "21",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 144
+   }
+  ]
+ },
+ {
+  "name": "matphai",
+  "id": 145,
+  "color": "#2e6fd6",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "22",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 146
+   },
+   {
+    "name": "23",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 147
+   },
+   {
+    "name": "24",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 148
+   },
+   {
+    "name": "25",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 149
+   },
+   {
+    "name": "26",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 150
+   },
+   {
+    "name": "27",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 151
+   },
+   {
+    "name": "28",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 152
+   },
+   {
+    "name": "29",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 153
+   }
+  ]
+ },
+ {
+  "name": "moingoai",
+  "id": 154,
+  "color": "#2e6fd6",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "30",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 155
+   },
+   {
+    "name": "31",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 156
+   },
+   {
+    "name": "32",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 157
+   },
+   {
+    "name": "33",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 158
+   },
+   {
+    "name": "34",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 159
+   },
+   {
+    "name": "35",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 160
+   },
+   {
+    "name": "36",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 161
+   },
+   {
+    "name": "37",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 162
+   },
+   {
+    "name": "38",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 163
+   },
+   {
+    "name": "39",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 164
+   },
+   {
+    "name": "40",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 165
+   },
+   {
+    "name": "41",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 166
+   }
+  ]
+ },
+ {
+  "name": "moitrong",
+  "id": 167,
+  "color": "#2e6fd6",
+  "type": "skeleton",
+  "attributes": [],
+  "sublabels": [
+   {
+    "name": "42",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 168
+   },
+   {
+    "name": "43",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 169
+   },
+   {
+    "name": "44",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 170
+   },
+   {
+    "name": "45",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 171
+   },
+   {
+    "name": "46",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 172
+   },
+   {
+    "name": "47",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 173
+   },
+   {
+    "name": "48",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 174
+   },
+   {
+    "name": "49",
+    "attributes": [],
+    "type": "points",
+    "color": "#33ddff",
+    "id": 175
+   }
+  ]
+ }
+]

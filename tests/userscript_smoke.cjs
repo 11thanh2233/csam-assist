@@ -44,7 +44,9 @@ async function main() {
 
   const server = spawn('python3', ['-m', 'backend'], {
     cwd: ROOT, stdio: 'ignore',
-    env: { ...process.env, SAM3_ENGINE: 'mock', SAM3_PORT: String(PORT), SAM3_API_KEY: 'smoke-key' },
+    // Thư viện guideline / dữ liệu tự học tạm: test không ghi vào thư mục thật của repo.
+    env: { ...process.env, SAM3_ENGINE: 'mock', SAM3_PORT: String(PORT), SAM3_API_KEY: 'smoke-key',
+      SAM3_LIBRARY_DIR: require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'sam3-smoke-lib-')) },
   });
   try {
     await until(() => true, 'khởi động', 1);
@@ -76,6 +78,7 @@ async function scenario(frameBytes) {
   const store = { shapes: [], nextId: 1, issues: [], saveClicks: 0 };
   win.document.querySelector('.cvat-annotation-header-save-button').addEventListener('click', () => { store.saveClicks++; });
   win.document.cookie = 'csrftoken=abc123';
+  win.localStorage.setItem('currentOrganization', 'team1');
 
   const json = (data, status = 200) => ({ ok: status < 300, status, json: async () => data, text: async () => JSON.stringify(data) });
   win.fetch = async (url, opts = {}) => {
@@ -84,8 +87,15 @@ async function scenario(frameBytes) {
     const body = opts.body ? JSON.parse(opts.body) : undefined;
     calls.push({ method, path: u.pathname + u.search, body, headers: opts.headers || {} });
     if (method !== 'GET') assert.strictEqual(opts.headers['X-CSRFToken'], 'abc123', 'thiếu CSRF token');
+    // Giống CVAT thật: chỉ chấp nhận kiểu JSON riêng của CVAT (hoặc */* khi tải ảnh).
+    if (!['application/vnd.cvat+json', '*/*'].includes(opts.headers.Accept)) {
+      return json({ detail: 'Could not satisfy the request Accept header.' }, 406);
+    }
     if (u.pathname === '/api/jobs/12') return json({ id: 12, task_id: 5, start_frame: 0, stop_frame: 9 });
-    if (u.pathname === '/api/labels') return json({ count: LABELS.length, next: null, results: LABELS });
+    if (u.pathname === '/api/labels') {
+      const visible = u.searchParams.get('org') === 'team1' ? LABELS : [];
+      return json({ count: visible.length, next: null, results: visible });
+    }
     if (u.pathname === '/api/jobs/12/data') {
       assert.strictEqual(u.searchParams.get('number'), '3');
       return { ok: true, status: 200, blob: async () => new win.Blob([frameBytes], { type: 'image/jpeg' }) };
@@ -97,6 +107,10 @@ async function scenario(frameBytes) {
         const created = body.shapes.map((s) => ({ ...s, id: store.nextId++ }));
         store.shapes.push(...created);
         return json({ version: 2, tags: [], shapes: created, tracks: [] });
+      }
+      if (action === 'update') {
+        for (const s of body.shapes) Object.assign(store.shapes.find((x) => x.id === s.id), s);
+        return json({ version: 3, tags: [], shapes: body.shapes, tracks: [] });
       }
       if (action === 'delete') {
         const ids = new Set(body.shapes.map((s) => s.id));
@@ -164,7 +178,7 @@ async function scenario(frameBytes) {
     kinds.add(s.type);
     assert.ok(validIds.has(s.label_id));
     assert.strictEqual(s.frame, 3);
-    assert.strictEqual(s.source, 'semi-auto');
+    assert.ok(!('source' in s), 'mặc định không gửi trường source');
     assert.strictEqual(typeof s.occluded, 'boolean');
     assert.ok(Array.isArray(s.points) && s.points.length >= 4 && s.points.every((v) => Number.isFinite(v)));
     const label = LABELS.find((l) => l.id === s.label_id);
@@ -193,6 +207,24 @@ async function scenario(frameBytes) {
     assert.strictEqual(store.issues[0].position.length, 4);
     await until(() => /Đã tạo Issue/.test(statusText()), 'issue xong');
   }
+  // 6b. Đổi source semi-auto -> manual cho nhãn đã lưu, không đụng nhãn frame khác
+  store.shapes[0].source = 'semi-auto';
+  store.shapes[1].source = 'semi-auto';
+  store.shapes.push({ id: 999, type: 'rectangle', frame: 7, label_id: 102, points: [1, 1, 9, 9], source: 'semi-auto' });
+  const pointsBefore = JSON.stringify(store.shapes[0].points);
+  const undoBefore = gm.undo;
+  button('Cài đặt').click();
+  button('Frame này').click();
+  await until(() => store.shapes[0].source === 'manual' && store.shapes[1].source === 'manual', 'đổi source: ' + statusText());
+  assert.strictEqual(store.shapes.find((s) => s.id === 999).source, 'semi-auto', 'không được đổi nhãn của frame khác');
+  assert.strictEqual(JSON.stringify(store.shapes[0].points), pointsBefore, 'hình học phải giữ nguyên');
+  const upd = calls.find((c) => c.path.includes('action=update'));
+  assert.strictEqual(upd.body.shapes.length, 2);
+  store.shapes = store.shapes.filter((s) => s.id !== 999);
+  gm.undo = undoBefore; // khôi phục để kiểm tra tiếp bước hoàn tác
+  await until(() => /Đã đổi 2 nhãn/.test(statusText()), 'đổi xong');
+  await sleep(900);
+
   button('Gợi ý').click();
   button('Hoàn tác').click();
   await until(() => store.shapes.length === 0, 'hoàn tác: ' + statusText());

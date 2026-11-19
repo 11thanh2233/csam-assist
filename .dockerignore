@@ -1,0 +1,15 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+node_modules
+third_party
+models
+tests
+colab
+docs
+guideline_library/runs
+guideline_library/lessons.jsonl
+profiles/auto_*.yaml
+.env

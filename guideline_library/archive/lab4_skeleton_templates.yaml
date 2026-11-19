@@ -1,0 +1,195 @@
+# Mẫu skeleton của Lab 4 (người 17 điểm tên COCO, mặt 13 điểm). Đã thay bằng HumanPose-17 và Facial Landmark-50.
+# Muốn dùng lại: chép khối bên dưới vào mục skeletons của guideline_library/knowledge.yaml.
+skeletons:
+  person:
+    color: '#ff6a4d'
+    points:
+    - name: nose
+      x: 50.0
+      y: 8.97
+      color: '#f2c12e'
+    - name: left_eye
+      x: 53.25
+      y: 6.9
+      color: '#e8473c'
+    - name: right_eye
+      x: 46.75
+      y: 6.9
+      color: '#2e6fd6'
+    - name: left_ear
+      x: 57.25
+      y: 8.62
+      color: '#e8473c'
+    - name: right_ear
+      x: 42.75
+      y: 8.62
+      color: '#2e6fd6'
+    - name: left_shoulder
+      x: 64.0
+      y: 21.55
+      color: '#e8473c'
+    - name: right_shoulder
+      x: 36.0
+      y: 21.55
+      color: '#2e6fd6'
+    - name: left_elbow
+      x: 69.75
+      y: 37.59
+      color: '#e8473c'
+    - name: right_elbow
+      x: 30.25
+      y: 37.59
+      color: '#2e6fd6'
+    - name: left_wrist
+      x: 72.75
+      y: 52.59
+      color: '#e8473c'
+    - name: right_wrist
+      x: 27.25
+      y: 52.59
+      color: '#2e6fd6'
+    - name: left_hip
+      x: 58.0
+      y: 51.72
+      color: '#e8473c'
+    - name: right_hip
+      x: 42.0
+      y: 51.72
+      color: '#2e6fd6'
+    - name: left_knee
+      x: 59.5
+      y: 73.28
+      color: '#e8473c'
+    - name: right_knee
+      x: 40.5
+      y: 73.28
+      color: '#2e6fd6'
+    - name: left_ankle
+      x: 60.5
+      y: 93.97
+      color: '#e8473c'
+    - name: right_ankle
+      x: 39.5
+      y: 93.97
+      color: '#2e6fd6'
+    edges:
+    - - 16
+      - 14
+    - - 14
+      - 12
+    - - 17
+      - 15
+    - - 15
+      - 13
+    - - 12
+      - 13
+    - - 6
+      - 12
+    - - 7
+      - 13
+    - - 6
+      - 7
+    - - 6
+      - 8
+    - - 7
+      - 9
+    - - 8
+      - 10
+    - - 9
+      - 11
+    - - 2
+      - 3
+    - - 1
+      - 2
+    - - 1
+      - 3
+    - - 2
+      - 4
+    - - 3
+      - 5
+    - - 4
+      - 6
+    - - 5
+      - 7
+  face:
+    color: '#33ddff'
+    points:
+    - name: left_eye_outer
+      x: 80.0
+      y: 26.47
+      color: '#e8473c'
+    - name: left_eye_inner
+      x: 58.1
+      y: 26.47
+      color: '#e8473c'
+    - name: left_eye_upper
+      x: 69.05
+      y: 21.47
+      color: '#e8473c'
+    - name: left_eye_lower
+      x: 69.05
+      y: 30.59
+      color: '#e8473c'
+    - name: right_eye_outer
+      x: 15.24
+      y: 26.47
+      color: '#2e6fd6'
+    - name: right_eye_inner
+      x: 37.14
+      y: 26.47
+      color: '#2e6fd6'
+    - name: right_eye_upper
+      x: 26.19
+      y: 21.47
+      color: '#2e6fd6'
+    - name: right_eye_lower
+      x: 26.19
+      y: 30.59
+      color: '#2e6fd6'
+    - name: nose_tip
+      x: 47.62
+      y: 59.41
+      color: '#f2c12e'
+    - name: mouth_left
+      x: 64.29
+      y: 81.76
+      color: '#e8473c'
+    - name: mouth_right
+      x: 30.95
+      y: 81.76
+      color: '#2e6fd6'
+    - name: lip_upper
+      x: 47.62
+      y: 78.53
+      color: '#f2c12e'
+    - name: lip_lower
+      x: 47.62
+      y: 87.65
+      color: '#f2c12e'
+    edges:
+    - - 1
+      - 3
+    - - 3
+      - 2
+    - - 2
+      - 4
+    - - 4
+      - 1
+    - - 5
+      - 7
+    - - 7
+      - 6
+    - - 6
+      - 8
+    - - 8
+      - 5
+    - - 10
+      - 12
+    - - 12
+      - 11
+    - - 11
+      - 13
+    - - 13
+      - 10
+    - - 9
+      - 12

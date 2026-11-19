@@ -35,9 +35,11 @@ class Engine:
         raise NotImplementedError
 
     def segment_box(
-        self, state: Any, box_xyxy: list[float], prompt: Optional[str], threshold: float
+        self, state: Any, box_xyxy: list[float], prompt: Optional[str], threshold: float,
+        negatives: Optional[list[list[float]]] = None,
     ) -> list[Instance]:
-        """Dùng một hộp làm ví dụ mẫu: trả về đối tượng trong hộp và các đối tượng tương tự."""
+        """Dùng một hộp làm ví dụ mẫu: trả về đối tượng trong hộp và các đối tượng tương tự.
+        `negatives`: các hộp mẫu ÂM (vật SAM3 nhận nhầm): SAM3 bỏ những vật giống chúng."""
         raise NotImplementedError
 
 

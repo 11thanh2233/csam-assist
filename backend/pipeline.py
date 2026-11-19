@@ -206,7 +206,16 @@ def objects_to_proposals(dets: list[Det], width: int, height: int, rules: dict, 
         common = dict(occluded=det.occluded, attributes=attrs, flags=det.flags)
         shape = det.cfg["shape"]
         if shape == "rectangle":
-            out.append(make_proposal(det.cfg, "rectangle", [round(v, 2) for v in box], det.score, box, **common))
+            adjust = det.cfg.get("box_adjust")
+            if adjust:
+                # Chỉnh hộp tool đã học từ cách bạn hay kéo các cạnh hộp của label này (xem tab Tự học).
+                w, h = box[2] - box[0], box[3] - box[1]
+                box = G.clamp_box([box[0] + adjust[0] * w, box[1] + adjust[1] * h, box[2] + adjust[2] * w, box[3] + adjust[3] * h],
+                                  width, height)
+            proposal = make_proposal(det.cfg, "rectangle", [round(v, 2) for v in box], det.score, box, **common)
+            if adjust:
+                proposal["box_adjust"] = list(adjust)
+            out.append(proposal)
         elif shape == "polygon":
             polys = G.mask_to_polygons(det.mask, eps, det.cfg["min_area_px"])
             if not polys:
@@ -580,6 +589,13 @@ def semantic(
 
 # ------------------------------------------------------------ điều phối -----
 def shape_bbox(shape: dict) -> Optional[list[float]]:
+    if shape.get("type") == "skeleton":
+        shown = [e.get("points") or [] for e in shape.get("elements") or [] if not e.get("outside")]
+        shown = [p for p in shown if len(p) >= 2]
+        if not shown:
+            return None
+        xs, ys = [p[0] for p in shown], [p[1] for p in shown]
+        return [min(xs), min(ys), max(xs), max(ys)]
     pts = shape.get("points") or []
     if shape.get("type") == "mask" and len(pts) >= 4:
         left, top, right, bottom = pts[-4:]
@@ -671,14 +687,15 @@ def propose(
 
 def interactive(
     engine: Engine, state: Any, image: np.ndarray, profile: dict, cfg: dict,
-    box: list[float], mode: str, prompt: Optional[str],
+    box: list[float], mode: str, prompt: Optional[str], existing: Optional[list[dict]] = None,
+    negatives: Optional[list[list[float]]] = None,
 ) -> dict:
     """Người dùng kéo một hộp quanh đối tượng: lấy đúng đối tượng đó ('single') hoặc mọi đối tượng giống nó ('similar')."""
     height, width = image.shape[:2]
     rules = profile.get("rules", {})
     warnings: list[str] = []
     dets = []
-    for inst in engine.segment_box(state, box, prompt or None, 0.3):
+    for inst in engine.segment_box(state, box, prompt or None, 0.3, negatives if mode == "similar" else None):
         mask = G.clean_mask(inst.mask.astype(bool)) if cfg["shape"] != "polyline" else inst.mask.astype(bool)
         bbox = G.mask_bbox(mask)
         if bbox is not None:
@@ -695,4 +712,7 @@ def interactive(
         proposals = lanes_to_proposals(items, width, height)
     else:
         proposals = objects_to_proposals(dets, width, height, rules, warnings)
+    if mode == "similar" and existing:
+        # "Tìm tương tự" tìm mọi vật giống mẫu, kể cả những vật đã gán: bỏ tick những đề xuất trùng nhãn có sẵn.
+        mark_existing_duplicates(proposals, existing, float((rules.get("dedup") or {}).get("existing_iou", 0.7)))
     return {"width": width, "height": height, "proposals": finalize(proposals), "warnings": warnings}

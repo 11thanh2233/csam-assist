@@ -1,0 +1,32 @@
+# Chạy backend bằng Docker (cần GPU NVIDIA; trên Windows dùng Docker Desktop với WSL2).
+#   1. Tạo file .env cạnh file này (xem .env.example). Tối thiểu: HF_TOKEN=<token Hugging Face đã được duyệt quyền facebook/sam3>
+#   2. docker compose up --build
+#   3. Tab Cài đặt của panel: địa chỉ backend http://127.0.0.1:8765
+services:
+  backend:
+    build: .
+    image: sam3-cvat-assist:latest
+    ports:
+      - "127.0.0.1:8765:8765"        # chỉ mở cho máy này; đổi thành "8765:8765" và đặt SAM3_API_KEY nếu dùng từ máy khác
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SAM3_ENGINE: ${SAM3_ENGINE:-transformers}
+      HF_TOKEN: ${HF_TOKEN:-}
+      # Chỉ nhận request gửi tới 127.0.0.1/localhost (chặn trang web lạ dùng DNS rebinding). Mở cho máy khác: đặt "*".
+      SAM3_ALLOWED_HOSTS: ${SAM3_ALLOWED_HOSTS:-127.0.0.1,localhost}
+    volumes:
+      - sam3-data:/data                # checkpoint đã tải, bài học guideline, các lượt soạn nháp
+      - ./profiles:/app/profiles       # profile sửa trên máy có hiệu lực ngay (bấm "Nạp lại profile")
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  sam3-data:

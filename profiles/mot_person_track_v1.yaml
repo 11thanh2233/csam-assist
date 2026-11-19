@@ -1,0 +1,38 @@
+# Profile cho: Guideline gán nhãn tracking — Lab Ngày 5 (phần dùng chung cho mọi job tracking)
+# Không gồm phần riêng của bài (chỉ gán 5 người P1-P5): tool theo dõi mọi đối tượng tìm được,
+# bạn bỏ tick các track không cần.
+id: mot_person_track_v1
+title: "Tracking người - box toàn thân, MOT (Lab 5)"
+description: "Rectangle track, box toàn thân kể cả khi bị che, outside khi mất hẳn hoặc ra khỏi khung."
+guideline: GUIDELINE_Video.md
+mode: tracking
+match_labels: [person]
+
+defaults:
+  threshold: 0.5
+
+labels:
+  - name: person
+    aliases: [pedestrian]
+    shape: rectangle
+    prompts: ["person"]
+
+rules:
+  tracking:
+    match_iou: 0.3              # nối sang frame kế khi box chồng lên vị trí dự đoán từ mức này
+    # Guideline mục 3: khuất <= 60 frame và chắc cùng người -> cùng ID; lâu hơn hoặc không chắc -> track mới.
+    reid_max_gap_frames: 60
+    reid_min_appearance: 0.75   # ngoại hình (màu quần áo) phải giống từ mức này mới tự nối lại; luôn gắn cờ để xác nhận
+    reid_max_distance: 1.5      # chỗ hiện lại cách vị trí dự đoán tối đa ~1.5 lần chiều cao người (nới theo thời gian khuất)
+    min_track_frames: 5         # track ngắn hơn: bỏ tick, gắn cờ false_track
+    smooth_window: 5            # làm mượt box theo 5 frame để box không rung
+    amodal:                     # guideline mục 2: bị che một phần -> box vẫn bao toàn thân ước lượng + occluded
+      enabled: true
+      shrink_ratio: 0.8         # chiều cao box tụt dưới 80% chiều cao gần đây -> coi là bị che
+      history: 15
+    occluded_overlap: 0.15      # bị người ở gần camera hơn che từ 15% diện tích -> occluded
+    merge_iou: 0.6              # hai track chồng nhau từ mức này >= 3 frame -> gắn cờ (đổi ID / một box bao hai người)
+    # Guideline mục 4: nội suy có IoU < 0.7 với người thật là "trôi". Tool đặt 0.8 để có biên an toàn.
+    keyframe_iou: 0.8
+    max_keyframe_gap: 20        # "đoạn đi thẳng đều dài: vẫn tua kiểm mỗi 10-20 frame"
+    dense_keyframes_per_100: 50 # "trên 50 keyframe / 100 frame là quá dày" -> gắn cờ
