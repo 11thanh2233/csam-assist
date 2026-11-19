@@ -132,7 +132,7 @@ def pip_report(reqs: list[str], index: str | None, extra: list[str] | None = Non
         if not h and dl["url"].startswith("file:"):          # wheel tự dựng trong wheelhouse
             h = sha256(Path(urllib.request.url2pathname(urllib.parse.urlsplit(dl["url"]).path)))
         out.append({"name": meta["name"].lower().replace("_", "-"), "version": meta["version"], "url": dl["url"],
-                    "sha256": h, "filename": dl["url"].rsplit("/", 1)[-1].split("#")[0]})
+                    "sha256": h, "filename": urllib.parse.unquote(dl["url"].rsplit("/", 1)[-1].split("#")[0])})   # %2B -> + (torch+cu126)
     return out
 
 
