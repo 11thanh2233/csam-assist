@@ -77,7 +77,7 @@ jobs:
         shell: pwsh
         run: |
           $py = "build\runtime\python.exe"
-          & $py -I -c "import backend.app, desktop.app, desktop.control, webview, pystray, keyring, transformers, mediapipe; from mediapipe.tasks.python import vision; import importlib.util as u; assert u.find_spec('transformers.models.sam3'), 'transformers thiếu SAM3'; assert u.find_spec('transformers.models.vitpose'); print('runtime OK', transformers.__version__)"
+          & $py -I -X utf8 -c "import backend.app, desktop.app, desktop.control, webview, pystray, keyring, transformers, mediapipe; from mediapipe.tasks.python import vision; import importlib.util as u; assert u.find_spec('transformers.models.sam3'), 'transformers thiếu SAM3'; assert u.find_spec('transformers.models.vitpose'); print('runtime OK', transformers.__version__)"
           if ($LASTEXITCODE -ne 0) { throw "runtime lỗi" }
           $lib = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\lib"
           $env:SAM3_ENGINE = "mock"; $env:SAM3_PORT = "8799"; $env:SAM3_LIBRARY_DIR = $lib.FullName
@@ -94,7 +94,7 @@ jobs:
         shell: pwsh
         run: |
           $env:SAM3_DESKTOP_DATA = "$env:RUNNER_TEMP\desktop-data"
-          & build\runtime\python.exe -I -c @"
+          & build\runtime\python.exe -I -X utf8 -c @"
           import sys
           from desktop.paths import Paths
           from desktop.components import Components, Gpu
@@ -128,9 +128,9 @@ jobs:
           Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install.log" -Wait
           $app = "$env:LOCALAPPDATA\Programs\SAM3 CVAT Assist"
           if (-not (Test-Path "$app\SAM3 Assist.exe")) { Get-Content install.log -Tail 40; throw "chưa cài được" }
-          & "$app\runtime\python.exe" -I -c "import desktop.components as c, desktop.paths as p; m = c.load_manifest(p.Paths()); print('manifest', m['version'], m['torch']['cuda_index'])"
+          & "$app\runtime\python.exe" -I -X utf8 -c "import desktop.components as c, desktop.paths as p; m = c.load_manifest(p.Paths()); print('manifest', m['version'], m['torch']['cuda_index'])"
           if ($LASTEXITCODE -ne 0) { throw "app đã cài không chạy" }
-          & "$app\runtime\python.exe" -I -c "from desktop import updater as U; i = U.check('0.0.1'); print('GitHub Releases:', i['version'], 'tự cập nhật được' if i['auto'] else i['reason'])"
+          & "$app\runtime\python.exe" -I -X utf8 -c "from desktop import updater as U; i = U.check('0.0.1'); print('GitHub Releases:', i['version'], 'tự cập nhật được' if i['auto'] else i['reason'])"
           # Cập nhật như từ trong app: cài đè ở chế độ /update=1, xong phải tự mở lại app
           # -Wait của PowerShell đợi cả tiến trình con (app được mở lại) nên sẽ treo: chỉ đợi bộ cài.
           $u = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/update=1", "/LOG=update.log" -PassThru
@@ -167,7 +167,7 @@ jobs:
           if ("v$env:VERSION" -ne "$env:GITHUB_REF_NAME") { throw "Tag $env:GITHUB_REF_NAME khác phiên bản v$env:VERSION trong backend/__init__.py" }
           $exe = (Get-ChildItem dist\*.exe)[0].FullName
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
-          $section = & build\runtime\python.exe -I -c "import sys; from desktop.changelog import section; print(section(r'docs/CHANGELOG.md', sys.argv[1]))" $env:VERSION
+          $section = & build\runtime\python.exe -I -X utf8 -c "import sys; from desktop.changelog import section; print(section(r'docs/CHANGELOG.md', sys.argv[1]))" $env:VERSION
           if (-not $section) { throw "docs/CHANGELOG.md chưa có mục ## $env:VERSION" }
           $notes = ($section -join "`n") + "`n`nHướng dẫn cài: docs/DESKTOP.md`n`nSHA-256 của bộ cài: ``$hash``"
           Set-Content -Path notes.md -Value $notes -Encoding utf8
