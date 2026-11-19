@@ -66,6 +66,9 @@ class BackendProcess:
         self.health: dict = {}
         self._lock = threading.Lock()
         self._log_file = None
+        self.extra_env: dict = {}          # cài đặt của app cho backend (ví dụ SAM3_IDLE_UNLOAD_MIN)
+        self.share_key = ""                # khác rỗng: chia sẻ backend cho máy khác trong LAN với key cố định này
+        self.remote: Optional[dict] = None # {"base", "key"}: dùng backend ở máy khác, không chạy backend trên máy này
 
     @staticmethod
     def _python() -> str:
@@ -76,12 +79,31 @@ class BackendProcess:
 
     @property
     def base_url(self) -> str:
+        if self.remote:
+            return self.remote["base"]
         return f"http://127.0.0.1:{self.port or self.preferred_port}"
+
+    @property
+    def page_url(self) -> str:
+        """Địa chỉ panel trong trang dùng (cầu nối chỉ nhận 127.0.0.1, rồi tự chuyển tới backend thật)."""
+        return f"http://127.0.0.1:{self.port or self.preferred_port}"
+
+    @property
+    def request_key(self) -> str:
+        return self.remote["key"] if self.remote else self.key
 
     def log_path(self) -> Path:
         return self.paths.logs / "backend.log"
 
     def start(self) -> dict:
+        if self.remote:
+            h = self.get_health()
+            self.health = h
+            if h.get("ok"):
+                self.state, self.message = "running", f"Dùng backend ở máy khác ({self.remote['base']}): {h.get('engine')} trên {h.get('device')}"
+            else:
+                self.state, self.message = "error", f"Không kết nối được backend ở {self.remote['base']}."
+            return self.info()
         with self._lock:
             if self.proc and self.proc.poll() is None:
                 return self.info()
@@ -91,7 +113,7 @@ class BackendProcess:
                 self.state, self.message = "missing", "Chưa có " + " và ".join(missing) + ". Mở mục Thành phần để tải."
                 return self.info()
             self.port = pick_port(self.preferred_port)
-            self.key = secrets.token_urlsafe(32)
+            self.key = self.share_key or secrets.token_urlsafe(32)
             log = self.log_path()
             if log.exists() and log.stat().st_size > 5_000_000:
                 log.replace(log.with_suffix(".log.1"))
@@ -100,10 +122,14 @@ class BackendProcess:
             self._log_file.flush()
             env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "SAM3_", "HF_", "TRANSFORMERS_"))}
             env.update(self.comps.backend_env())
-            env.update({"SAM3_HOST": "127.0.0.1", "SAM3_PORT": str(self.port), "SAM3_API_KEY": self.key,
+            env.update(self.extra_env)
+            env.update({"SAM3_HOST": "0.0.0.0" if self.share_key else "127.0.0.1", "SAM3_PORT": str(self.port), "SAM3_API_KEY": self.key,
+                        "SAM3_ALLOWED_HOSTS": "*" if self.share_key else "127.0.0.1,localhost",
                         "SAM3_DESKTOP_PACKAGES": str(self.paths.packages), "SAM3_DESKTOP_DATA": str(self.paths.data)})
             flags = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
-            self.proc = subprocess.Popen([self.python, "-I", "-X", "utf8", "-m", "desktop.run_backend"], cwd=str(self.paths.app), env=env,
+            # Bản cài (Python nhúng): -I cô lập khỏi Python khác trên máy. Chạy từ mã nguồn: dùng site-packages của người dùng.
+            flags = ["-X", "utf8"] if self.comps.system else ["-I", "-X", "utf8"]
+            self.proc = subprocess.Popen([self.python, *flags, "-m", "desktop.run_backend"], cwd=str(self.paths.app), env=env,
                                          stdout=self._log_file, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)
             self.state, self.message, self.health = "starting", "Đang nạp model (lần đầu có thể mất 1-2 phút)...", {}
         threading.Thread(target=self._watch, daemon=True).start()
@@ -156,6 +182,9 @@ class BackendProcess:
         return "\n".join(lines[-n:])
 
     def info(self) -> dict:
+        if self.remote:
+            return {"state": self.state, "message": self.message, "port": None, "url": self.remote["base"], "health": self.health,
+                    "remote": True}
         if self.state == "running" and self.proc is not None and self.proc.poll() is not None:
             self.state, self.message = "error", "Backend đã dừng bất ngờ. " + self.tail(12)
         return {"state": self.state, "message": self.message, "port": self.port, "url": self.base_url if self.port else "",
@@ -166,7 +195,7 @@ class BackendProcess:
         """Gửi yêu cầu tới backend kèm API key. Trả (mã HTTP, nội dung)."""
         data = body.encode("utf-8") if isinstance(body, str) else body
         req = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method,
-                                     headers={"Content-Type": content_type, "X-API-Key": self.key})
+                                     headers={"Content-Type": content_type, "X-API-Key": self.request_key})
         try:
             with _local.open(req, timeout=timeout) as r:
                 return r.status, r.read().decode("utf-8", errors="replace")

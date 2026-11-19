@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SAM3 CVAT Assist
 // @namespace    sam3-cvat-assist
-// @version      0.7.0
+// @version      0.8.0
 // @description  Gợi ý nhãn bằng SAM3 ngay trên giao diện CVAT: xem trước, duyệt, rồi ghi vào job. Không cần import/export file.
 // ---- Trang CVAT mà tool chạy trên đó -------------------------------------------------------
 // CVAT của khoá học:
@@ -27,6 +27,7 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
+// @grant        GM_notification
 // @connect      127.0.0.1
 // @connect      localhost
 // @connect      *
@@ -44,7 +45,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.7.0';
+  const VERSION = '0.8.0';
   const DEFAULTS = {
     backendUrl: 'http://127.0.0.1:8765',
     apiKey: '',
@@ -72,6 +73,16 @@
     canvasSelector: '#cvat_canvas_background',
     overrides: {},
     pos: null,
+    // 0.8.0
+    prefetch: true,          // chạy sẵn gợi ý cho frame tiếp theo trong lúc bạn duyệt frame này
+    keys: {},                // phím tắt tự đặt (Alt + phím), trống = mặc định
+    fontScale: 1,
+    highContrast: false,
+    lang: 'vi',              // 'vi' | 'en'
+    tourDone: false,
+    preApplyQa: true,        // kiểm luật QA trên các đề xuất đã tick trước khi ghi
+    neighborHints: true,     // nhắc khi frame này ít vật hơn frame bên cạnh
+    reviewerMode: false,     // tô nhãn do tool ghi mà chưa ai sửa
   };
   const cfg = Object.assign({}, DEFAULTS, GM_getValue('cfg', {}));
   const saveCfg = () => GM_setValue('cfg', cfg);
@@ -318,7 +329,7 @@
     return out;
   }
 
-  const baseBody = () => ({ profile_id: cfg.profileId, labels: labelPayload(), overrides: overridePayload(), use_learned: cfg.useLearned !== false });
+  const baseBody = () => ({ profile_id: cfg.profileId, labels: labelPayload(), overrides: overridePayload(), use_learned: cfg.useLearned !== false, user: S.user || '', use_custom: !!cfg.useCustom });
 
   function persist(kind) {
     if (!S.jobId) return;
@@ -474,6 +485,7 @@
     S.job = null; S.labels = []; S.resolved = null; S.jobMeta = null;
     clearProposals();
     await run('Đang đọc job và label từ CVAT…', async () => {
+      if (!S.user) { try { S.user = (await cvat('GET', '/api/users/self')).username || ''; } catch (e) { S.user = ''; } }
       await readJob();
       await readJobMeta();
       restore();
@@ -485,6 +497,8 @@
       // Tự học: so các nhãn tool đã ghi ở lần trước với những gì bạn đã sửa. Lỗi ở đây không được chặn việc mở job.
       if (ok && S.labels.length) { try { await reviewLearning(true); } catch (err) { /* bỏ qua */ } }
     });
+    if (cfg.reviewerMode) loadReviewer();
+    if (S.resolved && S.health && S.health.ok && consumeAutoNext()) propose();   // vừa "Ghi và sang frame tiếp"
   }
 
   function clearProposals() {
@@ -506,19 +520,36 @@
     await run('SAM3 đang phân tích frame…', async () => {
       const seq = ++S.seq;
       const frame = S.frame;
-      const fr = await getFrame();
-      let existing = [];
-      try { existing = (await frameShapes()).existing; } catch (e) { /* vẫn chạy được khi không đọc được annotation */ }
-      const res = await backend('POST', '/propose', Object.assign(baseBody(), { image_b64: fr.b64, existing }));
+      const t0 = Date.now();
+      let ann = null;
+      try { ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`); } catch (e) { /* vẫn chạy được khi không đọc được annotation */ }
+      const existing = ann ? existingAt(ann, frame) : [];
+      let res = pfTake(frame, existing);
+      let from = res ? 'prefetch' : '';
+      if (!res && pfInflight[frame]) {                     // đang chạy sẵn đúng frame này: đợi nó thay vì chạy lại
+        setStatus('Đang đợi gợi ý đã chạy sẵn cho frame này…', 'busy');
+        const out = await pfInflight[frame];
+        if (out && exSig(out.existing) === exSig(existing)) { res = out.res; from = 'prefetch'; }
+      }
+      if (!res) {
+        const fr = await getFrame();
+        res = await backend('POST', '/propose', Object.assign(baseBody(), { image_b64: fr.b64, existing }));
+      }
       if (seq !== S.seq || frame !== S.frame) return; // người dùng đã chuyển frame
       S.proposals = stamp(res.proposals || [], 'frame');
       S.existingIds[frame] = existing.filter((x) => x.id !== undefined).map((x) => x.id);
       S.warnings = res.warnings || [];
       S.propFrame = frame; S.imgW = res.width; S.imgH = res.height;
-      S.qa = null;
+      S.qa = null; S.sel = null;
+      S.lastAnn = ann;
+      S.hints = neighborHints(ann, frame);
+      bumpStats({ shown: S.proposals.length, job: { id: S.jobId, add: { shown: S.proposals.length } } });
       const flagged = S.proposals.filter((p) => p.flags.length).length;
-      setStatus(`${S.proposals.length} đề xuất trong ${res.seconds}s, ${flagged} cần xem kỹ. Duyệt rồi bấm "Ghi vào CVAT".`, 'ok');
+      const took = from === 'prefetch' ? 'ngay (đã chạy sẵn)' : `trong ${res.seconds}s`;
+      setStatus(`${S.proposals.length} đề xuất ${took}, ${flagged} cần xem kỹ. Duyệt rồi bấm "Ghi" (hoặc ${keyName(keyOf('applyNext'))}: ghi và sang frame tiếp).`, 'ok');
       drawOverlay();
+      schedulePrefetch(frame);
+      if (Date.now() - t0 > 0) S.lastProposeMs = Date.now() - t0;
     });
   }
 
@@ -611,7 +642,7 @@
 
   async function sendLearnEvents(events) {
     if (cfg.learnEnabled === false || !events.length || !(S.resolved && S.resolved.profile_id)) return;
-    try { await backend('POST', '/learn/events', { events }); } catch (err) { /* tự học không được làm hỏng việc ghi nhãn */ }
+    try { await backend('POST', '/learn/events', { events, user: S.user || '' }); } catch (err) { /* tự học không được làm hỏng việc ghi nhãn */ }
   }
 
   // Đối chiếu nhãn tool đã ghi với annotation hiện tại của job (sau khi bạn sửa), rồi học lại.
@@ -620,7 +651,7 @@
     const ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
     const shapes = (ann.shapes || []).map((x) => ({ id: x.id, frame: x.frame, label_id: x.label_id, type: x.type,
       points: x.type === 'mask' ? (x.points || []).slice(-4) : x.points, elements: x.elements }));
-    const res = await backend('POST', '/learn/review', { job_id: S.jobId, shapes });
+    const res = await backend('POST', '/learn/review', { job_id: S.jobId, shapes, user: S.user || '' });
     S.learn = res.learned;
     if (res.reviewed) await resolveLabels();
     if (!silent) {
@@ -631,13 +662,13 @@
   }
 
   async function loadLearn() {
-    try { S.learn = await backend('GET', '/learn/summary'); } catch (err) { S.learn = { labels: [], notes: [] }; }
+    try { S.learn = await backend('GET', `/learn/summary?user=${encodeURIComponent(S.user || '')}`); } catch (err) { S.learn = { labels: [], notes: [] }; }
     render();
   }
 
   async function learnAction(path, body, msg) {
     await run('Đang cập nhật phần tự học…', async () => {
-      S.learn = await backend('POST', path, body);
+      S.learn = await backend('POST', path, Object.assign({ user: S.user || '' }, body));
       await resolveLabels();
       setStatus(msg, 'ok');
     });
@@ -651,6 +682,11 @@
     const check = (label, key, after) => h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: cfg[key] !== false, onchange: (ev) => { cfg[key] = ev.target.checked; saveCfg(); if (after) after(); } }),
       h('span', { text: label }));
+    const st = statsToday();
+    out.push(h('div', { class: 'note' }, h('strong', { text: 'Hôm nay' }),
+      h('div', { class: 'small-text', text: `${st.applied} nhãn đã ghi · ${st.rejected} đề xuất bị bỏ · ${st.frames} frame · ước tính tiết kiệm ${st.minutes} phút` }),
+      h('div', { class: 'row' }, h('button', { class: 'small', type: 'button', text: 'Xuất báo cáo CSV', onclick: exportReport }))));
+    out.push(...renderCustomModel());
     out.push(check('Ghi lại cách tôi xử lý đề xuất để tool học', 'learnEnabled'));
     out.push(check('Dùng điều tool đã học khi gợi ý (ngưỡng, chỉnh hộp)', 'useLearned', () => { clearProposals(); run('Đang cập nhật label…', resolveLabels); }));
     out.push(h('div', { class: 'row' },
@@ -744,6 +780,7 @@
       }
       S.jobQa = res;
       const t = res.totals;
+      notify('Rà cả job xong', `Job ${S.jobId}: ${res.checked_frames} frame, ${t.error} lỗi, ${t.warning} cảnh báo.`);
       setStatus(`Rà ${res.checked_frames} frame có nhãn: ${t.error} lỗi, ${t.warning} cảnh báo${cfg.qaFindMissing ? `, ${res.missing} chỗ có thể sót` : ''}.`
         + (res.job_findings.length ? ` ${res.job_findings.length} lưu ý cho cả job.` : ''), t.error ? 'error' : 'ok');
     });
@@ -770,11 +807,12 @@
 
   function renderJobQa() {
     const busy = !!S.busy;
+    const agreeOut = renderAgreement(busy);
     const out = [h('h2', { text: 'Rà cả job' }),
       h('p', { class: 'muted small-text', style: 'margin:0', text: 'Chạy mọi kiểm tra ở trên cho tất cả frame của job, cộng: frame chưa có nhãn, label chưa dùng lần nào. Lưu (Ctrl+S) trước khi rà.' }),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!cfg.qaFindMissing, onchange: (ev) => { cfg.qaFindMissing = ev.target.checked; saveCfg(); } }),
         h('span', { text: 'Tìm cả đối tượng có thể bị sót (chạy SAM3 trên từng frame, chậm như Gợi ý cho cả job)' })),
-      h('button', { class: 'primary', type: 'button', disabled: busy || !S.resolved, onclick: runJobQa, text: 'Rà cả job' })];
+      h('button', { class: 'primary', type: 'button', disabled: busy || !S.resolved, onclick: runJobQa, text: 'Rà cả job' }), ...agreeOut];
     if (S.longTask === 'qa') out.push(h('button', { type: 'button', text: 'Dừng', onclick: () => { S.stopRequested = true; setStatus('Đang dừng sau frame hiện tại…', 'busy'); } }));
     const q = S.jobQa;
     if (!q) return out;
@@ -835,45 +873,54 @@
     location.reload();
   }
 
-  async function applyProposals() {
-    const chosen = S.proposals.filter((p) => p.checked);
-    if (!chosen.length) return setStatus('Chưa tick đề xuất nào.', 'error');
+  async function applyProposals(opts) {
+    const o = opts && opts.nextFrame !== undefined ? opts : {};
+    const chosen = S.proposals.filter((p) => p.checked && visible(p));
+    if (!chosen.length) return setStatus('Chưa tick đề xuất nào (đề xuất đang bị ẩn bởi bộ lọc không được ghi).', 'error');
     if (S.propFrame !== S.frame) return setStatus('Đề xuất thuộc frame khác. Hãy chạy lại gợi ý cho frame này.', 'error');
     const flagged = chosen.filter((p) => p.flags.length).length;
-    if (cfg.confirmApply) {
+    if (cfg.confirmApply && o.nextFrame === undefined) {
       const note = flagged ? `\n${flagged} nhãn đang có cờ cần xem kỹ.` : '';
       if (!window.confirm(`Ghi ${chosen.length} nhãn vào frame ${S.frame} của job ${S.jobId}?${note}`)) return;
     }
     await run('Đang ghi nhãn vào CVAT…', async () => {
+      if (!(await preApplyCheck(chosen))) { setStatus('Đã dừng ghi để bạn sửa các lỗi kiểm tra.', 'info'); return; }
       await saveCvatUi(); // lưu các thay đổi bạn đang làm dở trước khi ghi thêm
       const shapes = chosen.map((p) => toCvatShape(p));
       const res = await cvat('PATCH', `/api/jobs/${S.jobId}/annotations?action=create`, {
         version: 0, tags: [], shapes, tracks: [],
       });
-      GM_setValue('undo', { jobId: S.jobId, frame: S.propFrame, shapes: (res && res.shapes) || [], tracks: [], at: Date.now() });
+      pushUndo({ jobId: S.jobId, frame: S.propFrame, shapes: (res && res.shapes) || [], tracks: [], at: Date.now() });
       const frame = S.propFrame;
       learnFromApply(chosen, (res && res.shapes) || [], S.proposals, () => frame);
+      statsAfterApply(chosen, S.proposals);
       if (S.batch[frame]) { delete S.batch[frame]; persist('batch'); }
       clearProposals();
+      const target = o.nextFrame !== undefined ? o.nextFrame : frame;
+      if (o.nextFrame !== undefined) GM_setValue('autoNext', { jobId: S.jobId, frame: target, at: Date.now() });
       if (cfg.reloadAfterApply) {
-        setStatus(`Đã ghi ${shapes.length} nhãn. Đang tải lại trang để hiển thị…`, 'ok');
-        await sleep(400);
-        reloadAtFrame(frame);
+        setStatus(`Đã ghi ${shapes.length} nhãn. Đang tải lại trang${o.nextFrame !== undefined ? ` ở frame ${target}` : ''}…`, 'ok');
+        await sleep(300);
+        reloadAtFrame(target);
       } else {
-        setStatus(`Đã ghi ${shapes.length} nhãn. Tải lại trang (F5) để thấy chúng trên canvas.`, 'ok');
+        setStatus(`Đã ghi ${shapes.length} nhãn.${o.nextFrame !== undefined ? '' : ' Tải lại trang (F5) để thấy chúng trên canvas.'}`, 'ok');
+        if (o.nextFrame !== undefined) goToFrame(target);
       }
     });
   }
 
   async function undoLast() {
-    const u = GM_getValue('undo', null);
+    const stack = undoStackOf(S.jobId);
+    const u = stack[stack.length - 1];
     const nShapes = u && u.shapes ? u.shapes.length : 0;
     const nTracks = u && u.tracks ? u.tracks.length : 0;
-    if (!u || u.jobId !== S.jobId || !(nShapes + nTracks)) {
+    if (!u || !(nShapes + nTracks)) {
+      if (u) popUndo(S.jobId);
       return setStatus('Không có lần ghi nào của job này để hoàn tác.', 'error');
     }
     const what = [nShapes ? `${nShapes} nhãn` : '', nTracks ? `${nTracks} track` : ''].filter(Boolean).join(' và ');
-    if (!window.confirm(`Xoá ${what} mà tool đã ghi ở lần ghi gần nhất?`)) return;
+    const more = stack.length > 1 ? ` (còn ${stack.length - 1} lần ghi trước đó có thể hoàn tác tiếp)` : '';
+    if (!window.confirm(`Xoá ${what} mà tool đã ghi ở frame ${u.frame}${more}?`)) return;
     await run('Đang hoàn tác…', async () => {
       await saveCvatUi();
       for (let i = 0; i < Math.max(nShapes, nTracks, 1); i += 300) {
@@ -881,7 +928,8 @@
           version: 0, tags: [], shapes: (u.shapes || []).slice(i, i + 300), tracks: (u.tracks || []).slice(i, i + 300),
         });
       }
-      GM_setValue('undo', null);
+      popUndo(S.jobId);
+      bumpStats({ applied: -nShapes, job: { id: S.jobId, add: { applied: -nShapes } } });
       setStatus('Đã xoá. Đang tải lại trang…', 'ok');
       await sleep(400);
       reloadAtFrame(u.frame);
@@ -908,7 +956,7 @@
       const after = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
       const left = (after.shapes || []).concat(after.tracks || []).filter((o) => o.source === 'semi-auto' && inScope(o.frame)).length;
       if (left) return setStatus(`CVAT nhận yêu cầu nhưng vẫn còn ${left} nhãn semi-auto trong ${where}. Máy chủ có thể không cho đổi trường này.`, 'error');
-      GM_setValue('undo', null); // id nhãn có thể đã đổi, lần hoàn tác cũ không còn đúng
+      clearUndo(S.jobId); // id nhãn có thể đã đổi, các lần hoàn tác cũ không còn đúng
       setStatus(`Đã đổi ${count} nhãn sang manual. Đang tải lại trang…`, 'ok');
       await sleep(600);
       reloadAtFrame(S.frame);
@@ -972,13 +1020,18 @@
     });
   }
 
-  async function runBatch() {
+  async function runBatch(resume, only) {
+    const saved = resume === true ? GM_getValue(`batchrun:${S.jobId}`, null) : null;
     const r = jobRange();
-    const frames = jobFrames(r.from, r.to);
+    let frames = saved ? saved.frames : (Array.isArray(only) && only.length ? only.slice() : jobFrames(r.from, r.to));
     if (!frames.length) return setStatus('Khoảng frame không hợp lệ.', 'error');
-    const picked = batchPicked();
+    const picked = saved ? saved.picked : batchPicked();
     if (!picked.length) return setStatus('Chưa chọn label nào để gợi ý.', 'error');
-    const mode = batchSkipMode();
+    const mode = saved ? saved.mode : batchSkipMode();
+    const doneBefore = new Set(saved ? saved.done : []);
+    const run0 = saved || { frames, picked, mode, done: [], total: frames.length, at: Date.now() };
+    if (saved) frames = frames.filter((f) => !doneBefore.has(f));
+    GM_setValue(`batchrun:${S.jobId}`, run0);
     const allIds = batchCandidates().map((c) => c.label_id);
     S.stopRequested = false;
     S.longTask = 'batch';
@@ -998,7 +1051,7 @@
         if (S.stopRequested) break;
         const f = frames[i];
         const ids = wanted(f);
-        if (!ids.length) { skipped++; continue; }
+        if (!ids.length) { skipped++; run0.done.push(f); continue; }
         const image = next && next.frame === f ? await next.promise : await fetchFrame(f);
         const following = frames.slice(i + 1).find((x) => wanted(x).length);
         next = following === undefined ? null : { frame: following, promise: fetchFrame(following) };  // tải trước frame kế
@@ -1012,15 +1065,21 @@
         S.existingIds[f] = existingAt(ann, f).filter((x) => x.id !== undefined).map((x) => x.id);
         made += (res.proposals || []).length;
         done++;
+        run0.done.push(f);
         const per = (Date.now() - started) / done / 1000;
         const left = frames.length - i - 1;
-        setStatus(`Frame ${f}: ${done} frame xong, ${made} đề xuất. Còn khoảng ${Math.round(per * left)} giây.`, 'busy');
-        if (done % 10 === 0) persist('batch');
+        const eta = per * left;
+        const etaText = eta >= 90 ? `${Math.round(eta / 60)} phút` : `${Math.round(eta)} giây`;
+        setStatus(`Frame ${f}: ${run0.done.length}/${run0.total} frame, ${made} đề xuất. Còn khoảng ${etaText}. Bấm Dừng để tạm dừng, tiếp tục sau (kể cả khi tắt trình duyệt).`, 'busy');
+        if (done % 5 === 0) { persist('batch'); GM_setValue(`batchrun:${S.jobId}`, run0); }
       }
       persist('batch');
+      const finished = !S.stopRequested;
+      GM_setValue(`batchrun:${S.jobId}`, finished ? null : run0);
       if (S.frame in S.batch) { S.proposals = []; loadBatchFrame(); }
       const st = batchStats();
-      const stopped = S.stopRequested ? 'Đã dừng. ' : '';
+      const stopped = S.stopRequested ? `Đã tạm dừng (${run0.done.length}/${run0.total} frame). Bấm "Tiếp tục" để chạy nốt. ` : '';
+      if (finished) notify('Gợi ý cả job xong', `Job ${S.jobId}: ${run0.done.length} frame, ${made} đề xuất, ${st.flagged} mục có cờ.`);
       const why = mode === 'label' ? (picked.length < allIds.length ? 'đã có đủ các label đã chọn' : 'đã có đủ label') : 'đã có nhãn';
       setStatus(`${stopped}${done} frame có ${made} đề xuất${skipped ? `, bỏ qua ${skipped} frame ${why}` : ''}. ${st.flagged} mục có cờ cần duyệt.`, 'ok');
     });
@@ -1057,7 +1116,7 @@
         persist('batch');
         setStatus(`Đã ghi ${Math.min(i + 200, queue.length)}/${queue.length} nhãn…`, 'busy');
       }
-      GM_setValue('undo', { jobId: S.jobId, frame: S.frame, shapes: created, tracks: [], at: Date.now() });
+      pushUndo({ jobId: S.jobId, frame: S.frame, shapes: created, tracks: [], at: Date.now() });
       clearProposals();
       setStatus(`Đã ghi ${queue.length} nhãn.${cfg.reloadAfterApply ? ' Đang tải lại trang…' : ' Tải lại trang (F5) để thấy chúng.'}`, 'ok');
       if (cfg.reloadAfterApply) { await sleep(500); reloadAtFrame(S.frame); }
@@ -1143,6 +1202,7 @@
       drawOverlay();
       const flagged = S.tracks.filter((t) => t.flags.length).length;
       const stopped = S.stopRequested ? 'Đã dừng ở frame ' + last + '. ' : '';
+      notify('Theo dõi đối tượng xong', `Job ${S.jobId}: ${S.tracks.length} track, ${flagged} track có cờ.`);
       setStatus(`${stopped}${S.tracks.length} track, ${flagged} track có cờ cần xem${video ? ' (theo dõi bằng SAM3 Video)' : ''}. Tua qua các frame để kiểm tra rồi bấm Ghi.${engineNote}`, engineNote ? 'error' : 'ok');
     });
     S.longTask = '';
@@ -1189,7 +1249,7 @@
       const res = await cvat('PATCH', `/api/jobs/${S.jobId}/annotations?action=create`, {
         version: 0, tags: [], shapes: [], tracks,
       });
-      GM_setValue('undo', { jobId: S.jobId, frame: S.frame, shapes: [], tracks: (res && res.tracks) || [], at: Date.now() });
+      pushUndo({ jobId: S.jobId, frame: S.frame, shapes: [], tracks: (res && res.tracks) || [], at: Date.now() });
       S.tracks = S.tracks.filter((t) => !t.checked);
       persist('tracks');
       setStatus(`Đã ghi ${tracks.length} track.${cfg.reloadAfterApply ? ' Đang tải lại trang…' : ' Tải lại trang (F5) để thấy chúng.'}`, 'ok');
@@ -1609,7 +1669,7 @@
   function overlayActive() {
     const tracks = S.tab === 'job' && S.tracks.length;
     const evidence = S.tab === 'guide' && S.evidence;
-    return !cfg.hidden && S.imgW > 0 && (S.proposals.length || S.box || tracks || evidence || (S.qa && S.qa.findings.length));
+    return !cfg.hidden && S.imgW > 0 && (S.proposals.length || S.box || S.points || cfg.reviewerMode || tracks || evidence || (S.qa && S.qa.findings.length));
   }
 
   function positionOverlay() {
@@ -1641,15 +1701,15 @@
 
   function drawOverlay() {
     overlaySvg.replaceChildren();
-    overlayHost.style.pointerEvents = S.box ? 'auto' : 'none';
-    overlayHost.style.cursor = S.box ? 'crosshair' : 'default';
+    overlayHost.style.pointerEvents = S.box || S.points ? 'auto' : 'none';
+    overlayHost.style.cursor = S.box || S.points ? 'crosshair' : 'default';
     if (!S.imgW) return;
     overlaySvg.setAttribute('viewBox', `0 0 ${S.imgW} ${S.imgH}`);
     const base = { 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round' };
     const showProps = S.propFrame === S.frame && S.tab !== 'qa';
-    for (const p of showProps ? S.proposals : []) {
+    for (const p of showProps ? S.proposals.filter(visible) : []) {
       const color = labelColor(p.label_id);
-      const hot = S.highlight === 'p' + p.pid;
+      const hot = S.highlight === 'p' + p.pid || S.sel === p.pid;
       const style = Object.assign({}, base, {
         stroke: color, 'stroke-width': hot ? 4 : 2, fill: color,
         'fill-opacity': p.type === 'polyline' ? 0 : (p.type === 'rectangle' ? cfg.opacity / 3 : cfg.opacity),
@@ -1712,6 +1772,28 @@
           'stroke-dasharray': '8 4', fill: hot ? 'rgba(217,45,32,0.15)' : 'none',
         })));
       });
+    }
+    if (cfg.reviewerMode) {
+      // Chế độ reviewer: nhãn do tool ghi mà chưa ai sửa -> viền tím + chữ "AI"
+      const font = Math.max(11, S.imgH * 0.018);
+      for (const x of reviewerMarks()) {
+        const pts = x.type === 'rectangle' ? x.points : null;
+        const xs = (x.points || []).filter((_, i) => i % 2 === 0), ys = (x.points || []).filter((_, i) => i % 2 === 1);
+        if (!xs.length) continue;
+        const [x1, y1, x2, y2] = pts || [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+        overlaySvg.append(svgEl('rect', Object.assign({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, base, {
+          stroke: '#b14cff', 'stroke-width': 2, 'stroke-dasharray': '3 3', fill: 'none' })));
+        const t = svgEl('text', { x: x1 + 2, y: y1 + font, fill: '#b14cff', 'font-size': font, 'font-weight': '700', 'font-family': 'system-ui, sans-serif',
+          'paint-order': 'stroke', stroke: '#000000', 'stroke-width': font / 7 });
+        t.textContent = 'AI';
+        overlaySvg.append(t);
+      }
+    }
+    if (S.points) {
+      const r = Math.max(4, S.imgW * 0.006);
+      for (const [pt, ok] of S.points.pos.map((q) => [q, true]).concat(S.points.neg.map((q) => [q, false]))) {
+        overlaySvg.append(svgEl('circle', { cx: pt[0], cy: pt[1], r, fill: ok ? '#12b76a' : '#f04438', stroke: '#ffffff', 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke' }));
+      }
     }
     if (S.box && S.box.start && S.box.cur) {
       const [x1, y1, x2, y2] = boxFrom(S.box.start, S.box.cur);
@@ -1777,6 +1859,77 @@
     const y = ((ev.clientY - r.top) / r.height) * S.imgH;
     return [Math.min(Math.max(x, 0), S.imgW), Math.min(Math.max(y, 0), S.imgH)];
   }
+
+  // ---- bấm điểm để tách vật (trái: điểm thuộc vật, phải hoặc Shift+trái: điểm KHÔNG thuộc vật) ----
+  function startPoints() {
+    if (!canvasEl()) return setStatus('Không tìm thấy canvas của CVAT nên không bấm điểm được.', 'error');
+    run('Đang lấy ảnh frame…', async () => {
+      const fr = await getFrame();
+      S.imgW = fr.w; S.imgH = fr.h;
+      S.box = null;
+      S.points = { pos: [], neg: [], frame: S.frame, labelId: S.boxLabelId, pid: null };
+      setStatus('Bấm lên vật cần tách. Bấm phải (hoặc Shift+bấm) vào chỗ KHÔNG thuộc vật để sửa. Enter hoặc "Xong" để giữ, Esc để huỷ.', 'info');
+      drawOverlay();
+    });
+  }
+  function endPoints(keep) {
+    if (!S.points) return;
+    if (!keep && S.points.pid) S.proposals = S.proposals.filter((p) => p.pid !== S.points.pid);
+    S.points = null;
+    setStatus(keep ? 'Đã giữ vật vừa tách. Duyệt rồi ghi như các đề xuất khác.' : 'Đã huỷ bấm điểm.', keep ? 'ok' : 'info');
+    render(); drawOverlay();
+  }
+  function renderPointsBar() {
+    const n = S.points.pos.length + S.points.neg.length;
+    return h('div', { class: 'note row' }, h('span', { class: 'grow small-text', text: `Bấm điểm: ${S.points.pos.length} điểm thuộc vật, ${S.points.neg.length} điểm loại trừ.` }),
+      h('button', { class: 'small', type: 'button', disabled: !n, text: 'Bỏ điểm cuối', onclick: () => { const last = S.points.lastNeg ? S.points.neg : S.points.pos; last.pop(); segmentPoints(); } }),
+      h('button', { class: 'small primary', type: 'button', disabled: !S.points.pid, text: 'Xong', onclick: () => endPoints(true) }),
+      h('button', { class: 'small', type: 'button', text: 'Huỷ', onclick: () => endPoints(false) }));
+  }
+  let pointsSeq = 0;
+  async function segmentPoints() {
+    const pts = S.points;
+    if (!pts) return;
+    drawOverlay(); render();
+    if (!pts.pos.length) { if (pts.pid) { S.proposals = S.proposals.filter((p) => p.pid !== pts.pid); pts.pid = null; } drawOverlay(); return; }
+    const seq = ++pointsSeq;
+    try {
+      const fr = await getFrame();
+      setStatus('SAM3 đang tách vật theo các điểm…', 'busy');
+      const res = await backend('POST', '/interactive', Object.assign(baseBody(), {
+        image_b64: fr.b64, label_id: pts.labelId, box: [0, 0, 0, 0], mode: 'points', points: pts.pos, negative_points: pts.neg,
+      }));
+      if (seq !== pointsSeq || S.points !== pts || pts.frame !== S.frame) return;
+      if (S.propFrame !== S.frame) { S.proposals = []; S.warnings = []; S.propFrame = S.frame; }
+      S.proposals = S.proposals.filter((p) => p.pid !== pts.pid);
+      const got = stamp(res.proposals || [], 'points')[0];
+      if (got) {
+        got.pid = S.proposals.reduce((m, p) => Math.max(m, p.pid), 0) + 1;
+        got.checked = true;
+        S.proposals.push(got); pts.pid = got.pid; S.sel = got.pid;
+      }
+      setStatus(got ? `Đã tách vật (${Math.round((got.score || 0) * 100)}%). Bấm thêm điểm để sửa, Enter để giữ.` : 'Không tách được vật ở các điểm này. Thử bấm vào giữa vật.', got ? 'ok' : 'error');
+      (res.warnings || []).forEach((w) => S.warnings.includes(w) || S.warnings.push(w));
+    } catch (err) {
+      setStatus(err.message || String(err), 'error');
+    }
+    render(); drawOverlay();
+  }
+  overlayHost.addEventListener('contextmenu', (ev) => { if (S.points) ev.preventDefault(); });
+  overlayHost.addEventListener('mousedown', (ev) => {
+    if (!S.points) return;
+    ev.preventDefault(); ev.stopPropagation();
+    const pt = imagePoint(ev);
+    const negative = ev.button === 2 || ev.shiftKey;
+    (negative ? S.points.neg : S.points.pos).push(pt);
+    S.points.lastNeg = negative;
+    segmentPoints();
+  }, true);
+  document.addEventListener('keydown', (ev) => {
+    if (!S.points) return;
+    if (ev.key === 'Escape') { ev.preventDefault(); endPoints(false); }
+    if (ev.key === 'Enter' && !ev.altKey) { ev.preventDefault(); endPoints(!!S.points.pid); }
+  }, true);
 
   overlayHost.addEventListener('mousedown', (ev) => {
     if (!S.box || ev.button !== 0) return;
@@ -1850,6 +2003,14 @@
     th { color: var(--muted); font-weight: 600; font-size: 12px; }
     td input[type="text"] { width: 100%; } td input[type="number"] { width: 58px; }
     h2 { font: inherit; font-weight: 600; margin: 4px 0 0; }
+    li.item.sel { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+    .chip { display: inline-flex; align-items: center; gap: 2px; } .chip.off { opacity: .45; text-decoration: line-through; }
+    .filter { display: flex; flex-direction: column; gap: 4px; }
+    .tour { border-left-color: var(--accent); display: flex; flex-direction: column; gap: 4px; }
+    .tour-target { outline: 3px solid var(--accent) !important; outline-offset: 2px; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .tile { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+    .tile.current { border-color: var(--accent); } .tile .row { padding: 2px 4px; }
   `;
 
   const host = h('div', { id: 'sam3-cvat-assist' });
@@ -1894,7 +2055,7 @@
 
   function renderStatus() {
     els.status.className = 'status ' + S.statusKind;
-    els.status.textContent = S.status;
+    els.status.textContent = cfg.lang === 'en' ? translateText(S.status) : S.status;
   }
 
   function renderMeta() {
@@ -1911,6 +2072,7 @@
     const using = S.resolved ? `Đang dùng: ${S.resolved.title}` : '';
     els.meta.replaceChildren(
       h('span', { text: `Job ${S.jobId ?? '?'} · Frame ${S.frame ?? '?'}` }),
+      gpuLine(),
       profileSelect,
       cfg.profileId === 'auto' && using ? h('span', { class: 'small-text', text: using }) : null,
       // Cài userscript mới mà quên cập nhật / khởi động lại backend (hoặc ngược lại) là nguyên nhân hay gặp của "sửa rồi mà vẫn lỗi".
@@ -1939,40 +2101,61 @@
   }
 
   function renderPropose() {
-    const out = [];
+    const out = [tourCard()];
     const ready = S.resolved && S.health && S.health.ok;
     if (S.health && S.health.ok && S.health.is_mock) {
       out.push(h('div', { class: 'note', text: 'Backend đang chạy chế độ GIẢ LẬP (mock): kết quả không phải của SAM3, chỉ để thử giao diện.' }));
     }
-    out.push(h('button', { class: 'primary', type: 'button', disabled: !ready || !!S.busy, onclick: propose, text: 'Gợi ý nhãn cho frame này' }));
+    out.push(h('button', { class: 'primary ' + tourOn('propose'), type: 'button', disabled: !ready || !!S.busy, onclick: propose,
+      text: 'Gợi ý nhãn cho frame này', title: keyName(keyOf('propose')) }));
     const boxLabel = h('select', { class: 'grow', title: 'Label cho hộp vẽ tay', onchange: (ev) => { S.boxLabelId = Number(ev.target.value); } },
       S.labels.map((l) => h('option', { value: String(l.id), text: l.name })));
     if (S.boxLabelId) boxLabel.value = String(S.boxLabelId);
     out.push(h('div', { class: 'row' },
       boxLabel,
       h('button', { type: 'button', disabled: !ready || !!S.busy, title: 'Vẽ một hộp, SAM3 lấy đúng đối tượng đó', onclick: () => startBox('single'), text: 'Vẽ hộp' }),
+      h('button', { type: 'button', disabled: !ready || !!S.busy, title: 'Bấm một điểm lên vật (bấm thêm điểm để sửa), SAM3 tách đúng vật đó', onclick: () => startPoints(), text: 'Bấm điểm' }),
       h('button', { type: 'button', disabled: !ready || !!S.busy, title: 'Vẽ một hộp làm mẫu, SAM3 tìm mọi đối tượng giống vậy', onclick: () => startBox('similar'), text: 'Tìm tương tự' }),
     ));
+    if (S.points) out.push(renderPointsBar());
     for (const w of S.warnings) out.push(h('div', { class: 'note', text: w }));
     if (S.propSource === 'batch' && S.propFrame === S.frame) {
       out.push(h('p', { class: 'muted small-text', style: 'margin:0', text: 'Đề xuất này lấy từ lượt gợi ý cho cả job (tab Cả job).' }));
     }
+    if (S.prefetching !== null && cfg.prefetch) out.push(h('div', { class: 'muted small-text', text: `Đang chạy sẵn frame ${S.prefetching}…` }));
 
     if (S.proposals.length && S.propFrame === S.frame) {
-      const checked = S.proposals.filter((p) => p.checked).length;
+      const shown = S.proposals.filter(visible);
+      const checked = shown.filter((p) => p.checked).length;
+      const hiddenCount = S.proposals.length - shown.length;
+      // Bộ lọc tức thì: ngưỡng điểm + bật/tắt từng class (không chạy lại model)
+      const ids = [...new Set(S.proposals.map((p) => p.label_id))];
+      out.push(h('div', { class: 'filter ' + tourOn('filter') },
+        h('label', { class: 'row small-text' }, h('span', { text: `Ngưỡng ${Math.round(S.minScore * 100)}%` }),
+          h('input', { class: 'grow', type: 'range', min: '0', max: '0.95', step: '0.05', value: String(S.minScore), title: 'Ẩn đề xuất có điểm thấp hơn',
+            oninput: (ev) => { S.minScore = Number(ev.target.value); render(); drawOverlay(); } })),
+        ids.length > 1 ? h('div', { class: 'row small-text' }, ids.map((id) => {
+          const l = labelById(id);
+          const n = S.proposals.filter((p) => p.label_id === id).length;
+          const off = S.hiddenLabels.has(id);
+          return h('button', { class: 'chip small' + (off ? ' off' : ''), type: 'button', title: off ? 'Đang ẩn class này: bấm để hiện' : 'Bấm để ẩn class này',
+            onclick: () => { if (off) S.hiddenLabels.delete(id); else S.hiddenLabels.add(id); render(); drawOverlay(); } },
+          h('span', { class: 'swatch', style: `background:${labelColor(id)}` }), ` ${l ? l.name : id} (${n})`);
+        })) : null));
       out.push(h('div', { class: 'row' },
-        h('span', { class: 'grow muted', text: `${S.proposals.length} đề xuất · ${checked} đã chọn` }),
-        h('button', { class: 'small', type: 'button', text: 'Chọn hết', onclick: () => { S.proposals.forEach((p) => { p.checked = true; }); render(); drawOverlay(); } }),
-        h('button', { class: 'small', type: 'button', text: 'Bỏ mục có cờ', onclick: () => { S.proposals.forEach((p) => { if (p.flags.length) p.checked = false; }); render(); drawOverlay(); } }),
+        h('span', { class: 'grow muted', text: `${shown.length} đề xuất · ${checked} đã chọn${hiddenCount ? ` · ${hiddenCount} đang ẩn` : ''}` }),
+        h('button', { class: 'small', type: 'button', text: 'Chọn hết', onclick: () => { shown.forEach((p) => { p.checked = true; }); render(); drawOverlay(); } }),
+        h('button', { class: 'small', type: 'button', text: 'Bỏ mục có cờ', onclick: () => { shown.forEach((p) => { if (p.flags.length) p.checked = false; }); render(); drawOverlay(); } }),
       ));
-      out.push(h('ul', {}, S.proposals.map((p) => {
+      for (const t of S.hints || []) out.push(h('div', { class: 'note small-text', text: t }));
+      out.push(h('ul', { class: tourOn('list') }, shown.map((p) => {
         const options = S.labels.filter((l) => !l.type || l.type === 'any' || l.type === p.type || l.id === p.label_id);
         const select = h('select', { class: 'grow', title: 'Đổi class', onchange: (ev) => { p.label_id = Number(ev.target.value); p.label_name = (labelById(p.label_id) || {}).name; p.userTouched = true; render(); drawOverlay(); } },
           options.map((l) => h('option', { value: String(l.id), text: l.name })));
         select.value = String(p.label_id);
-        const li = h('li', { class: 'item' },
+        const li = h('li', { class: 'item' + (S.sel === p.pid ? ' sel' : ''), 'data-pid': String(p.pid) },
           h('div', { class: 'row' },
-            h('input', { type: 'checkbox', checked: p.checked, title: 'Ghi nhãn này vào CVAT', onchange: (ev) => { p.checked = ev.target.checked; p.userTouched = true; render(); drawOverlay(); } }),
+            h('input', { type: 'checkbox', checked: p.checked, title: `Ghi nhãn này vào CVAT (${keyName(keyOf('toggle'))}, hoặc giữ Alt rồi bấm lên ảnh)`, onchange: (ev) => { toggleProposal(p, ev.target.checked); } }),
             h('span', { class: 'swatch', style: `background:${labelColor(p.label_id)}` }),
             select,
             h('span', { class: 'muted small-text', text: p.type === 'skeleton' ? skeletonText(p) : `${p.type} · ${Math.round(p.score * 100)}%` }),
@@ -1980,6 +2163,8 @@
               title: 'Vật này bị nhận nhầm: dùng nó làm mẫu ÂM, SAM3 tìm lại và bỏ mọi vật giống nó', disabled: !!S.busy, onclick: () => excludeSimilar(p) }) : null,
           ),
           p.box_adjust ? h('div', { class: 'muted small-text', text: 'Hộp đã được chỉnh theo cách bạn hay sửa (tab Tự học).' }) : null,
+          p.auto_attributes && Object.keys(p.auto_attributes).length ? h('div', { class: 'muted small-text',
+            text: 'Tự điền: ' + Object.entries(p.auto_attributes).map(([k, v]) => `${k} = ${v}`).join(', ') + ' (đổi được trong CVAT sau khi ghi)' }) : null,
           p.flags.length || p.occluded ? h('div', { class: 'row' },
             p.occluded ? h('span', { class: 'badge', text: 'occluded' }) : null,
             flagBadges(p.flags),
@@ -1988,11 +2173,15 @@
           ) : null,
           p.flags.length ? h('div', { class: 'muted small-text', text: p.flags.map((f) => f.message).join(' ') }) : null,
         );
+        li.addEventListener('click', (ev) => { if (!ev.target.closest('input,select,button')) { S.sel = p.pid; render(); drawOverlay(); } });
         hover(li, 'p' + p.pid);
         return li;
       })));
-      out.push(h('div', { class: 'row' },
-        h('button', { class: 'primary grow', type: 'button', disabled: !!S.busy || !checked, onclick: applyProposals, text: `Ghi ${checked} nhãn vào CVAT` }),
+      const next = nextFrameOf(S.frame);
+      out.push(h('div', { class: 'row ' + tourOn('apply') },
+        h('button', { class: 'primary grow', type: 'button', disabled: !!S.busy || !checked, onclick: () => applyProposals(), text: `Ghi ${checked} nhãn`, title: keyName(keyOf('apply')) }),
+        next !== null ? h('button', { class: 'primary', type: 'button', disabled: !!S.busy, onclick: applyAndNext,
+          text: checked ? 'Ghi + frame tiếp' : 'Sang frame tiếp', title: `${keyName(keyOf('applyNext'))}: ghi rồi sang frame ${next}, đề xuất của frame đó đã chạy sẵn` }) : null,
         h('button', { type: 'button', disabled: !!S.busy, onclick: () => {
           if (S.batch[S.frame]) { delete S.batch[S.frame]; persist('batch'); }
           clearProposals(); render();
@@ -2001,7 +2190,11 @@
     } else if (ready) {
       out.push(h('p', { class: 'muted', style: 'margin:0', text: 'Chưa có đề xuất cho frame này. Tool chỉ gợi ý; bạn duyệt từng nhãn trước khi ghi.' }));
     }
-    out.push(h('button', { type: 'button', disabled: !!S.busy, onclick: undoLast, text: 'Hoàn tác lần ghi gần nhất' }));
+    const nUndo = undoStackOf(S.jobId).length;
+    out.push(h('button', { class: tourOn('undo'), type: 'button', disabled: !!S.busy || !nUndo, onclick: undoLast,
+      text: nUndo ? `Hoàn tác lần ghi gần nhất (${nUndo})` : 'Hoàn tác', title: `${keyName(keyOf('undo'))}. Bấm nhiều lần để lùi thêm (tối đa 20 lần ghi).` }));
+    const st = statsToday();
+    if (st.applied) out.push(h('div', { class: 'muted small-text', text: `Hôm nay: ${st.applied} nhãn, ${st.frames} frame, ước tính tiết kiệm ${st.minutes} phút.` }));
     return out;
   }
 
@@ -2164,6 +2357,7 @@
     const sections = [renderBatchSection(r, busy), renderTrackSection(r, busy)];
     if (isVideo) sections.reverse();
     for (const part of sections) out.push(...part);
+    out.push(...renderSmartSection(r, busy));
     out.push(h('button', { type: 'button', disabled: busy, onclick: undoLast, text: 'Hoàn tác lần ghi gần nhất' }));
     return out;
   }
@@ -2199,10 +2393,20 @@
         ['none', 'Không bỏ qua (đề xuất trùng nhãn cũ bị bỏ tick)']].map(([v, t]) => h('option', { value: v, text: t })));
     skip.value = batchSkipMode();
     out.push(h('label', { class: 'field' }, h('span', { text: 'Frame đã có nhãn' }), skip));
+    const paused = GM_getValue(`batchrun:${S.jobId}`, null);
+    if (paused && !busy) {
+      const left = paused.frames.length - paused.done.length;
+      out.push(h('div', { class: 'note row' }, h('span', { class: 'grow small-text', text: `Lượt gợi ý cả job đang tạm dừng: còn ${left}/${paused.total} frame.` }),
+        h('button', { class: 'small primary', type: 'button', disabled: !S.resolved, text: 'Tiếp tục', onclick: () => runBatch(true) }),
+        h('button', { class: 'small', type: 'button', text: 'Bỏ', onclick: () => { GM_setValue(`batchrun:${S.jobId}`, null); render(); } })));
+    }
     out.push(h('button', { class: 'primary', type: 'button', disabled: busy || !S.resolved,
-      onclick: runBatch, text: `Gợi ý cho ${jobFrames(r.from, r.to).length} frame${cands.length > 1 && picked.size < cands.length ? ` · ${picked.size} label` : ''}` }));
+      onclick: () => runBatch(false), text: `Gợi ý cho ${jobFrames(r.from, r.to).length} frame${cands.length > 1 && picked.size < cands.length ? ` · ${picked.size} label` : ''}` }));
     const st = batchStats();
     if (!st.frames.length) return out;
+    out.push(h('button', { type: 'button', disabled: busy, text: S.grid ? 'Đóng lưới ảnh' : `Duyệt dạng lưới ảnh (${st.frames.length} frame)`,
+      onclick: () => { S.grid = S.grid ? null : { page: 0 }; render(); } }));
+    if (S.grid) out.push(renderGrid(st));
     out.push(h('div', { class: 'row' }, h('span', { class: 'grow', text: `${st.frames.length} frame có kết quả · ${st.total} đề xuất · ${st.flagged} mục có cờ` })));
     if (st.flaggedFrames.length) {
       out.push(h('div', { class: 'row small-text' }, h('span', { class: 'muted', text: 'Frame cần duyệt:' }),
@@ -2422,6 +2626,12 @@
         }) }),
         h('span', { class: 'muted', text: !hl ? '' : hl.ok ? `${hl.engine} · ${hl.device}` : 'chưa kết nối' })),
       check('Tự gợi ý khi chuyển frame', 'autoPropose'),
+      check('Chạy sẵn gợi ý cho frame tiếp theo trong lúc duyệt (chuyển frame là có ngay)', 'prefetch'),
+      check('Kiểm luật QA trên các đề xuất đã tick trước khi ghi', 'preApplyQa'),
+      check('Nhắc khi frame này ít vật hơn frame bên cạnh (có thể sót)', 'neighborHints'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!cfg.reviewerMode,
+        onchange: (ev) => { cfg.reviewerMode = ev.target.checked; saveCfg(); if (cfg.reviewerMode) loadReviewer(); else { S.review = null; drawOverlay(); } } }),
+        h('span', { text: 'Chế độ reviewer: viền tím "AI" cho nhãn do tool ghi mà chưa ai sửa' })),
       check('Tải lại trang sau khi ghi để thấy nhãn mới', 'reloadAfterApply'),
       check('Hỏi lại trước khi ghi vào CVAT', 'confirmApply'),
       check('Đánh dấu nhãn do tool ghi là source = "semi-auto"', 'markSemiAuto'),
@@ -2432,12 +2642,45 @@
       h('label', { class: 'field' }, h('span', { text: 'Độ đậm vùng tô xem trước' }),
         h('input', { type: 'range', min: '0', max: '0.8', step: '0.05', value: String(cfg.opacity), oninput: (ev) => { cfg.opacity = Number(ev.target.value); saveCfg(); drawOverlay(); } })),
       text('CSS selector của ảnh nền canvas CVAT', 'canvasSelector', 'text', 'Chỉ đổi khi phần xem trước không hiện. Mặc định: #cvat_canvas_background'),
-      h('p', { class: 'muted small-text', style: 'margin:0', text: `SAM3 CVAT Assist ${VERSION}. Phím tắt: Alt+G gợi ý, Alt+A ghi.` }),
+      h('h2', { text: 'Giao diện' }),
+      h('div', { class: 'row' },
+        h('label', { class: 'field grow' }, h('span', { text: `Cỡ chữ ${Math.round((Number(cfg.fontScale) || 1) * 100)}%` }),
+          h('input', { type: 'range', min: '0.8', max: '1.6', step: '0.1', value: String(cfg.fontScale || 1), onchange: (ev) => { cfg.fontScale = Number(ev.target.value); saveCfg(); render(); } })),
+        h('label', { class: 'field' }, h('span', { text: 'Ngôn ngữ / Language' }),
+          (() => { const sel = h('select', { onchange: (ev) => { cfg.lang = ev.target.value; saveCfg(); render(); } },
+            h('option', { value: 'vi', text: 'Tiếng Việt' }), h('option', { value: 'en', text: 'English' })); sel.value = cfg.lang || 'vi'; return sel; })())),
+      check('Tương phản cao', 'highContrast'),
+      h('div', { class: 'row' }, h('button', { type: 'button', text: 'Xem lại hướng dẫn', onclick: () => { cfg.tourDone = false; saveCfg(); S.tour = 0; S.tab = 'propose'; render(); } }),
+        h('button', { type: 'button', text: 'Xuất báo cáo năng suất (CSV)', onclick: exportReport })),
+      h('h2', { text: 'Phím tắt (giữ Alt + phím)' }),
+      renderKeyEditor(),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: `SAM3 CVAT Assist ${VERSION}. Giữ Alt rồi bấm lên ảnh để tick / bỏ tick đề xuất.` }),
     ];
+  }
+
+  function renderKeyEditor() {
+    const rows = Object.entries(KEY_ACTIONS).map(([action, label]) => {
+      const input = h('input', { type: 'text', value: keyOf(action), maxlength: 10, style: 'width:80px', title: 'Bấm phím muốn dùng (cùng Alt)',
+        onkeydown: (ev) => {
+          ev.preventDefault();
+          const k = ev.key.toLowerCase();
+          if (['alt', 'shift', 'control', 'meta', 'tab'].includes(k)) return;
+          const clash = Object.keys(DEFAULT_KEYS).find((a) => a !== action && keyOf(a) === k);
+          if (clash) { setStatus(`Phím Alt+${k} đang dùng cho "${KEY_ACTIONS[clash]}".`, 'error'); return; }
+          if (['f4', 'tab', 'arrowleft', 'arrowright', 'd', 'f', 'e', 'v'].includes(k)) {
+            setStatus(`Alt+${k} trùng phím của trình duyệt/Windows (menu, quay lại trang...). Chọn phím khác.`, 'error'); return;
+          }
+          cfg.keys = Object.assign({}, cfg.keys, { [action]: k }); saveCfg(); render();
+        } });
+      return h('tr', {}, h('td', { text: label }), h('td', {}, input), h('td', { class: 'muted small-text', text: keyName(keyOf(action)) }));
+    });
+    return h('div', {}, h('table', {}, rows),
+      h('button', { class: 'small', type: 'button', text: 'Về phím mặc định', onclick: () => { cfg.keys = {}; saveCfg(); render(); } }));
   }
 
   function render() {
     host.style.display = S.jobId && !cfg.hidden ? 'block' : 'none';
+    applyLook();
     if (!S.jobId) return;
     renderHeader(); renderStatus();
     const open = !cfg.collapsed;
@@ -2450,6 +2693,608 @@
     if (active && els.body.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName) && active.type !== 'checkbox' && S.busy) return;
     const view = { propose: renderPropose, job: renderJob, guide: renderGuide, labels: renderLabels, qa: renderQa, learn: renderLearn, settings: renderSettings }[S.tab]();
     els.body.replaceChildren(...view.filter(Boolean));
+    if (cfg.lang === 'en') translateTree(root);
+  }
+
+
+  // ---- duyệt cả job dạng lưới ảnh nhỏ ----
+  const thumbs = new Map();          // `${job}:${frame}` -> object URL ảnh nén
+  async function thumbUrl(frame) {
+    const key = `${S.jobId}:${frame}`;
+    if (thumbs.has(key)) return thumbs.get(key);
+    const p = cvat('GET', `/api/jobs/${S.jobId}/data?type=frame&quality=compressed&number=${frame}`, undefined, true)
+      .then((blob) => URL.createObjectURL(blob)).catch(() => '');
+    thumbs.set(key, p);
+    if (thumbs.size > 200) { const [k, v] = thumbs.entries().next().value; thumbs.delete(k); Promise.resolve(v).then((u) => u && URL.revokeObjectURL(u)); }
+    return p;
+  }
+  const GRID_PAGE = 12;
+  function renderGrid(st) {
+    const frames = st.frames;
+    const pages = Math.max(1, Math.ceil(frames.length / GRID_PAGE));
+    S.grid.page = Math.min(S.grid.page, pages - 1);
+    const slice = frames.slice(S.grid.page * GRID_PAGE, (S.grid.page + 1) * GRID_PAGE);
+    const tiles = slice.map((f) => {
+      const entry = S.batch[f];
+      const props = entry.proposals || [];
+      const on = props.filter((p) => p.checked).length;
+      const flagged = props.filter((p) => p.flags.length).length;
+      const img = h('img', { alt: `frame ${f}`, style: 'width:100%;display:block;aspect-ratio:16/9;object-fit:contain;background:#222' });
+      thumbUrl(f).then((u) => { if (u) img.src = u; });
+      const svg = svgEl('svg', { viewBox: `0 0 ${entry.width} ${entry.height}`, preserveAspectRatio: 'xMidYMid meet' });
+      svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
+      for (const p of props) {
+        if (!p.bbox) continue;
+        const [x1, y1, x2, y2] = p.bbox;
+        svg.append(svgEl('rect', { x: x1, y: y1, width: x2 - x1, height: y2 - y1, fill: 'none', stroke: labelColor(p.label_id),
+          'stroke-width': Math.max(2, entry.width / 300), opacity: p.checked ? 1 : 0.3, 'stroke-dasharray': p.flags.length ? '8 5' : 'none' }));
+      }
+      const box = h('input', { type: 'checkbox', checked: on > 0, title: 'Giữ / bỏ mọi đề xuất của frame này',
+        onchange: (ev) => { props.forEach((p) => { p.checked = ev.target.checked && (cfg.batchIncludeFlagged || !p.flags.length || p.checked); p.userTouched = true; }); persist('batch'); render(); } });
+      return h('div', { class: 'tile' + (f === S.frame ? ' current' : '') },
+        h('div', { style: 'position:relative;cursor:pointer', title: 'Mở frame này', onclick: () => goToFrame(f) }, img, svg),
+        h('div', { class: 'row small-text' }, box, h('span', { class: 'grow', text: `#${f} · ${on}/${props.length}` }),
+          flagged ? h('span', { class: 'badge', text: `${flagged} cờ` }) : null));
+    });
+    return h('div', { class: 'grid-wrap' },
+      h('div', { class: 'grid' }, tiles),
+      h('div', { class: 'row small-text' },
+        h('button', { class: 'small', type: 'button', disabled: S.grid.page === 0, text: '‹ Trước', onclick: () => { S.grid.page--; render(); } }),
+        h('span', { class: 'grow muted', style: 'text-align:center', text: `Trang ${S.grid.page + 1}/${pages}` }),
+        h('button', { class: 'small', type: 'button', disabled: S.grid.page >= pages - 1, text: 'Sau ›', onclick: () => { S.grid.page++; render(); } })));
+  }
+
+  // ---- thông báo khi việc dài xong (Windows toast trong app desktop, thông báo của Tampermonkey ngoài trình duyệt) ----
+  function notify(title, text) {
+    try { if (typeof GM_notification === 'function') GM_notification({ title, text, timeout: 8000 }); } catch (e) { /* bỏ qua */ }
+  }
+
+
+  // ---- dữ liệu thông minh: frame nên làm trước, keyframe theo chuyển động, tìm frame bằng chữ ----
+  S.smart = null;         // {job, feats:{frame: features}, ranking, keyframes}
+  S.search = null;        // {job, query, matches, done, total}
+  function sampleRange(frames, cap) {
+    if (frames.length <= cap) return frames;
+    const step = frames.length / cap;
+    return Array.from({ length: cap }, (_, i) => frames[Math.floor(i * step)]);
+  }
+  async function compressedB64(frame) {
+    const blob = await cvat('GET', `/api/jobs/${S.jobId}/data?type=frame&quality=compressed&number=${frame}`, undefined, true);
+    return await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1]); r.onerror = () => reject(r.error); r.readAsDataURL(blob); });
+  }
+  async function analyzeJob() {
+    const r = jobRange();
+    const frames = sampleRange(jobFrames(r.from, r.to), 400);
+    S.stopRequested = false; S.longTask = 'smart';
+    await run(`Đang phân tích ${frames.length} frame…`, async () => {
+      const feats = (S.smart && S.smart.job === S.jobId && S.smart.feats) || {};
+      const todo = frames.filter((f) => !feats[f]);
+      for (let i = 0; i < todo.length; i += 12) {
+        if (S.stopRequested) break;
+        const chunk = todo.slice(i, i + 12);
+        const imgs = await Promise.all(chunk.map(async (f) => ({ frame: f, image_b64: await compressedB64(f) })));
+        const res = await backend('POST', '/data/features', { frames: imgs });
+        for (const x of res.frames) feats[x.frame] = x.features;
+        setStatus(`Đang phân tích frame: ${Object.keys(feats).length}/${frames.length}…`, 'busy');
+      }
+      const ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
+      const count = labelsByFrame(ann);
+      const list = frames.filter((f) => feats[f]).map((f) => {
+        const b = S.batch[f];
+        const props = (b && b.proposals) || [];
+        return { frame: f, features: feats[f], labeled: count[f] ? count[f].size : 0,
+          flagged: props.filter((p) => p.flags.length).length, low: props.filter((p) => typeof p.score === 'number' && p.score < 0.5).length };
+      });
+      const res = await backend('POST', '/data/rank', { frames: list, k: Math.min(30, list.length) });
+      S.smart = { job: S.jobId, feats, ranking: res.ranking, keyframes: res.keyframes, analyzed: list.length };
+      setStatus(`Đã phân tích ${list.length} frame: ${res.keyframes.length} keyframe theo chuyển động. Xem danh sách "Nên làm trước".`, 'ok');
+    });
+    S.longTask = ''; render();
+  }
+  async function searchFrames(query) {
+    const q = (query || '').trim();
+    if (!q) return setStatus('Gõ thứ cần tìm (tiếng Anh), ví dụ: motorbike carrying boxes', 'error');
+    const r = jobRange();
+    const frames = jobFrames(r.from, r.to);
+    S.search = { job: S.jobId, query: q, matches: [], done: 0, total: frames.length };
+    S.stopRequested = false; S.longTask = 'search';
+    await run(`SAM3 đang tìm "${q}" trong ${frames.length} frame…`, async () => {
+      for (let i = 0; i < frames.length; i += 4) {
+        if (S.stopRequested) break;
+        const chunk = frames.slice(i, i + 4);
+        const imgs = await Promise.all(chunk.map(async (f) => ({ frame: f, image_b64: await compressedB64(f) })));
+        const res = await backend('POST', '/data/search', { query: q, frames: imgs });
+        S.search.matches = S.search.matches.concat(res.matches).sort((a, b) => b.score - a.score);
+        S.search.done = Math.min(frames.length, i + 4);
+        setStatus(`Tìm "${q}": ${S.search.done}/${frames.length} frame, thấy ${S.search.matches.length}.`, 'busy');
+        if (S.tab === 'job' && i % 16 === 0) render();
+      }
+      const stopped = S.stopRequested ? 'Đã dừng. ' : '';
+      setStatus(`${stopped}"${q}": thấy ở ${S.search.matches.length} frame.`, 'ok');
+      if (!S.stopRequested) notify('Tìm frame xong', `"${q}": ${S.search.matches.length} frame.`);
+    });
+    S.longTask = ''; render();
+  }
+  function renderSmartSection(r, busy) {
+    const out = [h('h2', { text: 'Dữ liệu thông minh' })];
+    out.push(h('p', { class: 'muted small-text', style: 'margin:0', text: 'Phân tích ảnh nén của các frame (không dùng GPU): frame nào khác lạ / khó nên làm trước, và keyframe theo chuyển động cho video.' }));
+    out.push(h('button', { type: 'button', disabled: busy, text: S.smart && S.smart.job === S.jobId ? 'Phân tích lại' : 'Phân tích frame của job', onclick: analyzeJob }));
+    if (S.smart && S.smart.job === S.jobId) {
+      out.push(h('div', { class: 'small-text', text: `Nên làm trước (${S.smart.ranking.length}):` }));
+      out.push(h('ul', {}, S.smart.ranking.slice(0, 15).map((x) => h('li', { class: 'item' }, h('div', { class: 'row' },
+        h('button', { class: 'small', type: 'button', text: `#${x.frame}`, onclick: () => goToFrame(x.frame) }),
+        h('span', { class: 'grow small-text muted', text: x.reasons.join(', ') }))))));
+      const keys = S.smart.keyframes || [];
+      out.push(h('div', { class: 'row small-text' }, h('span', { class: 'grow', text: `Keyframe theo chuyển động: ${keys.length}/${S.smart.analyzed} frame` }),
+        h('button', { class: 'small', type: 'button', disabled: busy || !keys.length || !S.resolved, text: 'Gợi ý cả job chỉ trên keyframe',
+          title: 'Chỉ chạy SAM3 trên các frame có thay đổi đáng kể', onclick: () => runBatch(false, keys) })));
+      out.push(h('div', { class: 'row small-text' }, keys.slice(0, 40).map((f) => h('button', { class: 'small', type: 'button', text: String(f), onclick: () => goToFrame(f) })),
+        keys.length > 40 ? h('span', { class: 'muted', text: `+${keys.length - 40}` }) : null));
+    }
+    const input = h('input', { type: 'text', class: 'grow', placeholder: 'Tìm frame có… (tiếng Anh, vd: motorbike carrying boxes)', value: (S.search && S.search.query) || '',
+      onkeydown: (ev) => { if (ev.key === 'Enter') searchFrames(ev.target.value); } });
+    out.push(h('div', { class: 'row' }, input, h('button', { type: 'button', disabled: busy || !(S.health && S.health.ok), text: 'Tìm', onclick: () => searchFrames(input.value) })));
+    if (S.search && S.search.job === S.jobId && S.search.matches.length) {
+      out.push(h('div', { class: 'row small-text' }, S.search.matches.slice(0, 40).map((m) => h('button', { class: 'small', type: 'button',
+        title: `${m.count} vật, điểm ${Math.round(m.score * 100)}%`, text: `${m.frame} (${Math.round(m.score * 100)}%)`, onclick: () => goToFrame(m.frame) }))));
+    }
+    return out;
+  }
+
+  // ---- độ đồng thuận giữa hai job (hai người gán cùng frame) ----
+  S.agree = null;
+  async function runAgreement(otherJob) {
+    const other = Number(otherJob);
+    if (!other || other === S.jobId) return setStatus('Nhập số job khác (cùng task, cùng frame) để so.', 'error');
+    await run(`Đang so job ${S.jobId} với job ${other}…`, async () => {
+      const [a, b] = await Promise.all([cvat('GET', `/api/jobs/${S.jobId}/annotations`), cvat('GET', `/api/jobs/${other}/annotations`)]);
+      const fa = new Set((a.shapes || []).map((x) => x.frame)), fb = new Set((b.shapes || []).map((x) => x.frame));
+      const common = new Set([...fa].filter((f) => fb.has(f)));
+      if (!common.size) throw new Error(`Hai job không có frame chung nào có nhãn (job ${S.jobId}: ${fa.size} frame, job ${other}: ${fb.size} frame).`);
+      const pick = (list) => (list || []).filter((x) => common.has(x.frame)).map((x) => ({ frame: x.frame, label_id: x.label_id, type: x.type, points: x.type === 'mask' ? (x.points || []).slice(-4) : x.points, elements: x.elements }));
+      const res = await backend('POST', '/qa/agreement', { a: pick(a.shapes), b: pick(b.shapes), labels: S.labels.map((l) => ({ id: l.id, name: l.name })) });
+      S.agree = Object.assign({ other }, res);
+      setStatus(`Đồng thuận chung ${Math.round(res.overall * 100)}% trên ${res.frames} frame chung.`, res.overall >= 0.8 ? 'ok' : 'error');
+    });
+  }
+  function renderAgreement(busy) {
+    const input = h('input', { type: 'number', min: '1', style: 'width:100px', placeholder: 'số job', value: S.agree ? String(S.agree.other) : '' });
+    const out = [h('h2', { text: 'Độ đồng thuận giữa hai người gán' }),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: 'So nhãn của job này với một job khác gán cùng các frame (ví dụ job kiểm tra chéo). Class đồng thuận thấp thường là chỗ guideline còn mơ hồ.' }),
+      h('div', { class: 'row' }, h('span', { text: 'So với job' }), input, h('button', { type: 'button', disabled: busy, text: 'So sánh', onclick: () => runAgreement(input.value) }))];
+    if (S.agree) {
+      out.push(h('table', {}, h('tr', {}, ['Label', 'Đồng thuận', 'Khớp', 'Chỉ job này', `Chỉ job ${S.agree.other}`, 'IoU'].map((t) => h('th', { text: t }))),
+        S.agree.labels.map((l) => h('tr', {}, h('td', { text: l.label }), h('td', { text: `${Math.round(l.agreement * 100)}%`, style: l.agreement < 0.7 ? 'color:var(--err)' : '' }),
+          h('td', { text: String(l.matched) }), h('td', { text: String(l.only_a) }), h('td', { text: String(l.only_b) }), h('td', { text: l.mean_iou === null ? '—' : String(l.mean_iou) })))));
+      if (S.agree.confusion.length) out.push(h('div', { class: 'note small-text', text: 'Hay gán khác nhau: ' + S.agree.confusion.slice(0, 6).map((c) => `${c.pair} (${c.count})`).join(', ') }));
+      if (S.agree.worst_frames.length) out.push(h('div', { class: 'row small-text' }, h('span', { class: 'muted', text: 'Frame lệch nhiều:' }),
+        S.agree.worst_frames.slice(0, 15).map((f) => h('button', { class: 'small', type: 'button', text: `${f.frame} (${f.disagree})`, onclick: () => goToFrame(f.frame) }))));
+    }
+    return out;
+  }
+
+
+  // ---- model riêng của dự án (học từ nhãn hộp đã duyệt) ----
+  S.custom = null; let customPoll = null;
+  async function loadCustom() {
+    try { S.custom = await backend('POST', '/custom/info', baseBody()); } catch (e) { S.custom = { error: e.message }; }
+    if (S.custom && S.custom.training && S.custom.training.running && !customPoll) {
+      customPoll = setInterval(async () => {
+        await loadCustom();
+        if (!(S.custom.training && S.custom.training.running)) {
+          clearInterval(customPoll); customPoll = null;
+          const t = S.custom.training || {};
+          notify('Huấn luyện model riêng xong', t.message || '');
+        }
+        if (S.tab === 'learn') render();
+      }, 2500);
+    }
+    if (S.tab === 'learn') render();
+  }
+  async function collectCustom() {
+    S.stopRequested = false; S.longTask = 'custom';
+    await run('Đang thu thập ảnh + hộp đã duyệt của job…', async () => {
+      const ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
+      const byFrame = {};
+      for (const x of ann.shapes || []) {
+        if (x.type !== 'rectangle' || !labelById(x.label_id)) continue;
+        const [x1, y1, x2, y2] = x.points;
+        (byFrame[x.frame] = byFrame[x.frame] || []).push({ label_id: x.label_id, bbox: [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)] });
+      }
+      const frames = sampleRange(Object.keys(byFrame).map(Number).sort((a, b) => a - b), 200);
+      if (!frames.length) throw new Error('Job này chưa có nhãn hộp (rectangle) nào để học.');
+      let sent = 0, last = null;
+      for (let i = 0; i < frames.length; i += 4) {
+        if (S.stopRequested) break;
+        const chunk = frames.slice(i, i + 4);
+        const samples = await Promise.all(chunk.map(async (f) => ({ key: `job${S.jobId}_f${f}`, image_b64: (await fetchFrame(f)).b64, boxes: byFrame[f] })));
+        last = await backend('POST', '/custom/dataset/add', Object.assign(baseBody(), { samples }));
+        sent += chunk.length;
+        setStatus(`Đã gửi ${sent}/${frames.length} frame cho model riêng…`, 'busy');
+      }
+      if (last) setStatus(`Dữ liệu model riêng: ${last.dataset.images} ảnh, ${last.dataset.boxes} hộp.`, 'ok');
+    });
+    S.longTask = ''; await loadCustom();
+  }
+  function renderCustomModel() {
+    const out = [h('h2', { text: 'Model riêng của dự án' }),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: 'Một detector nhỏ học từ chính các nhãn hộp đã duyệt của bạn. Class nào đạt chuẩn (đủ ví dụ, đúng ≥ 70%, tìm được ≥ 60% trên ảnh giữ lại để kiểm) mới được dùng, nhanh hơn SAM3 nhiều lần; class khác vẫn do SAM3 làm.' })];
+    if (!S.custom) { loadCustom(); return out; }
+    if (S.custom.error) { out.push(h('div', { class: 'note small-text', text: S.custom.error })); return out; }
+    const d = S.custom.dataset || { images: 0, boxes: 0, per_class: {} };
+    const t = S.custom.training || {};
+    const m = S.custom.model;
+    out.push(h('div', { class: 'small-text', text: `Dữ liệu: ${d.images} ảnh, ${d.boxes} hộp` + (Object.keys(d.per_class).length ? ` (${Object.entries(d.per_class).slice(0, 6).map(([k, v]) => `${k} ${v}`).join(', ')})` : '') }));
+    const busy = !!S.busy;
+    out.push(h('div', { class: 'row' },
+      h('button', { class: 'small', type: 'button', disabled: busy || t.running, text: 'Thu thập từ job này', onclick: collectCustom }),
+      h('button', { class: 'small primary', type: 'button', disabled: busy || t.running || d.images < 8, text: 'Huấn luyện', title: d.images < 8 ? 'Cần ít nhất 8 ảnh' : 'Chạy nền, vẫn gán nhãn được trong lúc chờ',
+        onclick: () => run('Đang bắt đầu huấn luyện…', async () => { await backend('POST', '/custom/train', Object.assign(baseBody(), { epochs: 12 })); setStatus('Đang huấn luyện model riêng (chạy nền).', 'ok'); await loadCustom(); }) }),
+      t.running ? h('button', { class: 'small', type: 'button', text: 'Dừng', onclick: async () => { await backend('POST', '/custom/stop'); loadCustom(); } }) : null,
+      h('button', { class: 'small', type: 'button', disabled: busy || t.running || (!d.images && !m), text: 'Xoá',
+        onclick: () => window.confirm('Xoá dữ liệu và model riêng của profile này?') && run('Đang xoá…', async () => { await backend('POST', '/custom/clear', baseBody()); await loadCustom(); }) })));
+    if (t.running) out.push(h('div', { class: 'small-text', text: `${t.message || 'Đang huấn luyện'}${t.loss ? ` · loss ${t.loss}` : ''}` }));
+    if (t.error) out.push(h('div', { class: 'note small-text', text: t.error }));
+    if (m) {
+      out.push(h('table', {}, h('tr', {}, ['Class', 'Đúng', 'Tìm được', 'Ví dụ', 'Dùng'].map((x) => h('th', { text: x }))),
+        m.classes.map((c) => { const k = m.metrics[c] || {}; const ok = m.usable.includes(c);
+          return h('tr', {}, h('td', { text: c }), h('td', { text: `${Math.round((k.precision || 0) * 100)}%` }), h('td', { text: `${Math.round((k.recall || 0) * 100)}%` }),
+            h('td', { text: String((m.counts || {})[c] || 0) }), h('td', { text: ok ? '✓' : '—', style: ok ? 'color:var(--ok)' : '' })); })));
+      out.push(h('div', { class: 'muted small-text', text: `Huấn luyện lúc ${m.trained_at} trên ${m.device}, ${m.train_images} ảnh học, ${m.val_images} ảnh kiểm.` }));
+    }
+    out.push(h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!cfg.useCustom, disabled: !(m && m.usable && m.usable.length),
+      onchange: (ev) => { cfg.useCustom = ev.target.checked; saveCfg(); clearProposals(); } }),
+      h('span', { text: 'Dùng model riêng cho các class đạt chuẩn khi gợi ý' })));
+    return out;
+  }
+
+  // ====================================================== 0.8.0: thao tác nhanh ===
+  // Phím tắt (Alt + phím), tự đặt được ở tab Cài đặt.
+  const KEY_ACTIONS = {
+    propose: 'Gợi ý nhãn cho frame này', apply: 'Ghi các đề xuất đã tick', applyNext: 'Ghi rồi sang frame tiếp (đề xuất đã chạy sẵn)',
+    next: 'Chọn đề xuất tiếp theo', prev: 'Chọn đề xuất trước', toggle: 'Tick / bỏ tick đề xuất đang chọn',
+    reject: 'Bỏ (loại) đề xuất đang chọn', undo: 'Hoàn tác lần ghi gần nhất', panel: 'Ẩn / hiện panel',
+  };
+  const DEFAULT_KEYS = { propose: 'g', apply: 'a', applyNext: 'enter', next: 'j', prev: 'k', toggle: 'x', reject: 'delete', undo: 'z', panel: 'p' };
+  const keyOf = (action) => String((cfg.keys && cfg.keys[action]) || DEFAULT_KEYS[action]).toLowerCase();
+  const keyName = (k) => 'Alt+' + (k.length === 1 ? k.toUpperCase() : k[0].toUpperCase() + k.slice(1));
+
+  // ---- bộ lọc: ngưỡng tức thì + ẩn class (không gọi lại backend) ----
+  S.minScore = 0; S.hiddenLabels = new Set(); S.sel = null; S.hints = []; S.prefetching = null;
+  function visible(p) {
+    return !S.hiddenLabels.has(p.label_id) && (p.type === 'skeleton' || typeof p.score !== 'number' || p.score >= S.minScore);
+  }
+  function shownProposals() { return S.propFrame === S.frame ? S.proposals.filter(visible) : []; }
+
+  // ---- hoàn tác nhiều bước: tối đa 20 lần ghi gần nhất, theo từng job ----
+  function pushUndo(entry) {
+    const stack = (GM_getValue('undoStack', null) || []).filter((u) => Date.now() - u.at < 7 * 864e5);
+    stack.push(entry);
+    GM_setValue('undoStack', stack.slice(-20));
+  }
+  function undoStackOf(jobId) { return (GM_getValue('undoStack', null) || []).filter((u) => u.jobId === jobId); }
+  function popUndo(jobId) {
+    const stack = GM_getValue('undoStack', null) || [];
+    for (let i = stack.length - 1; i >= 0; i--) if (stack[i].jobId === jobId) { const [u] = stack.splice(i, 1); GM_setValue('undoStack', stack); return u; }
+    return null;
+  }
+  function clearUndo(jobId) { GM_setValue('undoStack', (GM_getValue('undoStack', null) || []).filter((u) => u.jobId !== jobId)); }
+  { const legacy = GM_getValue('undo', null); if (legacy && legacy.jobId) { pushUndo(legacy); GM_setValue('undo', null); } }
+
+  // ---- gợi ý sẵn frame tiếp theo ----
+  // Kết quả lưu theo job + frame + "chữ ký" cấu hình (profile, chỉnh tay, label). Chỉ dùng khi nhãn có sẵn của frame
+  // không đổi so với lúc chạy sẵn. Giữ qua lần tải lại trang (sau khi ghi) nhờ bộ nhớ của script.
+  const pfInflight = {};
+  function pfSig() { const b = baseBody(); return JSON.stringify([b.profile_id, b.overrides, b.use_learned, b.use_custom, S.labels.map((l) => l.id)]); }
+  function exSig(existing) { return existing.map((x) => `${x.id ?? 't'}:${x.label_id}:${(x.points || []).slice(0, 4).map(Math.round).join(',')}`).sort().join('|'); }
+  function pfStore() { const all = GM_getValue('prefetch', null); return all && all.job === S.jobId ? all : { job: S.jobId, frames: {} }; }
+  function pfPut(frame, entry) {
+    const all = pfStore();
+    all.frames[frame] = entry;
+    for (const k of Object.keys(all.frames).sort((a, b) => all.frames[b].at - all.frames[a].at).slice(3)) delete all.frames[k];
+    try { GM_setValue('prefetch', all); } catch (e) { /* quá lớn: chỉ giữ trong phiên */ }
+  }
+  function pfTake(frame, existing) {
+    const all = pfStore();
+    const e = all.frames[frame];
+    if (!e || e.sig !== pfSig() || Date.now() - e.at > 30 * 60e3 || e.ex !== exSig(existing)) return null;
+    return e.res;
+  }
+  function nextFrameOf(frame) {
+    const { stop } = jobRange();
+    const list = jobFrames(frame + 1, Math.min(stop, frame + 200));
+    return list.length ? list[0] : null;
+  }
+  async function computeAt(frame, ann) {
+    const fr = await fetchFrame(frame);
+    const existing = existingAt(ann, frame);
+    const res = await backend('POST', '/propose', Object.assign(baseBody(), { image_b64: fr.b64, existing }));
+    return { res, existing, w: fr.w, h: fr.h };
+  }
+  function schedulePrefetch(fromFrame) {
+    if (!cfg.prefetch || !S.resolved || !S.jobId) return;
+    const target = nextFrameOf(fromFrame);
+    if (target === null || pfInflight[target] || S.batch[target]) return;
+    const job = S.jobId, sig = pfSig();
+    S.prefetching = target;
+    pfInflight[target] = (async () => {
+      try {
+        const ann = await cvat('GET', `/api/jobs/${job}/annotations`);
+        if (job !== S.jobId) return null;
+        const out = await computeAt(target, ann);
+        if (job === S.jobId && sig === pfSig()) pfPut(target, { sig, at: Date.now(), ex: exSig(out.existing), res: out.res });
+        return out;
+      } catch (err) { return null; } finally {
+        delete pfInflight[target];
+        if (S.prefetching === target) S.prefetching = null;
+        if (S.tab === 'propose') renderStatusLine();
+      }
+    })();
+  }
+  function renderStatusLine() { /* dòng nhỏ dưới nút gợi ý: được vẽ lại cùng render() */ if (!S.busy) render(); }
+
+  // ---- nhắc vật có thể bị sót: so số vật theo label với frame trước/sau ----
+  function neighborHints(ann, frame) {
+    if (!cfg.neighborHints || !ann) return [];
+    const count = (list) => list.reduce((m, s) => { m[s.label_id] = (m[s.label_id] || 0) + 1; return m; }, {});
+    const here = count(existingAt(ann, frame).concat(S.proposals.filter((p) => p.checked && visible(p) && S.propFrame === frame)));
+    const frames = jobFrames(Math.max(0, frame - 1), frame + 1).filter((f) => f !== frame);
+    const out = [];
+    for (const f of frames) {
+      const there = count(existingAt(ann, f));
+      for (const [lid, n] of Object.entries(there)) {
+        const m = here[lid] || 0;
+        if (n > m) {
+          const l = labelById(Number(lid));
+          out.push(`Frame ${f} có ${n} "${l ? l.name : lid}", frame này mới có ${m}: có thể còn sót ${n - m}.`);
+        }
+      }
+    }
+    return [...new Set(out)].slice(0, 4);
+  }
+
+  // ---- kiểm trước khi ghi ----
+  async function preApplyCheck(chosen) {
+    if (!cfg.preApplyQa) return true;
+    let res;
+    try {
+      const fr = await getFrame();
+      const current = (await frameShapes()).shapes;
+      const shapes = current.concat(chosen.map((p) => Object.assign(toCvatShape(p), { id: -p.pid })));
+      res = await backend('POST', '/qa', Object.assign(baseBody(), { shapes, width: fr.w, height: fr.h }));
+    } catch (err) { return true; }      // không kiểm được thì không chặn việc ghi
+    const ids = new Set(chosen.map((p) => -p.pid));
+    const mine = (res.findings || []).filter((f) => f.severity === 'error' && (f.shape_ids || [f.shape_id]).some((id) => ids.has(id)));
+    if (!mine.length) return true;
+    const lines = mine.slice(0, 8).map((f) => '• ' + (f.message || f.code));
+    return window.confirm(`Kiểm tra trước khi ghi: ${mine.length} lỗi trên các đề xuất đã tick.\n\n${lines.join('\n')}\n\nVẫn ghi?`);
+  }
+
+  // ---- chọn / tick đề xuất bằng bàn phím và Alt+bấm trên ảnh ----
+  function moveSel(step) {
+    const list = shownProposals();
+    if (!list.length) return;
+    const i = list.findIndex((p) => p.pid === S.sel);
+    const next = list[(i + step + list.length) % list.length];
+    S.sel = next.pid; S.highlight = 'p' + next.pid;
+    render(); drawOverlay();
+    const li = els.body.querySelector(`li[data-pid="${next.pid}"]`);
+    if (li && li.scrollIntoView) li.scrollIntoView({ block: 'nearest' });
+  }
+  function selected() { return S.proposals.find((p) => p.pid === S.sel && visible(p)); }
+  function toggleProposal(p, value) {
+    p.checked = value === undefined ? !p.checked : value; p.userTouched = true;
+    render(); drawOverlay();
+  }
+  function proposalAt(pt) {
+    const hits = shownProposals().filter((p) => p.bbox && pt[0] >= p.bbox[0] && pt[0] <= p.bbox[2] && pt[1] >= p.bbox[1] && pt[1] <= p.bbox[3]);
+    hits.sort((a, b) => (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]) - (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]));
+    return hits[0] || null;
+  }
+  function pointOnImage(ev) {
+    const r = overlaySvg.getBoundingClientRect();
+    if (!r.width || ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) return null;
+    return [((ev.clientX - r.left) / r.width) * S.imgW, ((ev.clientY - r.top) / r.height) * S.imgH];
+  }
+  // Alt + bấm trên ảnh: tick / bỏ tick đề xuất dưới con trỏ (hộp nhỏ nhất). Không giữ Alt thì CVAT nhận chuột như thường.
+  document.addEventListener('mousedown', (ev) => {
+    if (!ev.altKey || ev.button !== 0 || S.box || !overlayActive() || host.contains(ev.target)) return;
+    const pt = pointOnImage(ev);
+    const p = pt && proposalAt(pt);
+    if (!p) return;
+    ev.preventDefault(); ev.stopPropagation();
+    S.sel = p.pid; toggleProposal(p);
+  }, true);
+  let hoverTimer = null;
+  document.addEventListener('mousemove', (ev) => {
+    if (!ev.altKey || S.box || !overlayActive()) return;
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => {
+      const pt = pointOnImage(ev);
+      const p = pt && proposalAt(pt);
+      const key = p ? 'p' + p.pid : null;
+      if (key !== S.highlight) { S.highlight = key; drawOverlay(); }
+    }, 30);
+  }, true);
+
+  // ---- ghi rồi sang frame tiếp ----
+  async function applyAndNext() {
+    const next = nextFrameOf(S.frame);
+    if (next === null) return setStatus('Đây là frame cuối của job.', 'info');
+    const shown = shownProposals().filter((p) => p.checked);
+    if (!shown.length) {                       // không có gì để ghi: chỉ sang frame tiếp
+      GM_setValue('autoNext', { jobId: S.jobId, frame: next, at: Date.now() });
+      goToFrame(next);
+      return;
+    }
+    await applyProposals({ nextFrame: next });
+  }
+  function consumeAutoNext() {
+    const a = GM_getValue('autoNext', null);
+    if (!a || a.jobId !== S.jobId || a.frame !== S.frame || Date.now() - a.at > 120e3) return false;
+    GM_setValue('autoNext', null);
+    return true;
+  }
+
+  // ---- thống kê phiên (theo ngày) ----
+  const MANUAL_SECONDS = { rectangle: 7, polygon: 25, polyline: 15, mask: 30, skeleton: 45, points: 5 };
+  function statsAll() { return GM_getValue('stats', null) || {}; }
+  function bumpStats(patch) {
+    const day = new Date().toISOString().slice(0, 10);
+    const all = statsAll();
+    const d = all[day] || { applied: 0, rejected: 0, shown: 0, frames: [], saved: 0, jobs: {} };
+    for (const [k, v] of Object.entries(patch)) {
+      if (k === 'frame') { const key = `${S.jobId}:${v}`; if (!d.frames.includes(key)) d.frames.push(key); }
+      else if (k === 'job') { d.jobs[v.id] = d.jobs[v.id] || { applied: 0, rejected: 0, shown: 0 }; for (const [a, b] of Object.entries(v.add)) d.jobs[v.id][a] = (d.jobs[v.id][a] || 0) + b; }
+      else d[k] = (d[k] || 0) + v;
+    }
+    d.frames = d.frames.slice(-5000);
+    all[day] = d;
+    for (const k of Object.keys(all).sort().slice(0, -60)) delete all[k];   // giữ 60 ngày
+    GM_setValue('stats', all);
+  }
+  function statsAfterApply(written, others) {
+    const saved = written.reduce((sum, p) => sum + Math.max(0, (MANUAL_SECONDS[p.type] || 10) - 2), 0);
+    const rejected = others.filter((p) => !p.checked && p.userTouched).length;
+    bumpStats({ applied: written.length, rejected, saved, frame: S.propFrame, job: { id: S.jobId, add: { applied: written.length, rejected } } });
+  }
+  function statsToday() {
+    const d = statsAll()[new Date().toISOString().slice(0, 10)] || { applied: 0, rejected: 0, shown: 0, frames: [], saved: 0 };
+    const kept = d.shown ? Math.round(100 * d.applied / Math.max(d.shown, d.applied)) : 0;
+    return { applied: d.applied, rejected: d.rejected, frames: d.frames.length, minutes: Math.round(d.saved / 60), kept };
+  }
+  function downloadText(name, text, type) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: type || 'text/plain;charset=utf-8' }));
+    a.download = name;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  function exportReport() {
+    const rows = [['ngay', 'job', 'nhan_da_ghi', 'de_xuat_bo', 'de_xuat_da_hien', 'frame_da_lam_ca_ngay', 'phut_tiet_kiem_uoc_tinh_ca_ngay']];
+    for (const [day, d] of Object.entries(statsAll()).sort()) {
+      const jobs = Object.entries(d.jobs || {});
+      if (!jobs.length) rows.push([day, '', d.applied, d.rejected, d.shown, d.frames.length, Math.round(d.saved / 60)]);
+      for (const [job, j] of jobs) rows.push([day, job, j.applied || 0, j.rejected || 0, j.shown || 0, d.frames.length, Math.round(d.saved / 60)]);
+    }
+    const csv = '﻿' + rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    downloadText(`sam3-assist-bao-cao-${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv;charset=utf-8');
+  }
+
+  // ---- chế độ reviewer: nhãn do tool ghi mà chưa ai sửa ----
+  S.review = null;   // {job, ids:Set, frameShapes:[...] }
+  async function loadReviewer() {
+    if (!cfg.reviewerMode || !S.jobId) { S.review = null; return; }
+    try {
+      const [ids, ann] = await Promise.all([backend('GET', `/learn/tool_shapes?job_id=${S.jobId}&user=${encodeURIComponent(S.user || '')}`), cvat('GET', `/api/jobs/${S.jobId}/annotations`)]);
+      const untouched = new Set(ids.untouched || []);
+      S.review = { job: S.jobId, ann, untouched, total: (ids.untouched || []).length };
+    } catch (err) { S.review = null; }
+    drawOverlay();
+  }
+  function reviewerMarks() {
+    if (!S.review || S.review.job !== S.jobId) return [];
+    return (S.review.ann.shapes || []).filter((x) => x.frame === S.frame && S.review.untouched.has(x.id));
+  }
+
+  // ---- hướng dẫn lần đầu ----
+  const TOUR = [
+    ['propose', 'Bấm "Gợi ý nhãn cho frame này" (hoặc Alt+G). SAM3 đề xuất nhãn, hiện dạng xem trước trên ảnh.'],
+    ['list', 'Duyệt từng đề xuất: tick để giữ, đổi class nếu sai. Alt+J / Alt+K chọn, Alt+X tick, giữ Alt rồi bấm lên ảnh cũng tick được.'],
+    ['filter', 'Kéo thanh "Ngưỡng" để ẩn đề xuất điểm thấp, bấm tên class để ẩn/hiện cả class.'],
+    ['apply', 'Bấm "Ghi" để lưu vào CVAT, hoặc Alt+Enter để ghi rồi sang frame tiếp: frame sau đã được chạy sẵn.'],
+    ['undo', 'Lỡ tay? "Hoàn tác" (Alt+Z) xoá lần ghi gần nhất, bấm tiếp để lùi thêm. Tab Tự học cho biết tool đã học gì từ cách bạn sửa.'],
+  ];
+  S.tour = cfg.tourDone ? null : 0;
+  function tourCard() {
+    if (S.tour === null || S.tour === undefined || S.tab !== 'propose') return null;
+    const [, text] = TOUR[S.tour];
+    return h('div', { class: 'note tour', role: 'dialog', 'aria-label': 'Hướng dẫn' },
+      h('div', { class: 'small-text muted', text: `Hướng dẫn ${S.tour + 1}/${TOUR.length}` }),
+      h('div', { text }),
+      h('div', { class: 'row' }, h('span', { class: 'grow' }),
+        h('button', { class: 'small', type: 'button', text: 'Bỏ qua', onclick: () => { S.tour = null; cfg.tourDone = true; saveCfg(); render(); } }),
+        h('button', { class: 'small primary', type: 'button', text: S.tour + 1 < TOUR.length ? 'Tiếp' : 'Xong',
+          onclick: () => { S.tour = S.tour + 1 < TOUR.length ? S.tour + 1 : null; if (S.tour === null) { cfg.tourDone = true; saveCfg(); } render(); } })));
+  }
+  const tourOn = (id) => S.tour !== null && S.tour !== undefined && S.tab === 'propose' && TOUR[S.tour][0] === id ? 'tour-target' : '';
+
+  // ---- đồng hồ GPU ----
+  function gpuLine() {
+    const g = S.health && S.health.gpu;
+    if (!g || !g.total_mb) return null;
+    const pct = Math.round(100 * g.used_mb / g.total_mb);
+    const warn = pct >= 90 || (g.temp_c && g.temp_c >= 85);
+    return h('span', { class: 'small-text', style: warn ? 'color:var(--err)' : '', title: g.name || 'GPU',
+      text: `GPU ${(g.used_mb / 1024).toFixed(1)}/${(g.total_mb / 1024).toFixed(1)} GB${g.temp_c ? ` · ${g.temp_c}°C` : ''}${g.model_loaded === false ? ' · model đang nghỉ' : ''}` });
+  }
+  setInterval(async () => {
+    if (!S.jobId || cfg.hidden || S.busy || !(S.health && S.health.ok)) return;
+    try { const hl = await backend('GET', '/health'); S.health = Object.assign({}, S.health, hl); if (!cfg.collapsed) renderMeta(); } catch (e) { /* bỏ qua */ }
+  }, 15000);
+
+  // ---- giao diện: cỡ chữ, tương phản ----
+  function applyLook() {
+    const scale = Math.min(1.6, Math.max(0.8, Number(cfg.fontScale) || 1));
+    host.style.setProperty('--font', `${(13 * scale).toFixed(1)}px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`);
+    host.style.width = `${Math.round(380 * Math.max(1, scale))}px`;
+    const hc = !!cfg.highContrast;
+    for (const [k, v] of Object.entries({ '--bg': '#000000', '--bg-soft': '#1a1a1a', '--line': '#ffffff', '--text': '#ffffff', '--muted': '#e0e0e0', '--accent': '#ffd400', '--accent-text': '#000000' })) {
+      if (hc) host.style.setProperty(k, v); else host.style.removeProperty(k);
+    }
+  }
+
+
+  // ---- tiếng Anh: dịch phần chữ chính của panel sau khi vẽ (thông báo sâu trong backend vẫn là tiếng Việt) ----
+  const EN = {
+    'Gợi ý': 'Suggest', 'Cả job': 'Whole job', 'Guideline': 'Guideline', 'Label': 'Labels', 'Kiểm tra': 'Check', 'Tự học': 'Learning', 'Cài đặt': 'Settings',
+    'Gợi ý nhãn cho frame này': 'Suggest labels for this frame', 'Vẽ hộp': 'Draw box', 'Bấm điểm': 'Click points', 'Tìm tương tự': 'Find similar',
+    'Chọn hết': 'Select all', 'Bỏ chọn hết': 'Select none', 'Bỏ mục có cờ': 'Untick flagged', 'Bỏ đề xuất': 'Discard', 'Loại trừ': 'Exclude', 'Tạo Issue': 'Create issue',
+    'Ghi + frame tiếp': 'Save + next frame', 'Sang frame tiếp': 'Next frame', 'Hoàn tác': 'Undo', 'Xong': 'Done', 'Huỷ': 'Cancel', 'Bỏ điểm cuối': 'Remove last point',
+    'Dừng': 'Stop', 'Ẩn': 'Hide', 'Hiện lại': 'Show', 'Xoá': 'Delete', 'Gỡ': 'Remove', 'Quên': 'Forget', 'Quên tất cả': 'Forget all', 'Bỏ qua': 'Skip', 'Tiếp': 'Next',
+    'Tự chọn profile': 'Auto-select profile', 'Hôm nay': 'Today', 'Giao diện': 'Appearance', 'Tương phản cao': 'High contrast',
+    'Xem lại hướng dẫn': 'Show the tour again', 'Xuất báo cáo năng suất (CSV)': 'Export productivity report (CSV)', 'Xuất báo cáo CSV': 'Export CSV report',
+    'Phím tắt (giữ Alt + phím)': 'Shortcuts (hold Alt + key)', 'Về phím mặc định': 'Reset shortcuts', 'Kiểm tra kết nối': 'Test connection',
+    'Rà cả job': 'Check whole job', 'Kiểm tra annotation của frame này': 'Check annotations on this frame', 'Tạo Issue cho mọi lỗi': 'Create issues for all errors',
+    'Gợi ý cho cả job': 'Suggest for whole job', 'Theo dõi đối tượng (video)': 'Track objects (video)', 'Ghi cả mục có cờ': 'Include flagged items',
+    'Đối chiếu job này ngay': 'Review this job now', 'Gợi ý (chưa tự áp dụng)': 'Notes (not applied automatically)', 'Đọc lại label từ CVAT': 'Reload labels from CVAT',
+    'Nạp lại profile': 'Reload profiles', 'Thêm label': 'Add label', 'Thêm label còn thiếu': 'Add missing labels', 'Dùng làm profile': 'Use as profile',
+    'Lưu vào tool': 'Save to tool', 'Nạp guideline có sẵn cho task khác': 'Import a guideline for another task', 'Soạn guideline nháp từ ảnh của job': 'Draft a guideline from job images',
+    'Frame này': 'This frame', 'Độ đậm vùng tô xem trước': 'Preview fill opacity', 'Đổi nhãn semi-auto đã lưu thành manual': 'Change saved semi-auto labels to manual',
+    'Tự gợi ý khi chuyển frame': 'Suggest automatically when changing frame',
+    'Chạy sẵn gợi ý cho frame tiếp theo trong lúc duyệt (chuyển frame là có ngay)': 'Pre-compute suggestions for the next frame while reviewing',
+    'Kiểm luật QA trên các đề xuất đã tick trước khi ghi': 'Run QA rules on ticked suggestions before saving',
+    'Nhắc khi frame này ít vật hơn frame bên cạnh (có thể sót)': 'Warn when this frame has fewer objects than its neighbours',
+    'Chế độ reviewer: viền tím "AI" cho nhãn do tool ghi mà chưa ai sửa': 'Reviewer mode: purple "AI" outline on tool labels nobody has edited',
+    'Tải lại trang sau khi ghi để thấy nhãn mới': 'Reload the page after saving to show new labels', 'Hỏi lại trước khi ghi vào CVAT': 'Confirm before saving to CVAT',
+    'Đánh dấu nhãn do tool ghi là source = "semi-auto"': 'Mark tool labels as source = "semi-auto"', 'Ghi lại cách tôi xử lý đề xuất để tool học': 'Record how I handle suggestions so the tool can learn',
+    'Dùng điều tool đã học khi gợi ý (ngưỡng, chỉnh hộp)': 'Use what the tool learned (thresholds, box adjustments)', 'Địa chỉ backend SAM3': 'SAM3 backend address',
+    'API key (nếu backend có đặt)': 'API key (if the backend has one)', 'CSS selector của ảnh nền canvas CVAT': 'CSS selector of the CVAT canvas image',
+    'Thu gọn': 'Collapse', 'Mở': 'Open', 'occluded': 'occluded',
+  };
+  const EN_PATTERNS = [
+    [/^Ghi (\d+) nhãn$/, 'Save $1 labels'], [/^Hoàn tác lần ghi gần nhất \((\d+)\)$/, 'Undo last save ($1)'],
+    [/^(\d+) đề xuất · (\d+) đã chọn( · (\d+) đang ẩn)?$/, (m, a, b, c, d) => `${a} suggestions · ${b} selected${d ? ` · ${d} hidden` : ''}`],
+    [/^Ngưỡng (\d+)%$/, 'Threshold $1%'], [/^Cỡ chữ (\d+)%$/, 'Font size $1%'], [/^Đang chạy sẵn frame (\d+)…$/, 'Pre-computing frame $1…'],
+    [/^Hướng dẫn (\d+)\/(\d+)$/, 'Tour $1/$2'], [/^Hôm nay: (\d+) nhãn, (\d+) frame, ước tính tiết kiệm (\d+) phút\.$/, 'Today: $1 labels, $2 frames, about $3 minutes saved.'],
+    [/^(\d+) đề xuất (ngay \(đã chạy sẵn\)|trong ([\d.]+)s), (\d+) cần xem kỹ\..*$/, (m, n, how, sec, f) => `${n} suggestions ${sec ? `in ${sec}s` : 'instantly (pre-computed)'}, ${f} need a closer look.`],
+    [/^Đã ghi (\d+) nhãn\..*$/, 'Saved $1 labels.'], [/^SAM3 đang phân tích frame…$/, 'SAM3 is analysing the frame…'], [/^Đang ghi nhãn vào CVAT…$/, 'Saving labels to CVAT…'],
+  ];
+  function translateText(t) {
+    if (!t) return t;
+    const trimmed = t.trim();
+    if (EN[trimmed]) return t.replace(trimmed, EN[trimmed]);
+    for (const [re, to] of EN_PATTERNS) if (re.test(trimmed)) return trimmed.replace(re, to);
+    return t;
+  }
+  function translateTree(node) {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const texts = [];
+    while (walker.nextNode()) texts.push(walker.currentNode);
+    for (const tn of texts) { const v = translateText(tn.nodeValue); if (v !== tn.nodeValue) tn.nodeValue = v; }
+    node.querySelectorAll('[title],[placeholder]').forEach((el) => {
+      for (const a of ['title', 'placeholder']) { const v = el.getAttribute(a); if (v) { const t = translateText(v); if (t !== v) el.setAttribute(a, t); } }
+    });
   }
 
   // --------------------------------------------------------- vòng theo dõi -
@@ -2468,21 +3313,41 @@
     }
     const frame = ctx.frame !== null ? ctx.frame : S.frame;
     if (frame !== null && frame !== S.frame) {
-      S.frame = frame; S.seq++; S.box = null;
+      S.frame = frame; S.seq++; S.box = null; S.points = null; S.sel = null; S.hints = [];
       clearProposals(); loadBatchFrame();
       if (!S.busy) setStatus('');
       render(); drawOverlay();
       clearTimeout(autoTimer);
-      if (cfg.autoPropose && S.resolved) autoTimer = setTimeout(() => { if (!S.busy) propose(); }, 700);
+      const auto = consumeAutoNext() || cfg.autoPropose;
+      if (auto && S.resolved && !S.batch[frame]) {
+        // Đã chạy sẵn thì hiện ngay, không thì đợi bạn dừng lại ở frame này một chút rồi mới chạy
+        const ready = pfStore().frames[frame] || pfInflight[frame];
+        autoTimer = setTimeout(() => { if (!S.busy) propose(); else autoTimer = setTimeout(() => !S.busy && propose(), 800); }, ready ? 0 : 700);
+      } else if (S.propSource === 'batch') schedulePrefetch(frame);
     }
   }
 
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && S.box) { S.box = null; setStatus('Đã huỷ vẽ hộp.'); drawOverlay(); return; }
-    if (!S.jobId || cfg.hidden || !ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    if (!S.jobId || !ev.altKey || ev.ctrlKey || ev.metaKey || ev.repeat) return;
     const key = ev.key.toLowerCase();
-    if (key === 'g') { ev.preventDefault(); if (S.resolved && !S.busy) propose(); }
-    if (key === 'a') { ev.preventDefault(); if (!S.busy) applyProposals(); }
+    const action = Object.keys(DEFAULT_KEYS).find((a) => keyOf(a) === key);
+    if (!action) return;
+    if (cfg.hidden && action !== 'panel') return;
+    ev.preventDefault(); ev.stopPropagation();
+    const free = !S.busy;
+    if (action === 'panel') { cfg.hidden = !cfg.hidden; saveCfg(); render(); drawOverlay(); }
+    else if (action === 'propose') { if (S.resolved && free) propose(); }
+    else if (action === 'apply') { if (free) applyProposals(); }
+    else if (action === 'applyNext') { if (free && S.resolved) applyAndNext(); }
+    else if (action === 'undo') { if (free) undoLast(); }
+    else if (action === 'next') moveSel(1);
+    else if (action === 'prev') moveSel(-1);
+    else if (action === 'toggle') { const p = selected(); if (p) toggleProposal(p); }
+    else if (action === 'reject') {
+      const p = selected();
+      if (p) { toggleProposal(p, false); moveSel(1); }
+    }
   }, true);
 
   GM_registerMenuCommand('SAM3 Assist: hiện/ẩn panel', () => { cfg.hidden = !cfg.hidden; saveCfg(); render(); drawOverlay(); });

@@ -212,7 +212,7 @@ async function scenario(frameBytes) {
   store.shapes[1].source = 'semi-auto';
   store.shapes.push({ id: 999, type: 'rectangle', frame: 7, label_id: 102, points: [1, 1, 9, 9], source: 'semi-auto' });
   const pointsBefore = JSON.stringify(store.shapes[0].points);
-  const undoBefore = gm.undo;
+  const undoBefore = gm.undoStack;
   button('Cài đặt').click();
   button('Frame này').click();
   await until(() => store.shapes[0].source === 'manual' && store.shapes[1].source === 'manual', 'đổi source: ' + statusText());
@@ -221,7 +221,7 @@ async function scenario(frameBytes) {
   const upd = calls.find((c) => c.path.includes('action=update'));
   assert.strictEqual(upd.body.shapes.length, 2);
   store.shapes = store.shapes.filter((s) => s.id !== 999);
-  gm.undo = undoBefore; // khôi phục để kiểm tra tiếp bước hoàn tác
+  gm.undoStack = undoBefore; // khôi phục để kiểm tra tiếp bước hoàn tác (0.8.0: hoàn tác nhiều bước)
   await until(() => /Đã đổi 2 nhãn/.test(statusText()), 'đổi xong');
   await sleep(900);
 

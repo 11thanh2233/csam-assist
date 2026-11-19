@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -41,6 +42,9 @@ class Settings:
         self.data.setdefault("license_accepted", "")
         self.data.setdefault("auto_update_check", True)
         self.data.setdefault("scan_dirs", [])
+        self.data.setdefault("recent_jobs", [])
+        self.data.setdefault("start_mode", "cvat")          # cvat: mở thẳng CVAT | control: mở bảng điều khiển
+        self.data.setdefault("idle_unload_min", 15)         # nhả model khỏi VRAM sau N phút không dùng (0 = không nhả)
         if "last_seen_version" not in self.data:
             # Cài mới: không có gì để báo. Có cài đặt mà chưa có mục này: đang cập nhật từ 0.6.0 (bản desktop đầu tiên).
             self.data["last_seen_version"] = "0.6.0" if self.existed else __version__
@@ -108,10 +112,17 @@ class ControlApi:
         self._paths, self._comps, self._backend = paths, comps, backend
         self._settings = Settings(paths.settings)
         comps.extra_dirs = [Path(d) for d in self._settings.data["scan_dirs"]]
+        backend.extra_env = {"SAM3_IDLE_UNLOAD_MIN": str(self._settings.data["idle_unload_min"])}
         self._installer = Installer(comps)
         self._updater = U.Updater(paths.downloads / "update")
         self._update_info: dict = self._settings.data.get("update_cache") or {}
         self._pick_folder: Optional[Callable[[], Optional[str]]] = None
+        self._pick_file: Optional[Callable[[bool, str], Optional[str]]] = None      # (lưu?, tên gợi ý) -> đường dẫn
+        st = self._settings.data
+        if st.get("lan_share") and st.get("lan_key"):
+            backend.share_key = st["lan_key"]
+        if st.get("remote_backend"):
+            backend.remote = dict(st["remote_backend"])
         self._open_site, self._on_quit = open_site, on_quit
         self._setup_mode = setup_mode
         self._gpu: Optional[Gpu] = None
@@ -135,6 +146,8 @@ class ControlApi:
             "token_saved": credstore.available() and bool(credstore.get()),
             "keyring": credstore.available(), "autostart_windows": autostart_enabled(),
             "data_dir": str(self._paths.data), "installing": self._installer.p["running"],
+            "recent_jobs": self._settings.data["recent_jobs"], "start_mode": self._settings.data["start_mode"],
+            "idle_unload_min": self._settings.data["idle_unload_min"], "sync_dir": self._settings.data.get("sync_dir", ""),
         }
 
     # ------------------------------------------------------ quét thành phần ---
@@ -354,10 +367,158 @@ class ControlApi:
         origin = normalize_site(url)
         if origin not in self._settings.origins():
             return {"ok": False, "message": "Địa chỉ chưa có trong danh sách."}
-        if self._backend.state in ("stopped", "error") and self._comps.status()["ready"]:
+        if self._backend.state in ("stopped", "error", "missing") and (self._comps.status()["ready"] or getattr(self._backend, 'remote', None)):
             self._backend.start()
         self._open_site(origin)
         return {"ok": True}
+
+    # ------------------------------------------------- hỗ trợ và chia sẻ ---
+    def report(self):
+        """Gói báo lỗi một chạm: nhật ký + thông tin máy, không có token/key/cookie/ảnh."""
+        from . import support
+
+        out = support.report_bundle(self._paths, {"app_version": __version__, "backend": self._backend.info(),
+                                                  "components": self._comps.status()})
+        self._reveal(out)
+        return {"ok": True, "file": str(out)}
+
+    def backup(self):
+        from . import support
+
+        name = f"sam3-assist-sao-luu-{time.strftime('%Y%m%d')}.zip"
+        dest = self._pick_file(True, name) if self._pick_file else str(Path.home() / name)
+        if not dest:
+            return {"ok": False, "message": ""}
+        res = support.backup(self._paths, Path(dest))
+        return {"ok": True, "message": f"Đã sao lưu {res['files']} file vào {res['file']}."}
+
+    def restore(self):
+        from . import support
+        from .bridge import Store
+
+        src = self._pick_file(False, "") if self._pick_file else None
+        if not src:
+            return {"ok": False, "message": ""}
+        try:
+            res = support.restore(self._paths, Path(src), Store(self._paths.store))
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "message": str(exc)}
+        self._backend.restart() if self._backend.state == "running" else None
+        return {"ok": True, "message": f"Đã khôi phục {res['restored']} file. Dữ liệu trước đó được lưu ở {res['safety_backup']}."}
+
+    def set_sync_folder(self):
+        folder = self._pick_folder() if self._pick_folder else None
+        if folder:
+            self._settings.data["sync_dir"] = folder
+            self._settings.save()
+        return self._settings.data.get("sync_dir", "")
+
+    def sync(self, direction):
+        from . import support
+
+        folder = self._settings.data.get("sync_dir")
+        if not folder or direction not in ("push", "pull"):
+            return {"ok": False, "message": "Chưa chọn thư mục chung."}
+        try:
+            res = support.sync(self._paths, Path(folder), direction)
+        except OSError as exc:
+            return {"ok": False, "message": f"Không đồng bộ được: {exc}"}
+        if direction == "pull" and res["copied"] and self._backend.state == "running" and not getattr(self._backend, 'remote', None):
+            self._backend.request("POST", "/profiles/reload", "{}")
+        what = "Đã gửi lên" if direction == "push" else "Đã lấy về"
+        extra = f" {len(res['conflicts'])} file hai bên sửa khác nhau: bản ở thư mục chung được lưu cạnh với đuôi .tu-thu-muc-chung." if res["conflicts"] else ""
+        return {"ok": True, "message": f"{what} {len(res['copied'])} file.{extra}", **res}
+
+    def lan_info(self):
+        from . import support
+
+        st = self._settings.data
+        return {"share": bool(st.get("lan_share")), "key": st.get("lan_key", "") if st.get("lan_share") else "",
+                "addresses": support.lan_addresses(), "port": getattr(self._backend, "port", None) or getattr(self._backend, "preferred_port", 8765),
+                "remote": {"url": (st.get("remote_backend") or {}).get("base", "")}}
+
+    def set_lan_share(self, on):
+        from . import support
+
+        st = self._settings.data
+        st["lan_share"] = bool(on)
+        if on and not st.get("lan_key"):
+            st["lan_key"] = support.new_lan_key()
+        self._settings.save()
+        self._backend.share_key = st["lan_key"] if on else ""
+        if self._backend.state in ("running", "starting") and not getattr(self._backend, 'remote', None):
+            self._backend.restart()
+        return self.lan_info()
+
+    def set_remote(self, url, key):
+        from . import support
+
+        res = support.check_remote(url, key)
+        if not res["ok"]:
+            return res
+        self._settings.data["remote_backend"] = {"base": res["base"], "key": key}
+        self._settings.save()
+        self._backend.stop()
+        self._backend.remote = {"base": res["base"], "key": key}
+        self._backend.start()
+        return res
+
+    def clear_remote(self):
+        self._settings.data.pop("remote_backend", None)
+        self._settings.save()
+        self._backend.stop()
+        self._backend.remote = None
+        if self._comps.status()["ready"]:
+            self._backend.start()
+        return True
+
+    def _reveal(self, path: Path) -> None:
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", str(path)])
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------ job gần đây ---
+    def _record_visit(self, url):
+        """Gọi khi cửa sổ CVAT mở một trang: nhớ địa chỉ gần nhất và các job vừa làm."""
+        origin = normalize_site(url)
+        if origin not in self._settings.origins():
+            return
+        st = self._settings.data
+        st["last_url"] = url
+        m = re.search(r"/tasks/(\d+)/jobs/(\d+)", url or "")
+        if m:
+            clean = f"{origin}/tasks/{m.group(1)}/jobs/{m.group(2)}"
+            site = next((x["name"] for x in st["sites"] if normalize_site(x["url"]) == origin), origin)
+            item = {"url": clean, "task": int(m.group(1)), "job": int(m.group(2)), "site": site, "at": time.strftime("%Y-%m-%d %H:%M")}
+            st["recent_jobs"] = [item] + [j for j in st["recent_jobs"] if j["url"] != clean][:7]
+        self._settings.save()
+
+    def recent_jobs(self):
+        return self._settings.data["recent_jobs"]
+
+    def open_job(self, url):
+        if normalize_site(url) not in self._settings.origins() or not re.search(r"/tasks/\d+/jobs/\d+", url or ""):
+            return {"ok": False, "message": "Địa chỉ job không thuộc danh sách CVAT."}
+        if self._backend.state in ("stopped", "error") and self._comps.status()["ready"]:
+            self._backend.start()
+        self._open_site(url)
+        return {"ok": True}
+
+    def set_setting(self, key, value):
+        """Các cài đặt đơn giản của app (chỉ những khoá biết trước)."""
+        allowed = {"start_mode": ("cvat", "control"), "idle_unload_min": None, "autostart_backend": None}
+        if key not in allowed:
+            return False
+        if key == "idle_unload_min":
+            value = max(0, min(240, int(value)))
+            self._backend.extra_env["SAM3_IDLE_UNLOAD_MIN"] = str(value)
+        elif allowed[key] and value not in allowed[key]:
+            return False
+        self._settings.data[key] = value
+        self._settings.save()
+        return True
 
     def open_folder(self, which):
         target = {"data": self._paths.data, "profiles": self._paths.profiles, "library": self._paths.library,
@@ -398,7 +559,7 @@ class ControlApi:
     # ---------------------------------------------------------------- app ---
     def _prepare(self) -> dict:
         res = seed_user_files(self._paths)
-        if self._settings.data.get("autostart_backend") and self._comps.status()["ready"] and not self._setup_mode:
+        if self._settings.data.get("autostart_backend") and (self._comps.status()["ready"] or getattr(self._backend, 'remote', None)) and not self._setup_mode:
             self._backend.start()
         return res
 

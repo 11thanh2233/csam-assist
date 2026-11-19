@@ -48,6 +48,10 @@ class Settings:
         # Ngưỡng tin cậy thấp nhất mà model trả về; từng label lọc tiếp theo ngưỡng riêng.
         self.min_conf = float(os.getenv("SAM3_MIN_CONF", "0.25"))
         self.cache_size = int(os.getenv("SAM3_CACHE_SIZE", "4"))
+        # Nhả model khỏi VRAM sau N phút không dùng (0 = không nhả). Bản desktop đặt 15.
+        self.idle_unload_min = float(os.getenv("SAM3_IDLE_UNLOAD_MIN", "0") or 0)
+        # Chạy thử một lượt ngay sau khi nạp model để lần gợi ý đầu tiên không phải chờ khởi tạo.
+        self.warmup = os.getenv("SAM3_WARMUP", "1") not in ("0", "false", "no")
         self.profiles_dir = Path(os.getenv("SAM3_PROFILES_DIR", str(ROOT / "profiles")))
         self.userscript_path = ROOT / "userscript" / "sam3-cvat-assist.user.js"
         # Thư viện guideline: guideline mẫu, bài học đã tích luỹ, các lượt soạn nháp.

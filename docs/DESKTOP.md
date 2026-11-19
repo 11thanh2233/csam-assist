@@ -75,6 +75,87 @@ Cách dùng lại:
 - **Lần lên 0.7.0 phải tải tay** `setup.exe` một lần, vì bản 0.6.0 chưa có nút cập nhật. Chạy bộ cài mới đè lên
   bản cũ là được. Trình cài thấy PyTorch và trọng số đã có thì bấm **Xong (không cần tải gì)**.
 
+## Từ bản 0.8.0
+
+### Gán nhãn nhanh
+
+| Phím (giữ Alt) | Việc |
+|---|---|
+| Alt+G | Gợi ý nhãn cho frame này |
+| Alt+Enter | Ghi rồi sang frame tiếp (frame sau đã được chạy sẵn) |
+| Alt+J / Alt+K | Chọn đề xuất tiếp / trước |
+| Alt+X | Tick / bỏ tick đề xuất đang chọn |
+| Alt+Delete | Bỏ đề xuất đang chọn |
+| Alt+Z | Hoàn tác (bấm tiếp để lùi thêm, tối đa 20 lần ghi) |
+| Alt+P | Ẩn / hiện panel |
+| Alt + bấm lên ảnh | Tick / bỏ tick đề xuất dưới con trỏ |
+
+Đổi phím ở tab **Cài đặt → Phím tắt**. Tool không cho đặt hai việc trùng một phím, cũng không cho dùng phím
+trùng trình duyệt/Windows.
+
+### Dùng chung trong nhóm
+
+- **Một máy GPU phục vụ cả nhóm.** Trên máy có GPU, mở bảng điều khiển → **Dùng chung trong nhóm** → bật
+  **Chia sẻ backend của máy này**. App hiện địa chỉ (ví dụ `http://192.168.1.20:8765`) và một key.
+  - Windows có thể hỏi về tường lửa: chọn *Private networks*.
+  - Chỉ máy có key mới dùng được.
+- **Máy không có GPU:** khi cài, ở bước *Quét máy* bấm **Dùng backend ở máy khác**, nhập địa chỉ và key. Máy này
+  không cần tải PyTorch hay trọng số.
+  - Địa chỉ ngoài mạng nội bộ bắt buộc dùng https.
+- **Tự học tách theo người:** mỗi người (theo tên đăng nhập CVAT) có bộ tự học riêng, kể cả khi dùng chung backend.
+
+### Hỗ trợ, sao lưu và đồng bộ
+
+- **Gửi báo lỗi:** tạo một file zip gồm nhật ký và thông tin máy để gửi người hỗ trợ.
+  - Token, key, cookie đăng nhập và ảnh được lọc ra trước khi đóng gói.
+- **Sao lưu / Khôi phục:** profile, guideline, bài học, dữ liệu tự học và cài đặt của panel.
+  - Trước khi khôi phục, app tự sao lưu dữ liệu đang có.
+- **Thư mục chung** (OneDrive, Google Drive, ổ mạng): **Gửi lên** / **Lấy về** profile, guideline và bài học.
+  - Dữ liệu tự học là của từng người nên không gửi.
+  - Không bao giờ xoá file.
+  - File hai bên cùng sửa khác nhau: giữ bản của bạn, bản của nhóm lưu cạnh với đuôi `.tu-thu-muc-chung`.
+
+### Model riêng của dự án
+
+Tab **Tự học** → **Model riêng của dự án**:
+1. **Thu thập từ job này**: lấy ảnh và các nhãn hộp đã có trong job. Làm với nhiều job thì có nhiều dữ liệu hơn.
+2. **Huấn luyện**: chạy nền khoảng vài phút đến vài chục phút, trong lúc đó vẫn gán nhãn được.
+3. Xem bảng *Đúng / Tìm được* của từng class trên ảnh giữ lại để kiểm.
+   - Class đạt chuẩn (≥ 30 ví dụ, đúng ≥ 70%, tìm được ≥ 60%) được đánh dấu ✓.
+4. Tick **Dùng model riêng cho các class đạt chuẩn**: các class đó được gợi ý bằng model riêng (nhanh hơn SAM3
+   nhiều lần), class còn lại vẫn do SAM3 làm.
+
+Model dùng Faster R-CNN MobileNetV3 của torchvision (giấy phép BSD). Có trọng số khởi đầu COCO thì học tốt hơn
+nhiều: đặt biến `SAM3_DETECTOR_BASE` trỏ tới file trọng số.
+
+### Label Studio
+
+Label Studio → *Settings → Model → Connect Model*:
+- URL: `http://<máy chạy backend>:8765/ls`
+- Nếu backend có `SAM3_API_KEY`: bật *Basic auth*, user bất kỳ, password là key.
+
+Ảnh dạng `/data/upload/...` cần đặt `LABEL_STUDIO_URL` và `LABEL_STUDIO_API_KEY` cho backend. Nếu Label Studio
+chạy ở máy khác thì cũng đặt `SAM3_ALLOWED_HOSTS`. Hỗ trợ `RectangleLabels` và `PolygonLabels`.
+
+### macOS / Linux
+
+Chưa có bộ cài. Chạy từ mã nguồn:
+
+```
+pip install -r requirements.txt pywebview pystray keyring
+python -m desktop
+```
+
+PyTorch và trọng số SAM 3 cài như bản cài tay (README). App tự nhận ra đang chạy từ mã nguồn và dùng các thư viện có sẵn.
+
+### Ký số bộ cài
+
+Bước build tự ký `SAM3 Assist.exe` và bộ cài khi repo có hai secret `WINDOWS_CERT_PFX` (file .pfx mã hoá base64)
+và `WINDOWS_CERT_PASSWORD`. Có chứng chỉ thì Windows không còn cảnh báo SmartScreen (với chứng chỉ OV, cảnh
+báo giảm dần khi có người tải). Hai cách có chứng chỉ:
+- đăng ký **SignPath Foundation** (miễn phí cho dự án mã nguồn mở, cần duyệt);
+- mua chứng chỉ code signing.
+
 ## Dữ liệu nằm ở đâu
 
 `AppData\Local\SAM3CvatAssist\` (giữ nguyên khi cập nhật app):

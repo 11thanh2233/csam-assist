@@ -43,11 +43,58 @@ jobs:
           node tests/userscript_smoke_v2.cjs
           node tests/desktop_shim_smoke.cjs
           node tests/desktop_control_smoke.cjs
+          node tests/userscript_smoke_v3.cjs
+
+  crossplatform:
+    # Bản desktop chạy từ mã nguồn trên macOS / Linux (chưa có bộ cài .dmg / .AppImage)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cài thư viện
+        run: python -m pip install -r requirements-dev.txt pywebview pystray keyring
+      - name: Test desktop + 0.8.0
+        run: python -m pytest -q tests/test_desktop.py tests/test_v080.py
+      - name: App chạy từ mã nguồn (chế độ hệ thống) + backend giả lập
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys, time, urllib.request, tempfile
+          from pathlib import Path
+          os.environ["SAM3_DESKTOP_DATA"] = tempfile.mkdtemp()
+          import desktop.app, desktop.control
+          from desktop.paths import Paths
+          from desktop.components import Components
+          from desktop.backend_proc import BackendProcess
+          c = Components(Paths())
+          assert c.system, "chạy từ mã nguồn: không có manifest"
+          env = dict(os.environ, SAM3_ENGINE="mock", SAM3_PORT="8790")
+          p = subprocess.Popen([sys.executable, "-m", "desktop.run_backend"], env=env)
+          try:
+              for _ in range(60):
+                  try:
+                      h = json.load(urllib.request.urlopen("http://127.0.0.1:8790/health", timeout=2))
+                      if h["ok"]:
+                          print("backend từ mã nguồn:", h["engine"], h["version"]); break
+                  except OSError:
+                      time.sleep(1)
+              else:
+                  raise SystemExit("backend không chạy")
+          finally:
+              p.terminate()
+          PY
 
   windows:
     needs: test
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
     permissions:
       contents: write          # chỉ dùng để đăng Release khi push tag
     steps:
@@ -109,6 +156,22 @@ jobs:
           print('transformers: SAM3 + SAM3 Video + ViTPose OK')
           "@
           if ($LASTEXITCODE -ne 0) { throw "cài PyTorch theo manifest lỗi" }
+          # Model riêng của dự án: huấn luyện thử vài vòng trên CPU bằng chính PyTorch vừa cài
+          & build\runtime\python.exe -X utf8 tests\custom_model_smoke.py "$env:SAM3_DESKTOP_DATA\packages"
+          if ($LASTEXITCODE -ne 0) { throw "model riêng lỗi" }
+
+      - name: Ký số SAM3 Assist.exe (khi repo có chứng chỉ)
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:PFX))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "build\SAM3 Assist.exe"
+          if ($LASTEXITCODE -ne 0) { throw "ký số lỗi" }
+          "SIGNTOOL=$signtool" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Đóng gói bằng Inno Setup
         shell: pwsh
@@ -120,6 +183,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ISCC lỗi" }
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
           Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Ký số bộ cài (khi repo có chứng chỉ)
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $setup = (Get-ChildItem dist\*.exe)[0].FullName
+          & $env:SIGNTOOL sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $setup
+          if ($LASTEXITCODE -ne 0) { throw "ký số bộ cài lỗi" }
+          Remove-Item "$env:RUNNER_TEMP\cert.pfx"
 
       - name: Thử cài im lặng, chạy, gỡ
         shell: pwsh

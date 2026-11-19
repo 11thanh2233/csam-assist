@@ -19,7 +19,7 @@ Task có bộ label khác vẫn dùng được ngay qua profile `generic` (promp
 đã được cất vào `profiles/archive/` và `guideline_library/archive/`; xem [Khôi phục quy ước Lab 4](#khôi-phục-quy-ước-skeleton-của-lab-4).
 
 > **Trạng thái kiểm thử.** Toàn bộ luồng đã chạy qua test tự động với model giả lập và một CVAT giả
-> (104 test backend/desktop + 4 test đầu-cuối cho userscript và bản desktop, và trang duyệt guideline đã chạy trong trình duyệt thật). Phần ảnh đã được bạn chạy với SAM3 thật trên
+> (122 test backend/desktop + 5 test đầu-cuối cho userscript và bản desktop, và trang duyệt guideline đã chạy trong trình duyệt thật). Phần ảnh đã được bạn chạy với SAM3 thật trên
 > `cvat.edufun.ai`. Phần skeleton (ViTPose, MediaPipe), tracking và soạn guideline **chưa** chạy với
 > model thật hay trên máy chủ thật; phần gọi LLM chỉ mới chạy với LLM giả trong test. Riêng skeleton theo hai
 > guideline mới: vị trí 50 điểm mặt mới được kiểm trên mô hình mặt chuẩn của MediaPipe (mặt nhìn thẳng), chưa
@@ -101,6 +101,10 @@ Tải `SAM3-CVAT-Assist-Setup-<bản>.exe` ở mục **Releases** của repo (t�
 (giấy phép SAM, token Hugging Face, chọn thành phần). Xong là mở **SAM3 CVAT Assist** từ Desktop: bảng điều khiển
 mở CVAT trong cửa sổ riêng, bảng của tool tự hiện. Không cần Python, PowerShell hay Tampermonkey. Chi tiết, dung
 lượng, cách gỡ và các biện pháp an toàn: [docs/DESKTOP.md](docs/DESKTOP.md).
+
+Bản 0.8.0 thêm phím tắt (Alt+Enter: ghi và sang frame tiếp), chạy sẵn frame tiếp theo, dùng chung GPU trong nhóm,
+model riêng của dự án và nhiều tiện ích khác: xem [docs/CHANGELOG.md](docs/CHANGELOG.md) và
+[docs/CHECKLIST_0.8.0.md](docs/CHECKLIST_0.8.0.md).
 
 Các bước dưới đây là cách cài thủ công (Linux, macOS, Colab, hoặc khi muốn dùng Tampermonkey).
 

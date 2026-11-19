@@ -64,9 +64,17 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
       <h2>1. Kiểm tra máy và quét những gì đã có</h2>
       <div id="machine"></div>
       <div id="scanBox" class="mut">Đang quét máy...</div>
+      <div id="remoteWiz" class="card hidden" style="margin-top:10px">
+        <b>Dùng backend ở máy khác</b>
+        <p class="mut small-text">Trên máy có GPU: mở SAM3 CVAT Assist → Dùng chung trong nhóm → bật "Chia sẻ backend của máy này", rồi nhập địa chỉ và key nó hiện vào đây.</p>
+        <div class="row"><input type="text" id="remoteUrlW" class="grow" placeholder="http://192.168.1.20:8765">
+          <input type="password" id="remoteKeyW" placeholder="key" style="width:200px"><button class="primary" onclick="connectRemote('W')">Kết nối</button></div>
+        <div id="remoteMsgW" style="margin-top:6px"></div>
+      </div>
       <div class="row" style="margin-top:12px">
         <button onclick="addScanFolder()" title="Ví dụ thư mục sam3-cvat-assist của bản cài tay cũ">Thêm thư mục tool cũ để quét</button>
         <button onclick="runScan(true)">Quét lại</button>
+        <button onclick="toggleRemoteForm()" title="Máy không có card NVIDIA: dùng SAM3 của một máy khác trong nhóm, không cần tải gì">Dùng backend ở máy khác</button>
         <span class="grow"></span>
         <button id="nothingBtn" class="hidden" onclick="finishWizard()">Xong (không cần tải gì)</button>
         <button class="primary" id="step1Next" onclick="afterScan()">Tiếp</button></div>
@@ -129,6 +137,11 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
   <section id="dash" class="hidden">
     <div class="card banner hidden" id="todoBanner"></div>
 
+    <div class="card" id="recentCard">
+      <h2>Job gần đây</h2>
+      <table id="recent"></table>
+    </div>
+
     <div class="card">
       <h2>Mở CVAT</h2>
       <table id="sites"></table>
@@ -167,7 +180,37 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
     </div>
 
     <div class="card">
+      <h2>Dùng chung trong nhóm</h2>
+      <label class="chk"><input type="checkbox" id="lanShare" onchange="setLanShare(this.checked)"> <span>Chia sẻ backend của máy này cho máy khác trong mạng nội bộ (LAN)</span></label>
+      <div id="lanBox" class="small-text"></div>
+      <div class="row" style="margin-top:8px"><span class="grow"><b>Hoặc dùng backend ở máy khác</b> <span class="mut small-text">(máy này không cần GPU, không cần tải model)</span></span></div>
+      <div class="row"><input type="text" id="remoteUrlD" class="grow" placeholder="http://192.168.1.20:8765">
+        <input type="password" id="remoteKeyD" placeholder="key" style="width:200px">
+        <button onclick="connectRemote('D')">Kết nối</button><button id="remoteOff" class="hidden" onclick="clearRemote()">Thôi, dùng máy này</button></div>
+      <div id="remoteMsgD" class="small-text" style="margin-top:6px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Hỗ trợ, sao lưu và đồng bộ</h2>
+      <div class="row">
+        <button onclick="doReport()" title="Gom nhật ký và thông tin máy thành một file zip để gửi người hỗ trợ. Không có token, key, cookie hay ảnh.">Gửi báo lỗi (tạo file)</button>
+        <button onclick="doBackup()">Sao lưu</button><button onclick="doRestore()">Khôi phục</button></div>
+      <div class="row" style="margin-top:8px"><span class="grow small-text" id="syncDir"></span>
+        <button onclick="pickSync()">Chọn thư mục chung</button>
+        <button onclick="doSync('push')">Gửi lên</button><button onclick="doSync('pull')">Lấy về</button></div>
+      <p class="mut small-text" style="margin-bottom:0">Thư mục chung: OneDrive, Google Drive hay ổ mạng của nhóm. Đồng bộ profile, guideline và bài học; dữ liệu tự học là của từng người nên không gửi. Không bao giờ xoá file.</p>
+      <div id="supportMsg" class="small-text" style="margin-top:6px"></div>
+    </div>
+
+    <div class="card">
       <h2>Cài đặt và dữ liệu</h2>
+      <div class="row small-text">
+        <label>Khi mở app: <select id="startMode" onchange="api().set_setting('start_mode', this.value)">
+          <option value="cvat">mở thẳng CVAT</option><option value="control">mở bảng điều khiển</option></select></label>
+        <label>Nhả model khỏi VRAM sau: <select id="idleMin" onchange="api().set_setting('idle_unload_min', +this.value)">
+          <option value="0">không nhả</option><option value="5">5 phút</option><option value="15">15 phút</option><option value="30">30 phút</option><option value="60">60 phút</option></select>
+          <span class="mut">(áp dụng khi bật lại backend)</span></label>
+      </div>
       <label class="chk"><input type="checkbox" id="autostart" onchange="api().set_autostart(this.checked)"> <span>Tự chạy nền khi bật Windows</span></label>
       <div class="row" id="tokenRow"></div>
       <div class="row" style="margin-top:8px">
@@ -405,7 +448,44 @@ function renderDash() {
   $('autostart').checked = S.autostart_windows;
   $('tokenRow').innerHTML = S.token_saved ? '<span class="mut grow">Đã nhớ token Hugging Face.</span><button onclick="api().forget_token().then(refresh)">Quên token</button>' : '';
   $('dataDir').textContent = 'Dữ liệu: ' + S.data_dir + ' · Python ' + (SCAN ? SCAN.python : '');
+  const rj = S.recent_jobs || [];
+  $('recentCard').classList.toggle('hidden', !rj.length);
+  $('recent').innerHTML = rj.map((j, i) => `<tr><td><b>Job ${j.job}</b> <span class="mut">task ${j.task} · ${esc(j.site)} · ${esc(j.at)}</span></td>
+    <td style="text-align:right"><button class="primary small" onclick="openJob(${i})">Mở</button></td></tr>`).join('');
+  $('startMode').value = S.start_mode || 'cvat';
+  $('idleMin').value = String(S.idle_unload_min ?? 15);
+  $('syncDir').textContent = S.sync_dir ? 'Thư mục chung: ' + S.sync_dir : 'Chưa chọn thư mục chung.';
+  $('remoteOff').classList.toggle('hidden', !(S.backend && S.backend.remote));
+  if (!LAN) loadLan();
 }
+let LAN = null;
+async function openJob(i) { const r = await api().open_job(S.recent_jobs[i].url); if (!r.ok) alert(r.message); }
+async function loadLan() { LAN = await api().lan_info(); renderLan(); }
+function renderLan() {
+  $('lanShare').checked = LAN.share;
+  $('lanBox').innerHTML = LAN.share ? `Máy khác nhập địa chỉ: ${LAN.addresses.map((a) => `<code>http://${esc(a)}:${LAN.port}</code>`).join(' hoặc ') || '(không thấy IP mạng nội bộ)'}
+     và key: <code id="lanKey">${esc(LAN.key)}</code> <button class="small" onclick="copyKey()">Chép key</button>
+     <div class="mut">Windows có thể hỏi cho phép qua tường lửa: chọn "Private networks". Chỉ máy có key mới dùng được.</div>` : '';
+  if (LAN.remote && LAN.remote.url) { $('remoteUrlD').value = LAN.remote.url; }
+}
+async function setLanShare(on) { LAN = await api().set_lan_share(on); renderLan(); setTimeout(refresh, 800); }
+function copyKey() { navigator.clipboard && navigator.clipboard.writeText(LAN.key); }
+function toggleRemoteForm() { $('remoteWiz').classList.toggle('hidden'); }
+async function connectRemote(w) {
+  $('remoteMsg' + w).innerHTML = '<span class="mut">Đang kết nối...</span>';
+  const r = await api().set_remote($('remoteUrl' + w).value, $('remoteKey' + w).value);
+  $('remoteMsg' + w).innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${esc(r.message)}</span>`;
+  if (r.ok) { $('remoteKey' + w).value = ''; await refresh(); if (w === 'W') { if (S.setup_mode) await api().finish_setup(); else showDash(); } }
+}
+async function clearRemote() { await api().clear_remote(); refresh(); }
+async function doReport() { const r = await api().report(); $('supportMsg').innerHTML = `<span class="ok">Đã tạo ${esc(r.file)}. Gửi file này cho người hỗ trợ.</span>`; }
+async function doBackup() { const r = await api().backup(); if (r.message) $('supportMsg').innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${esc(r.message)}</span>`; }
+async function doRestore() {
+  if (!confirm('Khôi phục sẽ ghi đè profile, guideline và dữ liệu tự học bằng bản sao lưu (dữ liệu hiện tại được tự sao lưu trước). Tiếp tục?')) return;
+  const r = await api().restore(); if (r.message) $('supportMsg').innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${esc(r.message)}</span>`;
+}
+async function pickSync() { S.sync_dir = await api().set_sync_folder(); renderDash(); }
+async function doSync(d) { const r = await api().sync(d); $('supportMsg').innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${esc(r.message)}</span>`; }
 async function checkComponents() { SCAN = await api().scan(true); renderDash(); }
 function updateOne(k) { KEYS.forEach((x) => { CHOICE[x] = x === k; }); openWizard(1); }
 async function openSite(i) { const r = await api().open_site(S.sites[i].url); if (!r.ok) alert(r.message); }

@@ -18,12 +18,14 @@ async function until(fn, what, timeout = 15000) {
   while (Date.now() < end) { try { const v = fn(); if (v) return v; } catch (e) { /* thử lại */ } await sleep(100); }
   throw new Error('Hết thời gian chờ: ' + what);
 }
+const apiErrors = [];
 async function call(method, args) {
   const r = await fetch(`http://127.0.0.1:${PORT}/`, { method: 'POST', body: JSON.stringify({ method, args }) });
   const out = await r.json();
-  if (out && out.__error) throw new Error(method + ': ' + out.__error);
+  if (out && out.__error) { apiErrors.push(method + ': ' + out.__error); throw new Error(method + ': ' + out.__error); }
   return out;
 }
+process.on('unhandledRejection', (e) => { apiErrors.push(String(e && e.message || e)); });
 
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sam3-control-smoke-'));
@@ -43,7 +45,8 @@ async function main() {
 
     // Khung "Có gì mới" (đang lên từ 0.6.0) với mục 0.7.0 của CHANGELOG
     await until(() => !doc.getElementById('newsModal').classList.contains('hidden'), 'khung có gì mới');
-    assert.match(doc.getElementById('newsTitle').textContent, /0\.7\.0/);
+    const version = fs.readFileSync(path.join(ROOT, 'backend', '__init__.py'), 'utf8').match(/__version__ = "([^"]+)"/)[1];
+    assert.ok(doc.getElementById('newsTitle').textContent.includes(version), 'tiêu đề có bản hiện tại');
     assert.match(doc.getElementById('newsBody').textContent, /Không tải lại thứ đã có/);
     assert.ok(doc.querySelectorAll('#newsBody li').length >= 4, 'danh sách thay đổi được hiện thành mục');
     win.closeNews();
@@ -54,7 +57,7 @@ async function main() {
     await until(() => !doc.getElementById('todoBanner').classList.contains('hidden'), 'báo cần cập nhật PyTorch');
     assert.match(doc.getElementById('todoBanner').textContent, /PyTorch 2\.14\.1, máy đang có 2\.13\.0/);
     assert.match(doc.getElementById('comps').textContent, /cần cập nhật/);
-    await until(() => /Có bản mới 0\.7\.1/.test(doc.getElementById('updBox').textContent), 'thông tin bản mới');
+    await until(() => /Có bản mới 99\.0\.0/.test(doc.getElementById('updBox').textContent), 'thông tin bản mới');
     assert.ok(doc.querySelector('#updBox .notes b'), 'ghi chú bản mới hiện dạng định dạng');
     assert.ok(!doc.getElementById('updBadge').classList.contains('hidden'));
 
@@ -68,7 +71,20 @@ async function main() {
     const torch = doc.querySelector('#pick input[data-k="torch"]');
     assert.ok(torch.checked && torch.disabled, 'PyTorch bắt buộc cập nhật: chọn sẵn, không bỏ được');
     await until(() => /Tải về khoảng/.test(doc.getElementById('estimate').textContent), 'ước lượng dung lượng');
+    // 0.8.0: job gần đây, dùng chung trong nhóm, hỗ trợ/sao lưu/đồng bộ
+    await until(() => !doc.getElementById('recentCard').classList.contains('hidden'), 'job gần đây');
+    assert.match(doc.getElementById('recent').textContent, /Job 12/);
+    win.setLanShare(true);
+    await until(() => /key: /.test(doc.getElementById('lanBox').textContent), 'thông tin chia sẻ LAN');
+    assert.ok(doc.getElementById('lanShare').checked);
+    win.setLanShare(false);
+    await until(() => doc.getElementById('lanBox').textContent === '', 'tắt chia sẻ');
+    win.doReport();
+    await until(() => /bao-loi-.*\.zip/.test(doc.getElementById('supportMsg').textContent), 'tạo gói báo lỗi');
+    assert.strictEqual(doc.getElementById('startMode').value, 'cvat');
+    assert.strictEqual(doc.getElementById('idleMin').value, '15');
     assert.deepStrictEqual(errors, [], 'không có lỗi JS: ' + errors.join('\n'));
+    assert.deepStrictEqual(apiErrors, [], 'không có lỗi API: ' + apiErrors.join('\n'));
     console.log('DESKTOP CONTROL SMOKE: PASS');
   } finally {
     helper.kill();

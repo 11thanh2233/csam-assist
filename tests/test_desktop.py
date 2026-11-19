@@ -497,3 +497,155 @@ def test_control_install_skips_when_up_to_date(tmp_path, fake):
     assert "không cần tải" in api.install(["sam3"])["message"]
     sc = api.scan()
     assert sc["plan"]["sam3"]["action"] == "none" and "sam3" not in sc["todo"]
+
+
+# ------------------------------------------------------------------ 0.8.0 ---
+from desktop import support  # noqa: E402
+from desktop.backend_proc import BackendProcess  # noqa: E402
+
+
+def test_report_bundle_hides_secrets(tmp_path):
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent).ensure()
+    (paths.logs / "backend.log").write_text("dùng token hf_abcdefghijklmnop\nX-API-Key: supersecret\n", encoding="utf-8")
+    paths.settings.write_text(json.dumps({"sites": [], "lan_key": "LANKEY", "remote_backend": {"base": "x", "key": "RK"}}), encoding="utf-8")
+    (paths.webview / "Cookies").write_text("session=abc", encoding="utf-8")
+    out = support.report_bundle(paths, {"app_version": "0.8.0"}, out_dir=tmp_path)
+    with zipfile.ZipFile(out) as z:
+        names = z.namelist()
+        blob = " ".join(z.read(n).decode("utf-8") for n in names)
+    assert "logs/backend.log" in names and "system.json" in names
+    assert not any("webview" in n or "store" in n for n in names), "không gửi cookie đăng nhập hay dữ liệu panel"
+    for secret in ("hf_abcdefghijklmnop", "supersecret", "LANKEY", "RK"):
+        assert secret not in blob
+
+
+def test_backup_restore_and_sync(tmp_path):
+    app = Path(__file__).resolve().parent.parent
+    a = Paths(tmp_path / "a", app_dir=app).ensure()
+    (a.profiles / "p.yaml").write_text("v1", encoding="utf-8")
+    (a.library / "learning").mkdir(parents=True)
+    (a.library / "learning" / "model.json").write_text("{}", encoding="utf-8")
+    Store(a.store).set("cfg", {"apiKey": "k", "opacity": 0.5})
+    res = support.backup(a, tmp_path / "b.zip")
+    assert res["files"] == 2
+    b = Paths(tmp_path / "b", app_dir=app).ensure()
+    store_b = Store(b.store)
+    store_b.set("cfg", {"backendUrl": "http://127.0.0.1:9", "apiKey": "mine"})
+    out = support.restore(b, tmp_path / "b.zip", store_b)
+    assert out["restored"] == 2 and (b.profiles / "p.yaml").read_text() == "v1" and Path(out["safety_backup"]).exists()
+    assert store_b.all()["cfg"] == {"backendUrl": "http://127.0.0.1:9", "apiKey": "mine", "opacity": 0.5}, "không ghi đè key/địa chỉ"
+    evil = tmp_path / "evil.zip"
+    with zipfile.ZipFile(evil, "w") as z:
+        z.writestr("backup.json", "{}")
+        z.writestr("profiles/../../x.txt", "x")
+    with pytest.raises(ValueError):
+        support.restore(b, evil)
+    with pytest.raises(ValueError, match="không phải bản sao lưu"):
+        support.restore(b, _plain_zip(tmp_path))
+
+    shared = tmp_path / "shared"
+    push = support.sync(a, shared, "push")
+    assert "profiles/p.yaml" in push["copied"] and not any("learning" in c for c in push["copied"]), "không gửi dữ liệu tự học"
+    (shared / "SAM3Assist" / "profiles" / "new.yaml").write_text("team", encoding="utf-8")
+    pull = support.sync(b, shared, "pull")
+    assert "profiles/new.yaml" in pull["copied"] and (b.profiles / "new.yaml").read_text() == "team"
+    import os
+    import time as _t
+
+    (b.profiles / "p.yaml").write_text("của tôi", encoding="utf-8")
+    future = _t.time() + 100
+    os.utime(b.profiles / "p.yaml", (future, future))
+    (shared / "SAM3Assist" / "profiles" / "p.yaml").write_text("bản nhóm", encoding="utf-8")
+    pull2 = support.sync(b, shared, "pull")
+    assert (b.profiles / "p.yaml").read_text(encoding="utf-8") == "của tôi" and pull2["conflicts"] == ["profiles/p.yaml"]
+    assert (b.profiles / "p.yaml.tu-thu-muc-chung").read_text(encoding="utf-8") == "bản nhóm"
+
+
+def _plain_zip(tmp_path):
+    f = tmp_path / "plain.zip"
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("hello.txt", "x")
+    return f
+
+
+class FakeRemote(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            return self._send(200, {"ok": True, "engine": "sam3", "device": "cuda", "version": "0.8.0"})
+        if self.headers.get("X-API-Key") != "team-key":
+            return self._send(401, {"detail": "key"})
+        self._send(200, {"profiles": [], "path": self.path})
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        if self.headers.get("X-API-Key") != "team-key":
+            return self._send(401, {"detail": "key"})
+        self._send(200, {"ok": True, "path": self.path})
+
+
+def test_remote_backend_and_lan(tmp_path):
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeRemote)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}"
+    assert not support.check_remote("ftp://x", "k")["ok"]
+    assert "https" in support.check_remote("http://example.com:8765", "k")["message"], "qua Internet phải https"
+    assert "key không đúng" in support.check_remote(url, "sai")["message"]
+    assert support.check_remote(url, "team-key")["ok"]
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent)
+    comps = Components(paths, manifest={"torch": {}, "models": {}})
+    be = BackendProcess(comps)
+    api = ControlApi(paths, comps, be, open_site=lambda o: None, on_quit=lambda: None)
+    r = api.set_remote(url, "team-key")
+    assert r["ok"] and be.info()["state"] == "running" and be.info()["remote"]
+    assert be.page_url.startswith("http://127.0.0.1:"), "trang vẫn gọi 127.0.0.1, cầu nối chuyển sang máy kia"
+    status, text = be.request("POST", "/propose", "{}")
+    assert status == 200 and json.loads(text)["path"] == "/propose", "yêu cầu đi tới máy kia kèm key nhóm"
+    br = Bridge(Store(paths.store), be, lambda: {"https://cvat.edufun.ai"}, lambda: "https://cvat.edufun.ai/tasks/1/jobs/2")
+    assert br.gm_request({"method": "POST", "url": "http://127.0.0.1:8765/propose", "data": "{}"})["status"] == 200
+    reopened = ControlApi(paths, Components(paths, manifest={}), BackendProcess(Components(paths, manifest={})), open_site=lambda o: None, on_quit=lambda: None)
+    assert reopened._backend.remote["base"] == url, "nhớ backend ở máy khác cho lần mở sau"
+    api.clear_remote()
+    assert be.remote is None
+    info = api.set_lan_share(True)
+    assert info["share"] and len(info["key"]) >= 20 and be.share_key == info["key"]
+    assert api.set_lan_share(False)["key"] == "" and be.share_key == ""
+    srv.shutdown()
+
+
+def test_recent_jobs_settings_and_bridge_notify(tmp_path):
+    paths = Paths(tmp_path / "data", app_dir=Path(__file__).resolve().parent.parent)
+    opened = []
+    be = FakeBackend()
+    be.extra_env = {}
+    api = ControlApi(paths, Components(paths, manifest={}), be, open_site=opened.append, on_quit=lambda: None)
+    api._record_visit("https://cvat.edufun.ai/tasks/5/jobs/12?frame=3")
+    api._record_visit("https://evil.example/tasks/1/jobs/1")
+    api._record_visit("https://cvat.edufun.ai/tasks/6/jobs/20")
+    api._record_visit("https://cvat.edufun.ai/tasks/5/jobs/12")
+    jobs = api.recent_jobs()
+    assert [j["job"] for j in jobs] == [12, 20] and jobs[0]["url"] == "https://cvat.edufun.ai/tasks/5/jobs/12"
+    assert api.open_job(jobs[0]["url"])["ok"] and opened == ["https://cvat.edufun.ai/tasks/5/jobs/12"]
+    assert not api.open_job("https://evil.example/tasks/1/jobs/1")["ok"]
+    assert api.set_setting("idle_unload_min", 30) and be.extra_env["SAM3_IDLE_UNLOAD_MIN"] == "30"
+    assert not api.set_setting("start_mode", "bogus") and not api.set_setting("lan_key", "x")
+    notes, shown = [], []
+    url = {"v": "https://cvat.edufun.ai/tasks/5/jobs/12"}
+    br = Bridge(Store(paths.store), be, lambda: {"https://cvat.edufun.ai"}, lambda: url["v"],
+                notifier=lambda t, x: notes.append((t, x)), show_control=lambda: shown.append(1))
+    br.notify("Gợi ý cả job xong", "Job 12")
+    br.open_control()
+    assert notes == [("Gợi ý cả job xong", "Job 12")] and shown == [1]
+    url["v"] = "https://evil.example/"
+    with pytest.raises(PermissionError):
+        br.notify("x", "y")

@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from xml.etree.ElementTree import ParseError as ET_ParseError
 import logging
+import re
+import shutil
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -17,7 +20,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, keypoints, pipeline, qa, tracking
+from . import __version__, datatools, keypoints, pipeline, qa, tracking
+from . import geometry as G
 from .config import settings
 from .engines import Engine, create_engine
 from .engines.pose import LazyEngine, create_body_pose, create_face
@@ -27,6 +31,7 @@ from .guideline.page import PAGE as GUIDELINE_PAGE
 from .guideline.service import GuidelineService
 from .learning import Learner, apply_learned
 from .profiles import ProfileStore, resolve_labels
+from .runtime_tools import EngineProxy, IdleWatcher, gpu_info, warmup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sam3-assist")
@@ -39,6 +44,8 @@ class Runtime:
     face: Optional[LazyEngine] = None
     guide: Optional[GuidelineService] = None
     learner: Optional[Learner] = None
+    custom: Any = None          # CustomStore: dữ liệu + model riêng của dự án
+    trainer: Any = None
     video: Optional[LazyEngine] = None   # SAM3 Video, chỉ nạp khi người dùng bật
     cache: "OrderedDict[str, tuple[np.ndarray, Any]]" = OrderedDict()
 
@@ -51,11 +58,29 @@ async def lifespan(_: FastAPI):
     rt.store = ProfileStore(settings.profiles_dir)
     log.info("Đã nạp %d profile từ %s", len(rt.store.profiles), settings.profiles_dir)
     log.info("Đang nạp model (lần đầu có thể mất vài phút để tải checkpoint)...")
-    rt.engine = create_engine(settings)
-    log.info("Sẵn sàng. Engine: %s, thiết bị: %s", rt.engine.name, rt.engine.device)
+
+    def on_unload() -> None:          # model vừa được nhả: bỏ cả ảnh/embedding đang giữ và các model phụ
+        rt.cache.clear()
+        for lazy in (rt.body, rt.face, rt.video):
+            if lazy is not None:
+                lazy.reset()
+
+    rt.engine = EngineProxy(lambda: create_engine(settings), settings.idle_unload_min, on_unload)
+    rt.engine.ensure()
     mock = rt.engine.name == "mock"
+    if settings.warmup and not mock:
+        log.info("Khởi động nóng xong sau %.1fs.", warmup(rt.engine))
+    log.info("Sẵn sàng. Engine: %s, thiết bị: %s", rt.engine.name, rt.engine.device)
+    watcher = IdleWatcher([rt.engine])
+    if settings.idle_unload_min > 0:
+        watcher.start()
+        log.info("Tự nhả model sau %g phút không dùng.", settings.idle_unload_min)
     rt.guide = GuidelineService(Library(settings.library_dir), guideline_llm.from_env())
     rt.learner = Learner(settings.library_dir / "learning")
+    from .custom_model import CustomStore, Trainer
+
+    rt.custom = CustomStore(settings.library_dir / "custom")
+    rt.trainer = Trainer(rt.custom, settings.device)
     info = rt.guide.llm_info(False)
     log.info("Soạn guideline: %d bài học trong thư viện, LLM: %s %s", len(rt.guide.lib.lessons), info["provider"], info["model"])
     rt.body = LazyEngine(lambda: create_body_pose(mock, settings.pose_model, settings.device),
@@ -65,6 +90,7 @@ async def lifespan(_: FastAPI):
     if settings.host not in ("127.0.0.1", "localhost") and not settings.api_key:
         log.warning("Backend mở ra ngoài máy này nhưng chưa đặt SAM3_API_KEY. Hãy đặt API key.")
     yield
+    watcher.stop.set()
 
 
 app = FastAPI(title="SAM3 CVAT Assist", version=__version__, lifespan=lifespan)
@@ -114,11 +140,13 @@ class ResolveReq(BaseModel):
     labels: list[LabelIn]
     overrides: dict[str, dict] = Field(default_factory=dict)
     use_learned: bool = True   # áp ngưỡng / chỉnh hộp tool đã học từ cách bạn sửa đề xuất
+    user: str = ""             # tên đăng nhập CVAT: mỗi người một bộ "tự học" (khi nhiều người dùng chung backend)
 
 
 class ProposeReq(ResolveReq):
     image_b64: str
     existing: list[dict] = Field(default_factory=list)
+    use_custom: bool = False   # dùng model riêng của dự án cho các class đã đạt chuẩn (nhanh hơn SAM3)
 
 
 class InteractiveReq(ResolveReq):
@@ -129,6 +157,8 @@ class InteractiveReq(ResolveReq):
     prompt: Optional[str] = None
     existing: list[dict] = Field(default_factory=list)   # nhãn đã có trên frame: "Tìm tương tự" không đề xuất lại chúng
     negatives: list[list[float]] = Field(default_factory=list)   # hộp mẫu âm: vật bị nhận nhầm, SAM3 bỏ những vật giống chúng
+    points: list[list[float]] = Field(default_factory=list)            # mode 'points': điểm thuộc vật
+    negative_points: list[list[float]] = Field(default_factory=list)   # mode 'points': điểm KHÔNG thuộc vật
 
 
 class TrackFrame(BaseModel):
@@ -238,28 +268,59 @@ def context(req: ResolveReq, purpose: str = "frame") -> tuple[dict, list[dict], 
     profile = rt.store.get(req.profile_id, [l["name"] for l in labels], purpose, [l["type"] for l in labels], labels)
     cfgs = resolve_labels(profile, labels, req.overrides)
     if req.use_learned and rt.learner is not None:
-        apply_learned(cfgs, rt.learner.for_profile(profile["id"]), req.overrides)
+        apply_learned(cfgs, learner_for(req.user).for_profile(profile["id"]), req.overrides)
     return profile, labels, cfgs
 
 
 # ------------------------------------------------------------- tự học ------
+_learners: dict[str, Learner] = {}
+
+
+def _user_key(user: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", (user or "").strip())[:64]
+
+
+def learner_for(user: str = "") -> Learner:
+    """Bộ tự học của từng người (theo tên đăng nhập CVAT). Không có tên thì dùng bộ chung.
+    Lần đầu có tên người dùng mà chưa ai có bộ riêng: chuyển dữ liệu của bộ chung sang người đó (máy một người dùng)."""
+    key = _user_key(user)
+    if not key or rt.learner is None:
+        return rt.learner
+    if key not in _learners:
+        users = rt.learner.root / "users"
+        mine = users / key
+        if not mine.exists() and not (users.exists() and any(users.iterdir())) and (rt.learner.root / "events.jsonl").exists():
+            mine.mkdir(parents=True)
+            for name in ("events.jsonl", "model.json"):
+                if (rt.learner.root / name).exists():
+                    shutil.copy2(rt.learner.root / name, mine / name)
+            if (rt.learner.root / "outcomes").exists():
+                shutil.copytree(rt.learner.root / "outcomes", mine / "outcomes", dirs_exist_ok=True)
+        _learners[key] = Learner(mine)
+    return _learners[key]
+
+
 class LearnEventsReq(BaseModel):
     events: list[dict]
+    user: str = ""
 
 
 class LearnReviewReq(BaseModel):
+    user: str = ""
     job_id: int
     shapes: list[dict] = Field(default_factory=list)
     tracks: list[dict] = Field(default_factory=list)
 
 
 class LearnToggleReq(BaseModel):
+    user: str = ""
     profile_id: str
     label: str
     enabled: bool
 
 
 class LearnForgetReq(BaseModel):
+    user: str = ""
     profile_id: Optional[str] = None
     label: Optional[str] = None
 
@@ -267,30 +328,157 @@ class LearnForgetReq(BaseModel):
 @app.post("/learn/events", dependencies=[Depends(require_key)])
 def learn_events(req: LearnEventsReq) -> dict:
     """Userscript gửi lúc người dùng bấm Ghi: đề xuất đã ghi (kèm id CVAT) và đề xuất bị bỏ tick."""
-    return {"recorded": rt.learner.record(req.events)}
+    return {"recorded": learner_for(req.user).record(req.events)}
 
 
 @app.post("/learn/review", dependencies=[Depends(require_key)])
 def learn_review(req: LearnReviewReq) -> dict:
     """So nhãn tool đã ghi với annotation hiện tại của job (sau khi người dùng sửa), rồi học lại."""
-    return rt.learner.review(req.job_id, req.shapes, req.tracks)
+    return learner_for(req.user).review(req.job_id, req.shapes, req.tracks)
 
 
 @app.get("/learn/summary", dependencies=[Depends(require_key)])
-def learn_summary() -> dict:
-    return rt.learner.summary()
+def learn_summary(user: str = "") -> dict:
+    return learner_for(user).summary()
+
+
+@app.get("/learn/tool_shapes", dependencies=[Depends(require_key)])
+def learn_tool_shapes(job_id: int, user: str = "") -> dict:
+    """Chế độ reviewer: nhãn tool đã ghi cho job và những nhãn chưa ai sửa."""
+    return learner_for(user).tool_shapes(job_id)
 
 
 @app.post("/learn/toggle", dependencies=[Depends(require_key)])
 def learn_toggle(req: LearnToggleReq) -> dict:
-    rt.learner.set_enabled(req.profile_id, req.label, req.enabled)
-    return rt.learner.summary()
+    lr = learner_for(req.user)
+    lr.set_enabled(req.profile_id, req.label, req.enabled)
+    return lr.summary()
 
 
 @app.post("/learn/forget", dependencies=[Depends(require_key)])
 def learn_forget(req: LearnForgetReq) -> dict:
-    removed = rt.learner.forget(req.profile_id, req.label)
-    return dict(rt.learner.summary(), removed=removed)
+    lr = learner_for(req.user)
+    removed = lr.forget(req.profile_id, req.label)
+    return dict(lr.summary(), removed=removed)
+
+
+# ---------------------------------------------------- đầu nối Label Studio ---
+def require_ls_auth(authorization: str = Header(default=""), x_api_key: str = Header(default="")) -> None:
+    """Label Studio chỉ gửi được Basic auth: password = SAM3_API_KEY (hoặc header X-API-Key như các endpoint khác)."""
+    if not settings.api_key or x_api_key == settings.api_key:
+        return
+    if authorization.lower().startswith("basic "):
+        try:
+            _, _, password = base64.b64decode(authorization[6:]).decode("utf-8").partition(":")
+        except (ValueError, UnicodeDecodeError):
+            password = ""
+        if password == settings.api_key:
+            return
+    raise HTTPException(status_code=401, detail="Sai hoặc thiếu key (Label Studio: Basic auth, password = SAM3_API_KEY).")
+
+
+class LsPredictReq(BaseModel):
+    tasks: list[dict] = Field(default_factory=list)
+    label_config: str = ""
+    project: Optional[str] = None
+    params: dict = Field(default_factory=dict)
+
+
+@app.get("/ls/health")
+@app.get("/ls/")
+def ls_health() -> dict:
+    return {"status": "UP", "model_class": "SAM3CvatAssist", "version": __version__}
+
+
+@app.post("/ls/setup", dependencies=[Depends(require_ls_auth)])
+def ls_setup() -> dict:
+    return {"model_version": f"sam3-assist-{__version__}"}
+
+
+@app.post("/ls/predict", dependencies=[Depends(require_ls_auth)])
+def ls_predict(req: LsPredictReq) -> dict:
+    from . import labelstudio
+
+    def run(image: np.ndarray, labels: list[dict]) -> dict:
+        r = ResolveReq(labels=[LabelIn(id=l["id"], name=l["name"], type=l["type"]) for l in labels])
+        profile, _, cfgs = context(r)
+        state = rt.engine.encode(image)
+        res = pipeline.propose(rt.engine, state, image, profile, cfgs, [])
+        res["model_version"] = f"sam3-assist-{__version__}"
+        return res
+
+    try:
+        return {"results": labelstudio.predict(req.tasks, req.label_config, run)}
+    except (ValueError, ET_ParseError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/ls/webhook", dependencies=[Depends(require_ls_auth)])
+def ls_webhook() -> dict:
+    return {"status": "ok"}
+
+
+# ------------------------------------------------------ dữ liệu thông minh ---
+class FrameImage(BaseModel):
+    frame: int
+    image_b64: str
+
+
+class FeaturesReq(BaseModel):
+    frames: list[FrameImage] = Field(default_factory=list, max_length=48)
+
+
+class RankFrame(BaseModel):
+    frame: int
+    features: dict
+    labeled: int = 0
+    flagged: int = 0
+    low: int = 0
+
+
+class RankReq(BaseModel):
+    frames: list[RankFrame]
+    k: Optional[int] = None
+    motion_threshold: float = 0.06
+    max_gap: int = 30
+
+
+class SearchReq(BaseModel):
+    query: str = Field(min_length=1, max_length=200)
+    frames: list[FrameImage] = Field(default_factory=list, max_length=16)
+    threshold: float = 0.35
+
+
+class AgreementReq(BaseModel):
+    a: list[dict]
+    b: list[dict]
+    labels: list[dict] = Field(default_factory=list)
+    iou: float = 0.5
+
+
+@app.post("/data/features", dependencies=[Depends(require_key)])
+def data_features(req: FeaturesReq) -> dict:
+    """Đặc trưng nhẹ của từng frame (để xếp hạng frame đáng làm và tìm keyframe). Không dùng GPU."""
+    return {"frames": [{"frame": f.frame, "features": datatools.features(decode_image(f.image_b64))} for f in req.frames]}
+
+
+@app.post("/data/rank", dependencies=[Depends(require_key)])
+def data_rank(req: RankReq) -> dict:
+    frames = [f.model_dump() for f in req.frames]
+    return {"ranking": datatools.rank(frames, req.k), **datatools.keyframes(frames, req.motion_threshold, req.max_gap)}
+
+
+@app.post("/data/search", dependencies=[Depends(require_key)])
+def data_search(req: SearchReq) -> dict:
+    """Tìm frame bằng chữ (tiếng Anh) bằng SAM3. Panel gửi từng lô ảnh để có tiến độ và dừng được."""
+    images = [(f.frame, decode_image(f.image_b64)) for f in req.frames]
+    return {"query": req.query, "matches": datatools.search(rt.engine, images, req.query.strip(), req.threshold)}
+
+
+@app.post("/qa/agreement", dependencies=[Depends(require_key)])
+def qa_agreement(req: AgreementReq) -> dict:
+    names = {int(l["id"]): str(l.get("name", l["id"])) for l in req.labels if "id" in l}
+    return datatools.agreement(req.a, req.b, names, req.iou)
 
 
 # ------------------------------------------------------------- endpoint -----
@@ -304,6 +492,9 @@ def health() -> dict:
         "is_mock": getattr(rt.engine, "name", "") == "mock",
         "guideline_llm": {k: v for k, v in rt.guide.llm_info(False).items() if k != "images"} if rt.guide else None,
         "auth_required": bool(settings.api_key),
+        "gpu": gpu_info(),
+        "model_loaded": getattr(rt.engine, "loaded", True),
+        "idle_unload_min": settings.idle_unload_min,
     }
 
 
@@ -383,9 +574,107 @@ def propose(req: ProposeReq) -> dict:
     if profile.get("mode") == "keypoints":
         result = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face)
     else:
-        result = pipeline.propose(rt.engine, state, image, profile, cfgs, req.existing)
+        custom = custom_proposals(req, profile, cfgs, image) if req.use_custom else None
+        if custom:
+            done_ids = {p["label_id"] for p in custom["proposals"]} | custom["label_ids"]
+            rest = [dict(c, enabled=False) if c["label_id"] in done_ids else c for c in cfgs]
+            result = pipeline.propose(rt.engine, state, image, profile, rest, req.existing)
+            result["proposals"] = pipeline.finalize(result["proposals"] + custom["proposals"])
+            result["warnings"] = result.get("warnings", []) + custom["warnings"]
+            result["custom_labels"] = sorted(custom["names"])
+        else:
+            result = pipeline.propose(rt.engine, state, image, profile, cfgs, req.existing)
     log.info("propose: profile=%s, %d đề xuất, %.1fs", profile["id"], len(result["proposals"]), result["seconds"])
     return result
+
+
+# ------------------------------------------------------------ model riêng ---
+def custom_proposals(req: ProposeReq, profile: dict, cfgs: list[dict], image: np.ndarray) -> Optional[dict]:
+    """Đề xuất của model riêng cho các class dạng hộp đã đạt chuẩn; None nếu chưa có model dùng được."""
+    try:
+        got = rt.trainer.model_for(profile["id"]) if rt.trainer else None
+    except Exception as exc:  # noqa: BLE001 - model riêng lỗi thì SAM3 làm như bình thường
+        log.warning("Không nạp được model riêng: %s", exc)
+        return None
+    if not got:
+        return None
+    model, meta = got
+    usable = set(meta["usable"])
+    targets = {c["name"]: c for c in cfgs if c["enabled"] and c["supported"] and c["shape"] == "rectangle" and c["name"] in usable}
+    if not targets:
+        return None
+    from . import custom_model
+
+    h, w = image.shape[:2]
+    dets = []
+    for name, box, score in custom_model.predict(model, meta, image, set(targets), 0.3):
+        cfg = targets[name]
+        if score < cfg["threshold"]:
+            continue
+        dets.append(pipeline.Det(cfg, np.zeros((1, 1), bool), score, "custom", G.clamp_box(box, w, h)))
+    warnings: list[str] = []
+    rules = profile.get("rules", {})
+    props = pipeline.objects_to_proposals(dets, w, h, rules, warnings)
+    for p in props:
+        p["from_custom"] = True
+    pipeline.mark_existing_duplicates(props, req.existing, float((rules.get("dedup") or {}).get("existing_iou", 0.7)))
+    return {"proposals": props, "warnings": warnings, "names": set(targets), "label_ids": {c["label_id"] for c in targets.values()}}
+
+
+class CustomSample(BaseModel):
+    key: str
+    image_b64: str
+    boxes: list[dict] = Field(default_factory=list)       # [{label_id, bbox:[x1,y1,x2,y2]}]
+
+
+class CustomAddReq(ResolveReq):
+    samples: list[CustomSample] = Field(default_factory=list, max_length=16)
+
+
+class CustomTrainReq(ResolveReq):
+    epochs: int = Field(12, ge=1, le=100)
+
+
+@app.post("/custom/dataset/add", dependencies=[Depends(require_key)])
+def custom_add(req: CustomAddReq) -> dict:
+    profile, labels, _ = context(req)
+    names = {l["id"]: l["name"] for l in labels}
+    samples = []
+    for smp in req.samples:
+        boxes = [{"label": names[b["label_id"]], "bbox": b["bbox"]} for b in smp.boxes if b.get("label_id") in names and len(b.get("bbox") or []) == 4]
+        if boxes:
+            samples.append((smp.key, decode_image(smp.image_b64), boxes))
+    return {"profile_id": profile["id"], "dataset": rt.custom.add_samples(profile["id"], samples)}
+
+
+@app.post("/custom/info", dependencies=[Depends(require_key)])
+def custom_info(req: ResolveReq) -> dict:
+    profile, _, _ = context(req)
+    return {"profile_id": profile["id"], "dataset": rt.custom.dataset_info(profile["id"]), "model": rt.custom.meta(profile["id"]),
+            "training": rt.trainer.status()}
+
+
+@app.post("/custom/train", dependencies=[Depends(require_key)])
+def custom_train(req: CustomTrainReq) -> dict:
+    profile, _, _ = context(req)
+    try:
+        return rt.trainer.start(profile["id"], req.epochs)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/custom/stop", dependencies=[Depends(require_key)])
+def custom_stop() -> dict:
+    rt.trainer.stop.set()
+    return rt.trainer.status()
+
+
+@app.post("/custom/clear", dependencies=[Depends(require_key)])
+def custom_clear(req: ResolveReq) -> dict:
+    profile, _, _ = context(req)
+    rt.custom.clear(profile["id"])
+    rt.trainer.models.pop(profile["id"], None)
+    return {"profile_id": profile["id"], "dataset": rt.custom.dataset_info(profile["id"]), "model": None}
 
 
 @app.post("/interactive", dependencies=[Depends(require_key)])
@@ -394,6 +683,17 @@ def interactive(req: InteractiveReq) -> dict:
     cfg = next((c for c in cfgs if c["label_id"] == req.label_id), None)
     if cfg is None or not cfg["supported"]:
         raise HTTPException(status_code=400, detail="Label không hợp lệ hoặc chưa được hỗ trợ.")
+    if req.mode == "points":
+        pos = [q[:2] for q in req.points if len(q) >= 2][:20]
+        neg = [q[:2] for q in req.negative_points if len(q) >= 2][:20]
+        if not pos:
+            raise HTTPException(status_code=400, detail="Cần ít nhất một điểm thuộc vật.")
+        if cfg["shape"] == "skeleton":
+            raise HTTPException(status_code=400, detail="Bấm điểm chưa dùng được cho skeleton: hãy dùng Vẽ hộp.")
+        if profile.get("mode") == "semantic" or cfg["role"] in ("drivable_direct", "drivable_alt"):
+            cfg = dict(cfg, role="object")
+        image, state = image_state(req.image_b64)
+        return pipeline.interactive_points(rt.engine, state, image, profile, cfg, pos, neg, req.prompt)
     if len(req.box) != 4 or req.box[2] <= req.box[0] or req.box[3] <= req.box[1]:
         raise HTTPException(status_code=400, detail="Hộp không hợp lệ.")
     if cfg["shape"] == "skeleton":

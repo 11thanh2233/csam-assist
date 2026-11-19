@@ -90,6 +90,12 @@ class Components:
         self._tool_dirs: Optional[list[Path]] = None
 
     @property
+    def system(self) -> bool:
+        """Chạy từ mã nguồn (macOS/Linux, hoặc Windows không qua bộ cài): không có manifest; PyTorch và model do
+        người dùng tự cài bằng pip / Hugging Face như bản cài tay."""
+        return self._manifest is None and not self.paths.manifest.exists()
+
+    @property
     def manifest(self) -> dict:
         if self._manifest is None:
             self._manifest = load_manifest(self.paths)
@@ -113,6 +119,10 @@ class Components:
         tmp.replace(self.paths.state)
 
     def installed(self, key: str) -> bool:
+        if self.system:
+            import importlib.util
+
+            return importlib.util.find_spec("torch") is not None if key == "torch" else True
         st = self.state().get(key)
         if not st:
             return False
@@ -129,6 +139,7 @@ class Components:
         for key, meta in COMPONENTS.items():
             out[key] = {**meta, "installed": self.installed(key), **{k: v for k, v in (st.get(key) or {}).items() if k != "files"}}
         out["ready"] = out["torch"]["installed"] and out["sam3"]["installed"]
+        out["system"] = self.system
         return out
 
     # -------------------------------------------------------------- plans ---
@@ -150,6 +161,9 @@ class Components:
         return self._tool_dirs
 
     def plan(self, keys: list[str], gpu: Gpu, token: str = "", check_hash: bool = False) -> dict:
+        if self.system:
+            return {k: {"action": "none" if self.installed(k) else "install", "download": 0, "reuse": 0, "required": k == "torch",
+                        "reason": "chạy từ mã nguồn: tự cài bằng pip (xem README)" if not self.installed(k) else "dùng bản cài trên máy"} for k in keys}
         """Việc cần làm cho từng thành phần: none (đã có, đúng bản), install (chưa có), update (có nhưng cần bản khác).
         Kèm số byte phải tải và số byte dùng lại được từ file có sẵn trên máy.
         check_hash=False: chỉ so dung lượng (nhanh); khi cài thật mọi file đều được kiểm mã băm."""
@@ -366,6 +380,8 @@ class Components:
     def backend_env(self) -> dict:
         """Biến môi trường cho backend: chạy hoàn toàn offline, mọi model lấy từ thư mục dữ liệu."""
         p = self.paths
+        if self.system:          # chạy từ mã nguồn: model lấy như bản cài tay (Hugging Face cache)
+            return {"SAM3_PROFILES_DIR": str(p.profiles), "SAM3_LIBRARY_DIR": str(p.library), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         return {
             "SAM3_ENGINE": "transformers",
             "SAM3_HF_MODEL": str(p.sam3),

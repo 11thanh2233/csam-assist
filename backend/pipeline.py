@@ -197,12 +197,51 @@ def make_proposal(cfg: dict, kind: str, points: list, score: float, bbox: list[f
     }
 
 
+TRUNCATED_NAMES = {"truncated", "truncation", "is truncated", "bi cat", "cat mep", "cut off", "cutoff"}
+OCCLUDED_NAMES = {"occluded", "occlusion", "is occluded", "bi che", "che khuat", "bi che khuat"}
+
+
+def _attr_key(name: str) -> str:
+    from .profiles import _ascii
+
+    return norm(_ascii(name)).replace("_", " ")
+
+
+def auto_attributes(dets: list[Det], width: int, height: int, rules: dict) -> dict[int, dict[str, str]]:
+    """Tự điền thuộc tính hay bị quên khi label có chúng: truncated (chạm mép ảnh), occluded (bị vật gần camera hơn che).
+    Trả {vị trí det: {tên attribute: 'true'|'false'}}. Tắt bằng rules.auto_attributes.enabled = false trong profile."""
+    rule = rules.get("auto_attributes") or {}
+    if rule.get("enabled") is False:
+        return {}
+    border = float(rule.get("border_px", (rules.get("truncated") or {}).get("border_px", 2)))
+    min_ioa = float(rule.get("min_overlap", (rules.get("occluded") or {}).get("min_overlap", 0.15)))
+    out: dict[int, dict[str, str]] = {}
+    for i, det in enumerate(dets):
+        names = {_attr_key(a): a for a in det.cfg.get("attributes", [])}
+        got: dict[str, str] = {}
+        for key, attr in names.items():
+            if key in TRUNCATED_NAMES:
+                got[attr] = "true" if G.touches_border(G.clamp_box(det.box, width, height), width, height, border) else "false"
+            elif key in OCCLUDED_NAMES:
+                area = G.box_area(det.box)
+                hidden = det.occluded or any(o is not det and o.box[3] > det.box[3] and area > 0 and G.box_inter(det.box, o.box) / area >= min_ioa
+                                             for o in dets)
+                got[attr] = "true" if hidden else "false"
+        if got:
+            out[i] = got
+    return out
+
+
 def objects_to_proposals(dets: list[Det], width: int, height: int, rules: dict, warnings: list[str]) -> list[dict]:
-    eps = float((rules.get("polygon") or {}).get("epsilon", 1.5))
+    poly_rule = rules.get("polygon") or {}
+    eps = float(poly_rule.get("epsilon", 1.5))
+    auto = auto_attributes(dets, width, height, rules)
     out = []
-    for det in dets:
+    for i, det in enumerate(dets):
         box = G.clamp_box(det.box, width, height)
         attrs = object_attributes(det, box, width, height, rules, warnings)
+        filled = {k: v for k, v in auto.get(i, {}).items() if k not in attrs}
+        attrs.update(filled)
         common = dict(occluded=det.occluded, attributes=attrs, flags=det.flags)
         shape = det.cfg["shape"]
         if shape == "rectangle":
@@ -215,9 +254,18 @@ def objects_to_proposals(dets: list[Det], width: int, height: int, rules: dict, 
             proposal = make_proposal(det.cfg, "rectangle", [round(v, 2) for v in box], det.score, box, **common)
             if adjust:
                 proposal["box_adjust"] = list(adjust)
+            if filled:
+                proposal["auto_attributes"] = filled
             out.append(proposal)
         elif shape == "polygon":
-            polys = G.mask_to_polygons(det.mask, eps, det.cfg["min_area_px"])
+            mask = det.mask
+            smooth = int(det.cfg.get("smooth_px", poly_rule.get("smooth_px", 0)) or 0)
+            if smooth > 0:
+                mask = G.smooth_mask(mask, smooth)
+            polys = G.mask_to_polygons(mask, eps, det.cfg["min_area_px"])
+            max_points = int(det.cfg.get("max_points", poly_rule.get("max_points", 0)) or 0)
+            if max_points >= 3:
+                polys = [G.limit_points(pl, max_points) for pl in polys]
             if not polys:
                 continue
             if len(polys) > 1:
@@ -227,6 +275,8 @@ def objects_to_proposals(dets: list[Det], width: int, height: int, rules: dict, 
                     f"Đối tượng bị tách thành {len(polys)} mảnh (có thể do che khuất); chỉ lấy mảnh lớn nhất.",
                 )
             out.append(make_proposal(det.cfg, "polygon", polys[0], det.score, box, **common))
+            if filled:
+                out[-1]["auto_attributes"] = filled
         elif shape == "mask":
             out.append(
                 make_proposal(
@@ -715,4 +765,65 @@ def interactive(
     if mode == "similar" and existing:
         # "Tìm tương tự" tìm mọi vật giống mẫu, kể cả những vật đã gán: bỏ tick những đề xuất trùng nhãn có sẵn.
         mark_existing_duplicates(proposals, existing, float((rules.get("dedup") or {}).get("existing_iou", 0.7)))
+    return {"width": width, "height": height, "proposals": finalize(proposals), "warnings": warnings}
+
+
+def interactive_points(
+    engine: Engine, state: Any, image: np.ndarray, profile: dict, cfg: dict,
+    points: list[list[float]], negatives: list[list[float]], prompt: Optional[str] = None,
+) -> dict:
+    """Bấm điểm để tách vật: điểm dương thuộc vật, điểm âm không thuộc vật.
+
+    Engine có segment_points (SAM kiểu tương tác) thì dùng nó. Không thì dựng hộp quanh các điểm dương, để SAM3 tìm
+    các vật trong hộp, rồi chọn mask chứa nhiều điểm dương nhất và ít điểm âm nhất.
+    """
+    height, width = image.shape[:2]
+    rules = profile.get("rules", {})
+    warnings: list[str] = []
+    pos = [(min(max(x, 0), width - 1), min(max(y, 0), height - 1)) for x, y in points]
+    neg = [(min(max(x, 0), width - 1), min(max(y, 0), height - 1)) for x, y in negatives]
+    candidates = []
+    if hasattr(engine, "segment_points"):
+        try:
+            candidates = list(engine.segment_points(state, pos, neg, prompt or None))
+        except Exception as exc:  # noqa: BLE001 - quay về cách dựng hộp
+            warnings.append(f"Không dùng được chế độ điểm của model ({type(exc).__name__}), chuyển sang hộp quanh điểm.")
+            candidates = []
+    if not candidates:
+        xs, ys = [p[0] for p in pos], [p[1] for p in pos]
+        pad = max(40.0, 0.08 * min(width, height), 0.6 * max(max(xs) - min(xs), max(ys) - min(ys)))
+        box = G.clamp_box([min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad], width, height)
+        candidates = list(engine.segment_box(state, box, prompt or None, 0.2, None))
+
+    def fit(inst) -> tuple:
+        m = inst.mask.astype(bool)
+        inside = sum(1 for x, y in pos if m[int(y), int(x)])
+        outside = sum(1 for x, y in neg if m[int(y), int(x)])
+        return (inside - 2 * outside, -abs(int(m.sum()) - 1), float(inst.score)) if inside else (-99, 0, 0.0)
+
+    ranked = sorted(candidates, key=fit, reverse=True)
+    dets = []
+    if ranked and fit(ranked[0])[0] > -99:
+        inst = ranked[0]
+        mask = G.clean_mask(inst.mask.astype(bool)) if cfg["shape"] != "polyline" else inst.mask.astype(bool)
+        for x, y in neg:                                   # cắt bỏ vùng quanh điểm âm còn dính trong mask
+            r = max(6, int(0.01 * min(width, height)))
+            if mask[int(y), int(x)]:
+                yy, xx = np.ogrid[:height, :width]
+                mask &= (xx - x) ** 2 + (yy - y) ** 2 > (r * 4) ** 2
+        bbox = G.mask_bbox(mask)
+        if bbox is not None:
+            det = Det(dict(cfg, role="lane" if cfg["shape"] == "polyline" else "object"), mask, float(inst.score), prompt or "", bbox)
+            missed = [p for p in pos if not mask[int(p[1]), int(p[0])]]
+            if missed:
+                add_flag(det.flags, "UNCERTAIN_BOUNDARY", f"{len(missed)} điểm bạn bấm nằm ngoài vật tách được.")
+            dets = [det]
+    if not dets:
+        warnings.append("Không tách được vật ở các điểm này. Thử bấm vào giữa vật, hoặc dùng Vẽ hộp.")
+        return {"width": width, "height": height, "proposals": [], "warnings": warnings}
+    if cfg["shape"] == "polyline":
+        items = build_lanes(dets, image, rules, {norm(cfg["name"]): cfg})
+        proposals = lanes_to_proposals(items, width, height)
+    else:
+        proposals = objects_to_proposals(dets, width, height, rules, warnings)
     return {"width": width, "height": height, "proposals": finalize(proposals), "warnings": warnings}

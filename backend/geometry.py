@@ -497,3 +497,34 @@ def polygon_between(left: np.ndarray, right: np.ndarray, shape: tuple[int, int])
     poly = np.concatenate([left, right[::-1]])
     cv2.fillPoly(canvas, [np.round(poly - 0.5).astype(np.int32)], 1)
     return canvas.astype(bool)
+
+
+def smooth_mask(mask: np.ndarray, px: int) -> np.ndarray:
+    """Làm mượt mép mask (bỏ răng cưa nhỏ hơn ~px) trước khi lấy polygon."""
+    k = max(1, int(px)) | 1
+    m = mask.astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel)
+    blurred = cv2.GaussianBlur(m.astype(np.float32), (k * 2 + 1, k * 2 + 1), 0)
+    out = blurred >= 0.5
+    return out if out.any() else mask.astype(bool)
+
+
+def limit_points(poly: list[float], max_points: int) -> list[float]:
+    """Giảm số đỉnh polygon về tối đa max_points (guideline hay giới hạn số đỉnh), giữ hình dạng nhất có thể."""
+    pts = np.asarray(poly, dtype=np.float32).reshape(-1, 1, 2)
+    if len(pts) <= max_points:
+        return poly
+    perimeter = cv2.arcLength(pts, True)
+    lo, hi, best = 0.0, perimeter / 4, None
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        approx = cv2.approxPolyDP(pts, mid, True)
+        if len(approx) > max_points:
+            lo = mid
+        else:
+            best, hi = approx, mid
+    if best is None or len(best) < 3:
+        return poly
+    return [round(float(v), 2) for v in best.reshape(-1)]

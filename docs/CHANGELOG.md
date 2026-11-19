@@ -3,6 +3,52 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.8.0 (2026-11-20)
+
+37 cải tiến; chi tiết từng mục, cách test và lỗi đã sửa ở `docs/CHECKLIST_0.8.0.md`.
+
+- **Gán nhãn nhanh hơn từng frame.**
+  - Tool chạy sẵn gợi ý cho frame tiếp theo trong lúc bạn duyệt, sang frame là có ngay.
+  - **Alt+Enter**: ghi rồi sang frame tiếp.
+  - Duyệt bằng phím (Alt+J/K chọn, Alt+X tick, Alt+Delete bỏ), hoặc giữ Alt rồi bấm lên ảnh.
+  - Thanh ngưỡng và nút ẩn class lọc tức thì.
+  - Hoàn tác tới 20 lần ghi gần nhất (Alt+Z).
+- **Nhãn đúng hơn ngay lần đầu.**
+  - Tool kiểm luật QA trước khi ghi.
+  - Tự điền truncated/occluded khi label có hai thuộc tính đó.
+  - **Bấm điểm** để tách vật.
+  - Giới hạn số đỉnh và làm mượt polygon theo profile.
+  - Nhắc khi frame này ít vật hơn frame bên cạnh.
+- **Việc dài.**
+  - Gợi ý cả job tạm dừng / tiếp tục được, kể cả sau khi tắt trình duyệt, kèm thời gian còn lại.
+  - Duyệt kết quả cả job dạng lưới ảnh nhỏ.
+  - Thông báo khi việc dài xong.
+- **App desktop.**
+  - Nạp sẵn model và khởi động nóng; tự nhả VRAM khi rảnh (mặc định 15 phút).
+  - Mở thẳng CVAT; có danh sách job gần đây.
+  - Thông báo Windows.
+  - Đồng hồ GPU (VRAM, nhiệt độ) trên panel.
+- **Hỗ trợ và nhóm.**
+  - Gửi báo lỗi một chạm (không kèm token, key, cookie hay ảnh).
+  - Sao lưu / khôi phục; đồng bộ profile, guideline và bài học qua thư mục chung.
+  - Một máy GPU phục vụ cả nhóm trong LAN (có key); máy không có GPU dùng backend của máy kia.
+  - Chế độ reviewer tô nhãn do tool ghi mà chưa ai sửa.
+  - Tự học tách theo từng người.
+  - Báo cáo năng suất CSV.
+- **Dữ liệu thông minh.**
+  - Gợi ý frame nên làm trước (khác lạ, khó, chưa có nhãn).
+  - Keyframe theo chuyển động, và gợi ý cả job chỉ trên keyframe.
+  - Tìm frame bằng chữ (SAM3).
+  - Đo độ đồng thuận giữa hai job.
+- **Model riêng của dự án.** Một detector nhỏ học từ nhãn hộp bạn đã duyệt. Chỉ class nào đạt chuẩn mới được dùng, nhanh hơn SAM3 nhiều lần.
+- **Nền tảng.**
+  - Đầu nối Label Studio (ML backend).
+  - Bước ký số bộ cài tự bật khi repo có chứng chỉ.
+  - Giao diện tiếng Anh (một phần).
+  - Chạy từ mã nguồn trên macOS/Linux.
+  - Phím tắt tự đặt, cỡ chữ, tương phản cao.
+  - Hướng dẫn lần đầu và thống kê phiên.
+
 ## 0.7.0 (2026-11-19)
 
 - **Không tải lại thứ đã có.**

@@ -82,9 +82,15 @@ class DesktopApp:
         webview = self.webview
         webview.settings["ALLOW_DOWNLOADS"] = True
         html = (self.paths.app / "desktop" / "ui" / "control.html").read_text(encoding="utf-8")
+        # Gọn một cửa sổ: đã cài đủ thì mở thẳng CVAT, bảng điều khiển nằm ở khay hệ thống và nút "SAM3" trong trang.
+        straight = (not self.setup_mode and not self.start_hidden and (self.comps.status()["ready"] or self.backend.remote)
+                    and self.api._settings.data.get("start_mode", "cvat") == "cvat" and self.api._settings.data["sites"])
         self.control = webview.create_window(
             "SAM3 CVAT Assist" + (" - Cài đặt" if self.setup_mode else ""), html=html, js_api=self.api,
-            width=980, height=760, min_size=(760, 560), hidden=self.start_hidden)
+            width=980, height=760, min_size=(760, 560), hidden=self.start_hidden or bool(straight))
+        if straight:
+            st = self.api._settings.data
+            self.open_cvat(st.get("last_url") or st["sites"][0]["url"])
         self.control.events.closing += self._on_control_closing
         if not self.setup_mode:
             self._start_tray()
@@ -95,6 +101,7 @@ class DesktopApp:
 
     def _after_start(self) -> None:
         self.api._pick_folder = self._pick_folder
+        self.api._pick_file = self._pick_file
         try:
             self.api._prepare()
         except Exception:  # noqa: BLE001
@@ -110,6 +117,15 @@ class DesktopApp:
         res = self.control.create_file_dialog(kind)
         return res[0] if res else None
 
+    def _pick_file(self, save: bool, name: str):
+        fd = getattr(self.webview, "FileDialog", None)
+        kind = (getattr(fd, "SAVE", None) if save else getattr(fd, "OPEN", None)) or \
+            (self.webview.SAVE_DIALOG if save else self.webview.OPEN_DIALOG)
+        res = self.control.create_file_dialog(kind, save_filename=name or "", file_types=("Zip (*.zip)",))
+        if not res:
+            return None
+        return res if isinstance(res, str) else res[0]
+
     def _on_control_closing(self):
         if self.setup_mode or self.quitting or self.tray_icon is None:
             self.quit(close_windows=False)
@@ -118,6 +134,8 @@ class DesktopApp:
         return False
 
     def open_cvat(self, origin: str) -> None:
+        if origin_of(origin) not in self.api._settings.origins():
+            return
         if self.cvat_window is not None:
             try:
                 self.cvat_window.load_url(origin)
@@ -125,7 +143,8 @@ class DesktopApp:
                 return
             except Exception:  # noqa: BLE001 - cửa sổ đã bị đóng
                 self.cvat_window = None
-        bridge = Bridge(self.store, self.backend, self.api._settings.origins, self._cvat_url, set_clipboard)
+        bridge = Bridge(self.store, self.backend, self.api._settings.origins, self._cvat_url, set_clipboard,
+                        notifier=self.notify, show_control=self.show_control)
         self.bridge = bridge
         self.cvat_window = self.webview.create_window("CVAT - SAM3 Assist", url=origin, js_api=bridge,
                                                       width=1500, height=950, min_size=(900, 600))
@@ -146,12 +165,29 @@ class DesktopApp:
         if origin_of(url) not in self.api._settings.origins():
             log.info("Không tiêm bảng vào %s (không nằm trong danh sách CVAT)", origin_of(url))
             return
+        self.api._record_visit(url)
         code = self.bridge._boot_script(self.shim, self.userscript, __version__)
         try:
             run = getattr(self.cvat_window, "run_js", None) or self.cvat_window.evaluate_js
             run(code)
         except Exception:  # noqa: BLE001
             log.exception("Tiêm bảng vào CVAT lỗi")
+
+    def show_control(self) -> None:
+        try:
+            self.control.show()
+            self.control.restore()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def notify(self, title: str, text: str) -> None:
+        """Thông báo Windows (qua biểu tượng ở khay hệ thống)."""
+        icon = self.tray_icon
+        try:
+            if icon is not None and getattr(icon, "HAS_NOTIFICATION", True):
+                icon.notify(text, title)
+        except Exception:  # noqa: BLE001
+            log.info("Không hiện được thông báo: %s - %s", title, text)
 
     # --------------------------------------------------------------- tray ---
     def _start_tray(self) -> None:
@@ -163,7 +199,9 @@ class DesktopApp:
         icon_path = self.paths.app / "desktop" / "ui" / "icon.png"
         image = Image.open(icon_path) if icon_path.exists() else Image.new("RGB", (64, 64), (37, 99, 235))
         menu = pystray.Menu(
-            pystray.MenuItem("Mở bảng điều khiển", lambda: self.control.show(), default=True),
+            pystray.MenuItem("Mở bảng điều khiển", lambda: self.show_control(), default=True),
+            pystray.MenuItem("Mở CVAT", lambda: self.open_cvat(self.api._settings.data.get("last_url")
+                                                              or (self.api._settings.data["sites"] or [{"url": ""}])[0]["url"])),
             pystray.MenuItem("Thoát", lambda: self.quit()),
         )
         self.tray_icon = pystray.Icon("sam3-cvat-assist", image, "SAM3 CVAT Assist", menu)

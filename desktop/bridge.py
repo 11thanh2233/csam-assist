@@ -83,9 +83,11 @@ class Bridge:
     """Đối tượng gắn vào cửa sổ CVAT (pywebview js_api). Chỉ hàm không bắt đầu bằng '_' được trang gọi."""
 
     def __init__(self, store: Store, backend, allowed_origins: Callable[[], set], current_url: Callable[[], str],
-                 clipboard: Optional[Callable[[str], None]] = None):
+                 clipboard: Optional[Callable[[str], None]] = None, notifier: Optional[Callable[[str, str], None]] = None,
+                 show_control: Optional[Callable[[], None]] = None):
         self._store, self._backend = store, backend
         self._allowed, self._current_url, self._clip = allowed_origins, current_url, clipboard
+        self._notifier, self._show_control = notifier, show_control
 
     # -------------------------------------------------------------- checks ---
     def _check_page(self) -> None:
@@ -134,6 +136,19 @@ class Bridge:
             return {"error": "network", "status": 0, "responseText": str(exc)}
         return {"status": status, "statusText": "", "responseText": text}
 
+    def notify(self, title, text):
+        """Thông báo Windows khi việc dài trong panel xong (gợi ý cả job, rà cả job, theo dõi)."""
+        self._check_page()
+        if self._notifier:
+            self._notifier(str(title)[:80], str(text)[:250])
+        return True
+
+    def open_control(self):
+        self._check_page()
+        if self._show_control:
+            self._show_control()
+        return True
+
     def clipboard(self, text):
         self._check_page()
         if self._clip:
@@ -143,9 +158,10 @@ class Bridge:
     # ------------------------------------------------------- for the app ---
     def _boot_script(self, shim: str, userscript: str, version: str) -> str:
         """Mã tiêm vào trang: dữ liệu khởi động + shim GM_* + userscript."""
-        boot = {"values": self._store.all(), "version": version, "backendUrl": self._backend.base_url}
+        page_url = getattr(self._backend, "page_url", self._backend.base_url)
+        boot = {"values": self._store.all(), "version": version, "backendUrl": page_url}
         cfg = dict(boot["values"].get("cfg") or {})
-        cfg["backendUrl"] = self._backend.base_url        # backend của app, cổng có thể khác 8765
+        cfg["backendUrl"] = page_url                       # backend của app (cầu nối chuyển tiếp), cổng có thể khác 8765
         cfg["apiKey"] = ""                                 # key do app thêm, không lưu trong trang
         boot["values"]["cfg"] = cfg
         return ("window.__sam3Boot = " + json.dumps(boot, ensure_ascii=False) + ";\n" + shim + "\n"

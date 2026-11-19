@@ -31,6 +31,13 @@ comps = Components(paths, manifest, allow_http=("127.0.0.1",), hf_base="http://1
 
 class FakeBackend:
     state, base_url = "running", "http://127.0.0.1:8765"
+    port, preferred_port, remote, share_key = 8765, 8765, None, ""
+
+    def __init__(self):
+        self.extra_env = {}
+
+    def restart(self):
+        return self.info()
 
     def info(self):
         return {"state": self.state, "message": "Đang chạy: mock trên cpu", "url": self.base_url, "port": 8765, "health": {}}
@@ -47,8 +54,13 @@ class FakeBackend:
 
 
 api = ControlApi(paths, comps, FakeBackend(), open_site=lambda o: None, on_quit=lambda: None)
-api._update_info = {"available": True, "auto": True, "version": "0.7.1", "notes": "## 0.7.1\n- **Sửa** lỗi `x`\n  dòng tiếp",
-                    "size": 136_000_000, "page": "https://github.com/11thanh2233/csam-assist/releases/tag/v0.7.1"}
+api._record_visit("https://cvat.edufun.ai/tasks/5/jobs/12?frame=3")
+import desktop.support as _sup  # noqa: E402
+
+_orig_report = _sup.report_bundle
+_sup.report_bundle = lambda p, extra=None, out_dir=None: _orig_report(p, extra, out_dir=tmp)
+api._update_info = {"available": True, "auto": True, "version": "99.0.0", "notes": "## 99.0.0\n- **Sửa** lỗi `x`\n  dòng tiếp",
+                    "size": 136_000_000, "page": "https://github.com/11thanh2233/csam-assist/releases/tag/v99.0.0"}
 api._settings.data["auto_update_check"] = False
 
 

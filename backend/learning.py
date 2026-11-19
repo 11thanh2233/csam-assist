@@ -104,6 +104,15 @@ class Learner:
         return len(keep)
 
     # ------------------------------------------------------------ đối chiếu -
+    def tool_shapes(self, job_id: int) -> dict:
+        """Nhãn tool đã ghi cho job: id CVAT, và những nhãn chưa ai sửa (lần đối chiếu gần nhất là 'giữ nguyên' hoặc chưa đối chiếu)."""
+        applied = [e for e in self._events(job_id) if e["kind"] == "applied" and e.get("cvat_id") is not None]
+        data = self._load_json(self.root / "outcomes" / f"{int(job_id)}.json", {})
+        result = {o.get("cvat_id"): o.get("result") for o in data.get("outcomes", []) if o.get("cvat_id") is not None}
+        ids = [e["cvat_id"] for e in applied]
+        untouched = [i for i in ids if result.get(i) in (None, "kept")]
+        return {"job_id": job_id, "ids": ids, "untouched": untouched, "reviewed_at": data.get("at")}
+
     def review(self, job_id: int, shapes: list[dict], tracks: Optional[list[dict]] = None) -> dict:
         """So các shape tool đã ghi cho job với annotation hiện tại; ghi kết quả rồi học lại."""
         events = self._events(job_id)
