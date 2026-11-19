@@ -95,6 +95,7 @@ jobs:
     timeout-minutes: 60
     env:
       HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     permissions:
       contents: write          # chỉ dùng để đăng Release khi push tag
     steps:
@@ -152,8 +153,8 @@ jobs:
           sys.path.insert(0, str(p.packages))
           import torch, torchvision
           print('torch', torch.__version__, 'cuda', torch.version.cuda)
-          from transformers import Sam3Model, Sam3Processor, Sam3VideoModel, Sam3VideoProcessor, VitPoseForPoseEstimation
-          print('transformers: SAM3 + SAM3 Video + ViTPose OK')
+          from transformers import Sam3Model, Sam3Processor, Sam3VideoModel, Sam3VideoProcessor, Sam3TrackerModel, Sam3TrackerProcessor, VitPoseForPoseEstimation
+          print('transformers: SAM3 + SAM3 Video + SAM3 Tracker + ViTPose OK')
           "@
           if ($LASTEXITCODE -ne 0) { throw "cài PyTorch theo manifest lỗi" }
           # Model riêng của dự án: huấn luyện thử vài vòng trên CPU bằng chính PyTorch vừa cài
@@ -231,6 +232,35 @@ jobs:
             build/app/desktop/manifest.lock.json
             build/build-info.json
           retention-days: 30
+
+      # Ký qua SignPath Foundation (miễn phí cho mã nguồn mở) khi phát hành, nếu repo đã được SignPath duyệt.
+      # Cần: secret SIGNPATH_API_TOKEN, biến SIGNPATH_ORGANIZATION_ID (Settings → Secrets and variables → Actions). Xem docs/SIGNING.md.
+      - name: Gửi bộ cài cho SignPath ký
+        id: unsigned
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNPATH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: dist/*.exe
+      - name: SignPath ký bộ cài
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'csam-assist' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+      - name: Dùng bộ cài đã ký
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_SIGNPATH == 'true'
+        shell: pwsh
+        run: |
+          $signed = Get-ChildItem dist-signed -Recurse -Filter *.exe | Select-Object -First 1
+          if (-not $signed) { throw "SignPath không trả về bộ cài đã ký" }
+          Copy-Item $signed.FullName (Get-ChildItem dist\*.exe)[0].FullName -Force
+          Write-Host "Đã thay bằng bộ cài đã ký: $($signed.Name)"
 
       - name: Đăng Release (khi push tag)
         if: startsWith(github.ref, 'refs/tags/v')

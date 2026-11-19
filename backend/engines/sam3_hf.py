@@ -8,7 +8,9 @@ Dùng khi không muốn cài gói `sam3` chính thức. API theo tài liệu tra
 from __future__ import annotations
 
 import logging
+import gc
 import threading
+import time
 from typing import Any, Optional
 
 import numpy as np
@@ -39,6 +41,73 @@ class Sam3TransformersEngine(Engine):
         self.device = resolve_device(self._requested_device)
         self.model = Sam3Model.from_pretrained(self._model_id).to(self.device).eval()
         self.processor = Sam3Processor.from_pretrained(self._model_id)
+
+    # ------------------------------------------------ SAM 3 Tracker: bấm điểm ---
+    TRACKER_IDLE_S = 300            # không bấm điểm 5 phút thì nhả model tracker khỏi VRAM
+    TRACKER_MIN_FREE_MB = 2500      # còn ít VRAM hơn mức này thì không nạp, để tool quay về cách dựng hộp
+
+    def _tracker(self):
+        """Nạp SAM 3 Tracker (phần tương tác kiểu SAM 2, cùng checkpoint facebook/sam3) khi cần, float16 trên GPU."""
+        if getattr(self, "_trk", None) is None:
+            torch = self.torch
+            if self.device == "cuda":
+                free, _ = torch.cuda.mem_get_info()
+                if free / 2**20 < self.TRACKER_MIN_FREE_MB:
+                    raise MemoryError(f"Còn {free / 2**20:.0f} MB VRAM, chưa đủ để nạp SAM 3 Tracker.")
+            from transformers import Sam3TrackerModel, Sam3TrackerProcessor
+
+            dtype = torch.float16 if self.device == "cuda" else torch.float32
+            self._trk_proc = Sam3TrackerProcessor.from_pretrained(self._model_id)
+            self._trk = Sam3TrackerModel.from_pretrained(self._model_id, torch_dtype=dtype).to(self.device).eval()
+            self._trk_dtype = dtype
+            self._trk_cache = None
+        self._trk_last = time.time()
+        return self._trk, self._trk_proc
+
+    def release_tracker(self) -> bool:
+        if getattr(self, "_trk", None) is None:
+            return False
+        self._trk = self._trk_proc = self._trk_cache = None
+        gc.collect()
+        if self.torch is not None and self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
+        return True
+
+    def release_idle(self) -> None:
+        """Gọi định kỳ: nhả SAM 3 Tracker nếu lâu không bấm điểm."""
+        if getattr(self, "_trk", None) is not None and time.time() - getattr(self, "_trk_last", 0) > self.TRACKER_IDLE_S:
+            with self._lock:
+                self.release_tracker()
+
+    def segment_points(self, state: Any, positives: list, negatives: list, prompt: Any = None) -> list[Instance]:
+        """Tách vật theo điểm bấm bằng SAM 3 Tracker. Thiếu VRAM hoặc lỗi: nhả tracker và báo lỗi để pipeline quay về cách cũ."""
+        torch = self.torch
+        image = state["image"]
+        points = [[list(map(float, p)) for p in positives] + [list(map(float, p)) for p in negatives]]
+        labels = [[1] * len(positives) + [0] * len(negatives)]
+        with self._lock, torch.no_grad():
+            try:
+                model, proc = self._tracker()
+                inputs = proc(images=image, input_points=[points], input_labels=[labels], return_tensors="pt").to(self.device)
+                pixel = inputs.pop("pixel_values").to(self._trk_dtype)
+                cache = self._trk_cache
+                kwargs = {}
+                if cache and cache[0] is state:
+                    kwargs["image_embeddings"] = cache[1]          # cùng ảnh: không mã hoá lại, mỗi điểm chỉ chạy phần giải mã
+                try:
+                    out = model(pixel_values=pixel, multimask_output=False, **inputs, **kwargs)
+                except (TypeError, ValueError):
+                    out = model(pixel_values=pixel, multimask_output=False, **inputs)
+                if getattr(out, "image_embeddings", None) is not None:
+                    self._trk_cache = (state, out.image_embeddings)   # giữ chính state: không nhầm sang ảnh khác
+                masks = proc.post_process_masks(out.pred_masks.float().cpu(), inputs["original_sizes"].cpu())[0]
+                scores = out.iou_scores.float().cpu().reshape(-1).tolist()
+            except Exception as exc:
+                oom = isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
+                self.release_tracker()
+                raise RuntimeError(("thiếu VRAM cho SAM 3 Tracker" if oom else f"SAM 3 Tracker lỗi: {exc}")[:300]) from exc
+        m = masks.reshape(-1, masks.shape[-2], masks.shape[-1]).numpy() > 0.5
+        return [Instance(mask=m[i], score=float(scores[i] if i < len(scores) else 0.9)) for i in range(len(m)) if m[i].any()]
 
     def encode(self, image_rgb: np.ndarray) -> Any:
         from PIL import Image

@@ -787,7 +787,7 @@ def interactive_points(
         try:
             candidates = list(engine.segment_points(state, pos, neg, prompt or None))
         except Exception as exc:  # noqa: BLE001 - quay về cách dựng hộp
-            warnings.append(f"Không dùng được chế độ điểm của model ({type(exc).__name__}), chuyển sang hộp quanh điểm.")
+            warnings.append(f"Không dùng được SAM 3 Tracker ({exc}), đã chuyển sang cách dựng hộp quanh điểm.")
             candidates = []
     if not candidates:
         xs, ys = [p[0] for p in pos], [p[1] for p in pos]

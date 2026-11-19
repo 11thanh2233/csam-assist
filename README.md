@@ -880,3 +880,17 @@ sam3-cvat-assist/
 
 SAM 3 do Meta phát hành với giấy phép riêng; đọc giấy phép tại repo của SAM3 trước khi dùng cho mục
 đích ngoài học tập.
+
+## 14. Chính sách ký số (Code signing policy)
+
+Bộ cài Windows được build tự động từ mã nguồn trong repo này bằng GitHub Actions
+(`.github/workflows/windows-installer.yml`) và được ký số khi có chứng chỉ (xem [docs/SIGNING.md](docs/SIGNING.md)).
+Khi ký qua SignPath Foundation: *Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).*
+
+- **Người duy trì, duyệt và phát hành:** [11thanh2233](https://github.com/11thanh2233).
+- **Chỉ ký bản build từ GitHub Actions của repo này**, từ tag phát hành `v<bản>`. Không ký file build trên máy cá nhân.
+- **Quyền riêng tư:**
+  - Tool chỉ kết nối tới các địa chỉ CVAT bạn tự thêm, Hugging Face (tải trọng số, khi bạn đưa token) và GitHub
+    Releases (kiểm bản mới; tắt được).
+  - Ảnh chỉ gửi tới LLM bên ngoài khi bạn bật rõ ràng ở phần soạn guideline.
+  - Tool không thu thập dữ liệu sử dụng.

@@ -255,3 +255,41 @@ def test_labelstudio_predict_via_api(client, image_b64, monkeypatch):
 
 
 import base64  # noqa: E402
+
+
+class TrackerEngine(BoxEngine):
+    """Engine có SAM 3 Tracker giả: lần đầu thiếu VRAM, lần sau trả đúng vật dưới điểm."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def segment_points(self, state, pos, neg, prompt=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("thiếu VRAM cho SAM 3 Tracker")
+        m = np.zeros((H, W), bool)
+        x, y = map(int, pos[0])
+        m[y - 30:y + 30, x - 40:x + 40] = True
+        return [Instance(mask=m, score=0.97)]
+
+
+def test_points_use_tracker_and_fall_back_when_it_fails():
+    eng = TrackerEngine()
+    img = np.zeros((H, W, 3), np.uint8)
+    first = pipeline.interactive_points(eng, None, img, {"rules": {}}, car_cfg(), [[800, 400]], [])
+    assert "SAM 3 Tracker" in first["warnings"][0] and first["proposals"][0]["bbox"][0] >= 699, "lỗi tracker: quay về cách dựng hộp"
+    second = pipeline.interactive_points(eng, None, img, {"rules": {}}, car_cfg(), [[640, 360]], [])
+    assert not second["warnings"] and second["proposals"][0]["score"] == 0.97 and abs(second["proposals"][0]["bbox"][0] - 600) <= 2
+
+
+def test_engine_proxy_calls_release_idle():
+    released = []
+
+    class E(Heavy):
+        def release_idle(self):
+            released.append(1)
+
+    proxy = EngineProxy(lambda: E(), idle_min=0)
+    proxy.ensure()
+    proxy.idle_check()
+    assert released == [1] and proxy.loaded, "nhả phần phụ (tracker) nhưng không nhả model chính khi idle_min = 0"

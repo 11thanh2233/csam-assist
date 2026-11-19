@@ -72,8 +72,8 @@ async def lifespan(_: FastAPI):
         log.info("Khởi động nóng xong sau %.1fs.", warmup(rt.engine))
     log.info("Sẵn sàng. Engine: %s, thiết bị: %s", rt.engine.name, rt.engine.device)
     watcher = IdleWatcher([rt.engine])
+    watcher.start()                     # luôn chạy: còn nhả SAM 3 Tracker (bấm điểm) khi lâu không dùng
     if settings.idle_unload_min > 0:
-        watcher.start()
         log.info("Tự nhả model sau %g phút không dùng.", settings.idle_unload_min)
     rt.guide = GuidelineService(Library(settings.library_dir), guideline_llm.from_env())
     rt.learner = Learner(settings.library_dir / "learning")

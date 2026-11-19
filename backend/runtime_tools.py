@@ -66,6 +66,9 @@ class EngineProxy:
             return True
 
     def idle_check(self) -> None:
+        eng = self._engine
+        if eng is not None and hasattr(eng, "release_idle"):
+            eng.release_idle()                     # phần phụ (SAM 3 Tracker) có hạn nghỉ riêng
         if self._idle_min > 0 and self._engine is not None and time.time() - self._last > self._idle_min * 60:
             self.unload(f"không dùng {self._idle_min:g} phút")
 
