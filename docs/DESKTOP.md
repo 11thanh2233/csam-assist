@@ -198,7 +198,14 @@ có xoá dữ liệu của bạn không. Mặc định là giữ.
   - App cảnh báo khi bạn thêm địa chỉ `http` không mã hoá trên mạng ngoài.
 - **Không cần quyền admin:** app cài và chạy với quyền người dùng thường.
 
+## Ngôn ngữ
+
+Chọn ngôn ngữ ở bộ cài (lần đầu), ở góc trên bảng điều khiển, hoặc ở tab Cài đặt của panel. Một lựa chọn chung cho
+panel, bảng điều khiển, khay hệ thống, thông báo và "Có gì mới". Nhật ký luôn bằng tiếng Anh.
+
 ## Khi có lỗi
+
+- Mỗi lỗi kèm một mã cố định, ví dụ `(E_GPU_OOM)`. Danh sách mã hay gặp ở README, mục "Xử lý sự cố".
 
 - **"WebView2" khi mở app:** máy thiếu Microsoft Edge WebView2 Runtime. Windows 11 có sẵn. Windows 10 tải bản
   *Evergreen Bootstrapper* tại <https://developer.microsoft.com/microsoft-edge/webview2/>.

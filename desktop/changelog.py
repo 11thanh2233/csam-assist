@@ -38,3 +38,14 @@ def section(path: Path, version: str) -> str:
         if e["version"] == version:
             return e["body"]
     return ""
+
+
+EN_MARK = "<!-- en -->"
+
+
+def pick_lang(notes: str, lang: str) -> str:
+    """Ghi chú Release có hai phần (tiếng Việt, rồi tiếng Anh sau dòng <!-- en -->): lấy phần đúng ngôn ngữ."""
+    if EN_MARK not in notes:
+        return notes
+    vi, en = notes.split(EN_MARK, 1)
+    return (en if lang == "en" else vi).strip()

@@ -1,6 +1,7 @@
 """Logic của bảng điều khiển và trình cài lần đầu (không phụ thuộc giao diện, kiểm thử được trên mọi máy)."""
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from backend import __version__
+from backend.i18n import norm_lang, translate_obj
 
 from . import credstore
 from . import downloader as D
@@ -45,6 +47,7 @@ class Settings:
         self.data.setdefault("recent_jobs", [])
         self.data.setdefault("start_mode", "cvat")          # cvat: mở thẳng CVAT | control: mở bảng điều khiển
         self.data.setdefault("idle_unload_min", 15)         # nhả model khỏi VRAM sau N phút không dùng (0 = không nhả)
+        self.data.setdefault("lang", "vi")                   # ngôn ngữ giao diện: vi | en (panel và bảng điều khiển dùng chung)
         if "last_seen_version" not in self.data:
             # Cài mới: không có gì để báo. Có cài đặt mà chưa có mục này: đang cập nhật từ 0.6.0 (bản desktop đầu tiên).
             self.data["last_seen_version"] = "0.6.0" if self.existed else __version__
@@ -205,6 +208,7 @@ class ControlApi:
         info["error"] = self._settings.data.get("update_error", "")
         info["auto_check"] = self._settings.data.get("auto_update_check", True)
         info["current"] = __version__
+        info["notes"] = changelog.pick_lang(info.get("notes") or "", self._lang())
         return info
 
     def set_auto_update(self, on):
@@ -253,10 +257,23 @@ class ControlApi:
         self._updater.cancel.set()
         return True
 
+    # ----------------------------------------------------------- ngôn ngữ ---
+    def ui_lang(self):
+        return self._lang()
+
+    def _lang(self) -> str:
+        return norm_lang(self._settings.data.get("lang"))
+
+    def _changelog_path(self) -> Path:
+        """Nhật ký thay đổi theo ngôn ngữ giao diện (bản tiếng Anh: docs/CHANGELOG.en.md)."""
+        docs = self._paths.app / "docs"
+        en = docs / "CHANGELOG.en.md"
+        return en if self._lang() == "en" and en.exists() else docs / "CHANGELOG.md"
+
     # ----------------------------------------------------------- có gì mới ---
     def whats_new(self):
         seen = self._settings.data.get("last_seen_version", __version__)
-        entries = changelog.between(self._paths.app / "docs" / "CHANGELOG.md", seen, __version__)
+        entries = changelog.between(self._changelog_path(), seen, __version__)
         return {"show": bool(entries) and not self._setup_mode, "from": seen, "to": __version__, "entries": entries}
 
     def mark_seen(self):
@@ -265,7 +282,7 @@ class ControlApi:
         return True
 
     def changelog_all(self):
-        return changelog.between(self._paths.app / "docs" / "CHANGELOG.md", "0.0.0", __version__)
+        return changelog.between(self._changelog_path(), "0.0.0", __version__)
 
     def license_text(self):
         return self._paths.sam_license.read_text(encoding="utf-8")
@@ -508,7 +525,7 @@ class ControlApi:
 
     def set_setting(self, key, value):
         """Các cài đặt đơn giản của app (chỉ những khoá biết trước)."""
-        allowed = {"start_mode": ("cvat", "control"), "idle_unload_min": None, "autostart_backend": None}
+        allowed = {"start_mode": ("cvat", "control"), "idle_unload_min": None, "autostart_backend": None, "lang": ("vi", "en")}
         if key not in allowed:
             return False
         if key == "idle_unload_min":
@@ -598,3 +615,16 @@ def set_autostart(on: bool) -> None:
                 winreg.DeleteValue(k, RUN_NAME)
             except OSError:
                 pass
+
+
+def _translated(fn):
+    """Kết quả trả cho bảng điều khiển được dịch theo ngôn ngữ giao diện (thông báo, trạng thái, tên thành phần)."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        return translate_obj(fn(self, *args, **kwargs), self._lang())
+    return wrapper
+
+
+for _name, _fn in list(vars(ControlApi).items()):
+    if not _name.startswith("_") and callable(_fn) and _name not in ("license_text", "ui_lang"):
+        setattr(ControlApi, _name, _translated(_fn))

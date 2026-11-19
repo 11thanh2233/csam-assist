@@ -52,10 +52,12 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
 </style>
 </head>
 <body>
-<header><h1>SAM3 CVAT Assist</h1><span class="v" id="ver"></span>
+<header id="topbar"><h1>SAM3 CVAT Assist</h1><span class="v" id="ver"></span>
   <button id="updBadge" class="primary small hidden" onclick="showDash();document.getElementById('updCard').scrollIntoView()">Có bản mới</button>
-  <span class="pill" id="pill">Đang tải...</span></header>
-<main>
+  <span class="pill" id="pill">Đang tải...</span>
+  <select id="uiLang" class="small" title="Ngôn ngữ / Language" aria-label="Ngôn ngữ / Language" onchange="setLang(this.value)">
+    <option value="vi">Tiếng Việt</option><option value="en">English</option></select></header>
+<main id="mainArea">
   <!-- ================= TRÌNH CÀI ================= -->
   <section id="wizard" class="hidden">
     <div class="steps" id="stepbar"></div>
@@ -232,6 +234,241 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
 </div></div>
 
 <script>
+// ---- đa ngôn ngữ: chung bộ dịch và ngôn ngữ với panel trong CVAT ----
+// <i18n-catalog> phần này do scripts/i18n_build.py sinh, đừng sửa tay
+  const I18N_DATA = {"codes":{"Chưa chọn thư mục chung.":"E_BAD_REQUEST"},"strings":{" (tuỳ chọn)":" (optional)"," <span class=\"mut\">(tuỳ chọn)</span>":" <span class=\"mut\">(optional)</span>"," <span class=\"ok\">Đây là bản mới nhất</span> <span class=\"mut small-text\">(kiểm lúc {0})</span>":" <span class=\"ok\">This is the latest version</span> <span class=\"mut small-text\">(checked at {0})</span>"," <span class=\"tag acc\">Có bản mới {0}</span>{1}\n      <div class=\"notes\" style=\"margin-top:8px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 12px\">{2}</div>\n      <p class=\"mut small-text\">Cập nhật chỉ thay phần app. PyTorch, trọng số, profile và dữ liệu tự học giữ nguyên. App sẽ tự đóng, cài rồi mở lại.</p>":" <span class=\"tag acc\">New version {0}</span>{1}\n      <div class=\"notes\" style=\"margin-top:8px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 12px\">{2}</div>\n      <p class=\"mut small-text\">Updating only replaces the app. PyTorch, weights, profiles and learning data stay as they are. The app closes, installs and reopens.</p>"," hoặc ":" or ","(không thấy IP mạng nội bộ)":"(no local network IP found)","(máy này không cần GPU, không cần tải model)":"(this machine needs no GPU and no model download)","(trống)":"(empty)","(áp dụng khi bật lại backend)":"(applies when the backend restarts)",", điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).":", fill in the form, accept the terms, wait for Meta's approval (you get an email).","1. Kiểm tra máy và quét những gì đã có":"1. Check the machine and scan what is already there","15 phút":"15 minutes","2. Giấy phép SAM":"2. SAM licence","30 phút":"30 minutes","4. Chọn thành phần":"4. Choose components","5 phút":"5 minutes","5. Tải và cài":"5. Download and install","60 phút":"60 minutes","<b>Bản app này cần cập nhật: {0}.</b>\n      <span class=\"mut\">{1}</span>\n      <div class=\"row\" style=\"margin-top:8px\"><span class=\"grow\"></span><button class=\"primary\" onclick=\"openWizard(1)\">Cập nhật ngay</button></div>":"<b>This app version needs an update: {0}.</b>\n      <span class=\"mut\">{1}</span>\n      <div class=\"row\" style=\"margin-top:8px\"><span class=\"grow\"></span><button class=\"primary\" onclick=\"openWizard(1)\">Update now</button></div>","<button onclick=\"removeComp('{0}')\">Gỡ</button>":"<button onclick=\"removeComp('{0}')\">Remove</button>","<details style=\"margin-top:8px\"><summary class=\"mut small-text\">Đã quét {0} nơi</summary><ul class=\"list small-text mut\">{1}</ul>{2}</details>":"<details style=\"margin-top:8px\"><summary class=\"mut small-text\">Scanned {0} locations</summary><ul class=\"list small-text mut\">{1}</ul>{2}</details>","<div class=\"row\"><span class=\"grow\"></span><button onclick=\"skipVersion()\">Bỏ qua bản này</button>\n        <button id=\"updDl\" class=\"primary\" onclick=\"downloadUpdate()\">Tải bản cập nhật</button>\n        <button id=\"updGo\" class=\"primary hidden\" onclick=\"installUpdate()\">Cài và mở lại app</button></div>":"<div class=\"row\"><span class=\"grow\"></span><button onclick=\"skipVersion()\">Skip this version</button>\n        <button id=\"updDl\" class=\"primary\" onclick=\"downloadUpdate()\">Download update</button>\n        <button id=\"updGo\" class=\"primary hidden\" onclick=\"installUpdate()\">Install and reopen app</button></div>","<div class=\"small-text\">Thư mục bạn thêm: {0}</div>":"<div class=\"small-text\">Folders you added: {0}</div>","<h3>Bản {0}{1}</h3>{2}":"<h3>Version {0}{1}</h3>{2}","<li>Không thấy bộ nhớ đệm hay thư mục tool cũ nào.</li>":"<li>No cache or old tool folder found.</li>","<p class=\"mut small-text\">Python và thư viện nhỏ của app: có sẵn trong bộ cài, cập nhật cùng app. Dữ liệu và model: {0}</p>":"<p class=\"mut small-text\">Python and the app's small libraries: included in the installer, updated with the app. Data and models: {0}</p>","<p class=\"warn\"><b>Không thấy card NVIDIA.</b> Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm. Nếu máy có card NVIDIA, hãy <button class=\"link\" onclick=\"link('nvidia')\">cài driver mới</button> rồi mở lại.</p>":"<p class=\"warn\"><b>No NVIDIA card found.</b> The tool still runs on the CPU (smaller PyTorch build) but is very slow. If the machine has an NVIDIA card, <button class=\"link\" onclick=\"link('nvidia')\">install a new driver</button> and reopen.</p>","<p class=\"warn\">Driver NVIDIA cũ, PyTorch CUDA 12 có thể không chạy. Nên <button class=\"link\" onclick=\"link('nvidia')\">cập nhật driver</button>.</p>":"<p class=\"warn\">Old NVIDIA driver; PyTorch CUDA 12 may not run. <button class=\"link\" onclick=\"link('nvidia')\">Update the driver</button>.</p>","<p class=\"warn\">VRAM dưới 6 GB: SAM 3 có thể thiếu bộ nhớ với ảnh lớn.</p>":"<p class=\"warn\">Less than 6 GB VRAM: SAM 3 may run out of memory on large images.</p>","<p class=\"warn\">{0}</p><div class=\"row\"><span class=\"grow\"></span><button onclick=\"openReleasePage()\">Mở trang Releases</button></div>":"<p class=\"warn\">{0}</p><div class=\"row\"><span class=\"grow\"></span><button onclick=\"openReleasePage()\">Open Releases page</button></div>","<span class=\"bad\">Không đủ chỗ trống.</span>":"<span class=\"bad\">Not enough free space.</span>","<span class=\"mut grow\">Đã nhớ token Hugging Face.</span><button onclick=\"api().forget_token().then(refresh)\">Quên token</button>":"<span class=\"mut grow\">Hugging Face token remembered.</span><button onclick=\"api().forget_token().then(refresh)\">Forget token</button>","<span class=\"mut\">(tuỳ chọn)</span>":"<span class=\"mut\">(optional)</span>","<span class=\"mut\">Đang kiểm tra...</span>":"<span class=\"mut\">Checking...</span>","<span class=\"mut\">Đang kết nối...</span>":"<span class=\"mut\">Connecting...</span>","<span class=\"mut\">Đang quét máy (bộ nhớ đệm Hugging Face, thư mục tool cũ, model đã cài)...</span>":"<span class=\"mut\">Scanning the machine (Hugging Face cache, old tool folders, installed models)...</span>","<span class=\"ok\">Đã tạo {0}. Gửi file này cho người hỗ trợ.</span>":"<span class=\"ok\">Created {0}. Send this file to support.</span>","<span class=\"ok\">đã cài</span>":"<span class=\"ok\">installed</span>","<span class=\"tag acc\">cần cập nhật{0}</span> <span class=\"mut small-text\">{1} · tải {2}</span>":"<span class=\"tag acc\">needs update{0}</span> <span class=\"mut small-text\">{1} · download {2}</span>","<span class=\"warn\">chưa có</span>":"<span class=\"warn\">missing</span>","<tr><td class=\"mut\">Chưa có địa chỉ nào.</td></tr>":"<tr><td class=\"mut\">No addresses yet.</td></tr>","<tr><td><b>Job {0}</b> <span class=\"mut\">task {1} · {2} · {3}</span></td>\n    <td style=\"text-align:right\"><button class=\"primary small\" onclick=\"openJob({4})\">Mở</button></td></tr>":"<tr><td><b>Job {0}</b> <span class=\"mut\">task {1} · {2} · {3}</span></td>\n    <td style=\"text-align:right\"><button class=\"primary small\" onclick=\"openJob({4})\">Open</button></td></tr>","<tr><td><b>{0}</b> <span class=\"mut\">{1}</span></td>\n    <td style=\"text-align:right;white-space:nowrap\"><button class=\"primary\" onclick=\"openSite({2})\">Mở</button>\n    <button onclick=\"removeSite({3})\">Xoá</button></td></tr>":"<tr><td><b>{0}</b> <span class=\"mut\">{1}</span></td>\n    <td style=\"text-align:right;white-space:nowrap\"><button class=\"primary\" onclick=\"openSite({2})\">Open</button>\n    <button onclick=\"removeSite({3})\">Delete</button></td></tr>","App sẽ đóng, cài bản {0} rồi tự mở lại. Tiếp tục?":"The app will close, install version {0} and reopen. Continue?","Backend lỗi":"Backend error","Backend đang chạy":"Backend running","Backend đang khởi động":"Backend starting","Backend đang tắt":"Backend stopped","Bảng của tool chỉ hiện trên các địa chỉ trong danh sách này. Đăng nhập CVAT ngay trong cửa sổ mở ra; app nhớ đăng nhập cho lần sau.":"The tool's panel only appears on the addresses in this list. Sign in to CVAT in the window that opens; the app remembers your login next time.","Bật":"On","Bộ nhớ đệm Hugging Face: {0}":"Hugging Face cache: {0}","Chia sẻ backend của máy này cho máy khác trong mạng nội bộ (LAN)":"Share this machine's backend with other machines on the local network (LAN)","Chưa chọn thư mục chung.":"No shared folder chosen.","Chỉ tải phần nặng còn thiếu hoặc cần cập nhật. Phần đã có đúng bản, hoặc dùng lại được từ bản cũ, không tải lại.":"Only heavy parts that are missing or need updating are downloaded. Parts already present at the right version, or reusable from an old version, are not downloaded again.","Chọn thư mục chung":"Choose shared folder","Cài trước, nhập token sau":"Install first, token later","Cài đặt và dữ liệu":"Settings and data","Có bản mới":"Update available","Có bản {0}":"Version available: {0}","Có gì mới":"What's new","Có tài khoản Hugging Face (":"Have a Hugging Face account (","Cần tick ô đồng ý để tiếp tục.":"Tick the consent box to continue.","Cập nhật":"Update","Cập nhật app":"Update app","Dùng backend ở máy khác":"Use a backend on another machine","Dùng chung trong nhóm":"Team sharing","Dừng":"Stop","Dữ liệu tự học":"Learning data","Dữ liệu: {0} · Python {1}":"Data: {0} · Python {1}","Giấy phép":"Licence","Gom nhật ký và thông tin máy thành một file zip để gửi người hỗ trợ. Không có token, key, cookie hay ảnh.":"Bundle logs and system info into a zip file to send to support. No tokens, keys, cookies or images.","Gỡ {0}? Muốn dùng lại phải tải lại.":"Remove {0}? To use it again you will have to download it again.","Gửi báo lỗi (tạo file)":"Send error report (create file)","Gửi lên":"Upload","Hoặc dùng backend ở máy khác":"Or use a backend on another machine","Hỗ trợ, sao lưu và đồng bộ":"Support, backup and sync","Job gần đây":"Recent jobs","Khi mở app:":"When the app opens:","Khôi phục":"Restore","Khôi phục sẽ ghi đè profile, guideline và dữ liệu tự học bằng bản sao lưu (dữ liệu hiện tại được tự sao lưu trước). Tiếp tục?":"Restoring overwrites profiles, guidelines and learning data with the backup (current data is backed up automatically first). Continue?","Không bắt đầu được.":"Could not start.","Không có card NVIDIA: chạy bằng CPU":"No NVIDIA card: running on CPU","Không có gì cần tải.":"Nothing to download.","Khởi động lại":"Restart","Kiểm tra":"Check","Kiểm tra cập nhật thành phần":"Check for component updates","Kiểm tra ngay":"Check now","Kết nối":"Connect","Lấy về":"Download","Meta chưa duyệt? Cài phần còn lại trước, nhập token sau trong app.":"Meta has not approved yet? Install the rest first and enter the token later in the app.","Máy khác nhập địa chỉ: {0}\n     và key: <code id=\"lanKey\">{1}</code> <button class=\"small\" onclick=\"copyKey()\">Chép key</button>\n     <div class=\"mut\">Windows có thể hỏi cho phép qua tường lửa: chọn \"Private networks\". Chỉ máy có key mới dùng được.</div>":"Other machines enter the address: {0}\n     and key: <code id=\"lanKey\">{1}</code> <button class=\"small\" onclick=\"copyKey()\">Copy key</button>\n     <div class=\"mut\">Windows may ask to allow it through the firewall: choose \"Private networks\". Only machines with the key can use it.</div>","Máy không có card NVIDIA: dùng SAM3 của một máy khác trong nhóm, không cần tải gì":"No NVIDIA card: use SAM3 from another machine in the team, nothing to download","Mở":"Open","Mở CVAT":"Open CVAT","Ngôn ngữ / Language":"Language / Ngôn ngữ","Nhả model khỏi VRAM sau:":"Release the model from VRAM after:","Nhật ký":"Log","Nhật ký thay đổi":"Changelog","Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.":"Remember the token (stored in Windows Credential Manager, never written to a file) to download new model versions later.","Quay lại":"Back","Quét lại":"Scan again","Quét máy":"Scan machine","Quét và tải thành phần":"Scan and download components","SAM 3 nằm trong repo có cổng của Meta. Cần làm một lần:":"SAM 3 is in a gated Meta repo. Do this once:","Sao lưu":"Back up","Thiếu thành phần":"Missing components","Thoát app":"Quit app","Thành phần":"Components","Thêm":"Add","Thêm thư mục tool cũ để quét":"Add an old tool folder to scan","Thôi, dùng máy này":"Never mind, use this machine","Thư mục chung: OneDrive, Google Drive hay ổ mạng của nhóm. Đồng bộ profile, guideline và bài học; dữ liệu tự học là của từng người nên không gửi. Không bao giờ xoá file.":"Shared folder: OneDrive, Google Drive or a team network drive. Syncs profiles, guidelines and lessons; learning data is per person so it is not sent. Files are never deleted.","Thư mục chung: {0}":"Shared folder: {0}","Thư mục dữ liệu":"Data folder","Thư mục tool cũ: {0}":"Old tool folder: {0}","Thử lại (tải tiếp từ chỗ dừng)":"Retry (resume from where it stopped)","Tiếng Việt":"Tiếng Việt","Tiếp":"Next","Trên máy có GPU: mở SAM3 CVAT Assist → Dùng chung trong nhóm → bật \"Chia sẻ backend của máy này\", rồi nhập địa chỉ và key nó hiện vào đây.":"On the machine with the GPU: open SAM3 CVAT Assist → Team sharing → turn on \"Share this machine's backend\", then enter the address and key it shows here.","Trọng số SAM 3 là của Meta, dùng theo giấy phép dưới đây (bản gốc tiếng Anh). Tóm tắt: được dùng và chia sẻ, phải kèm giấy phép khi chia sẻ, không dùng cho quân sự, vũ khí, gián điệp, phải tuân luật kiểm soát xuất khẩu. Tóm tắt này không thay cho văn bản gốc.":"The SAM 3 weights belong to Meta and are used under the licence below (original English text). Summary: you may use and share them, must include the licence when sharing, may not use them for military, weapons or espionage purposes, and must follow export control laws. This summary does not replace the original text.","Trọng số SAM 3 đã có và đúng bản: không cần token.":"SAM 3 weights are present and up to date: no token needed.","Tên (tuỳ chọn)":"Name (optional)","Tôi đã đọc và đồng ý với SAM License.":"I have read and agree to the SAM License.","Tạo token loại":"Create a token of type","Tải":"Download","Tải và cài":"Download and install","Tải về khoảng <b>{0}</b>, cần khoảng <b>{1}</b> trên ổ đĩa (còn trống {2}). {3}":"Downloads about <b>{0}</b>, needs about <b>{1}</b> on disk ({2} free). {3}","Tắt":"Off","Tự chạy nền khi bật Windows":"Run in the background when Windows starts","Tự kiểm bản mới mỗi ngày (hỏi GitHub Releases của tool)":"Check for a new version daily (asks the tool's GitHub Releases)","Ví dụ thư mục sam3-cvat-assist của bản cài tay cũ":"E.g. the sam3-cvat-assist folder of an old manual install","Vẫn muốn chọn thành phần":"Choose components anyway","Xong (không cần tải gì)":"Done (nothing to download)","Xoá {0} khỏi danh sách?":"Delete {0} from the list?","bản CPU":"CPU build","bản CUDA":"CUDA build","bắt buộc":"required","cho job 50 điểm mặt":"for 50-point face jobs","cho job skeleton người":"for human skeleton jobs","chưa có":"missing","cần cập nhật":"needs update","dùng lại file có sẵn":"reuse existing files","dùng lại {0} đã có trên máy":"reuse {0} already on this machine","https://cvat.ten-mien.com hoặc localhost:8080":"https://cvat.your-domain.com or localhost:8080","không cần tải":"nothing to download","không nhả":"never","mở bảng điều khiển":"open the control panel","mở thẳng CVAT":"open CVAT directly","nhập token sau trong app":"enter the token later in the app","phiên bản {0}":"version {0}","rồi dán vào đây.":"and paste it here.","tại":"at","tạo tài khoản":"create an account","tải {0}":"download {0}","{0} <button class=\"link small-text\" data-d=\"{1}\" onclick=\"removeScanFolder(this.dataset.d)\">bỏ</button>":"{0} <button class=\"link small-text\" data-d=\"{1}\" onclick=\"removeScanFolder(this.dataset.d)\">remove</button>","Đang dùng bản <b>{0}</b>.":"Using version <b>{0}</b>.","Đang kiểm tra...":"Checking...","Đang quét máy...":"Scanning the machine...","Đang tính dung lượng...":"Calculating size...","Đang tải...":"Downloading...","Đã cập nhật lên bản {0}: có gì mới":"Updated to version {0}: what's new","Đã tìm thấy đủ trọng số SAM 3 trên máy (sẽ kiểm mã băm khi cài): không cần token.":"All SAM 3 weights were found on this machine (hashes are checked during install): no token needed.","Đã xem":"Got it","đã có, đúng bản":"present, correct version"}};
+  // Bộ máy dịch dùng chung cho panel và bảng điều khiển của app. Cách khớp giống hệt backend/i18n/__init__.py.
+  // makeI18n({strings: {vi: en}, codes: {vi: 'E_...'}}) -> { tr(text), code(text, status), withCode(msg, code) }
+  function makeI18n(data) {
+    'use strict';
+    const VI = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
+    const PH = /(?<!\{)\{(\d+)\}(?!\})/g;
+    const DEFAULT_CODES = { 400: 'E_BAD_REQUEST', 401: 'E_AUTH', 403: 'E_FORBIDDEN', 404: 'E_NOT_FOUND', 409: 'E_CONFLICT',
+      413: 'E_TOO_LARGE', 422: 'E_VALIDATION', 429: 'E_BUSY', 500: 'E_INTERNAL', 503: 'E_UNAVAILABLE' };
+    const lit = (s) => s.replace(/\{\{/g, '{').replace(/\}\}/g, '}');
+    // khoảng trắng trong mẫu khớp mềm (chữ đã vào trang có thể mất/thêm dấu cách ở đầu, cuối)
+    const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+    const wordsOf = (lits) => [...new Set(lits.join(' ').split(/\s+/).filter(Boolean))].sort((x, y) => y.length - x.length);
+    const exact = new Map();
+    const codes = new Map();
+    const templates = [];
+    const strings = (data && data.strings) || {};
+    const codeOf = (data && data.codes) || {};
+    for (const vi of Object.keys(strings)) {
+      const en = strings[vi];
+      const code = codeOf[vi] || null;
+      PH.lastIndex = 0;
+      if (PH.test(vi)) {
+        const pieces = vi.split(/(?<!\{)\{(\d+)\}(?!\})/);
+        const lits = pieces.filter((_, i) => i % 2 === 0).map(lit);
+        if (!lits.some((x) => VI.test(x))) continue;
+        const idx = pieces.filter((_, i) => i % 2 === 1).map(Number);
+        const pattern = lits.map((l, i) => reEsc(l) + (i < lits.length - 1 ? '([\\s\\S]*?)' : '')).join('');
+        templates.push({ words: wordsOf(lits), rx: new RegExp('^\\s*' + pattern + '\\s*$'), en, code, idx, nl: vi.includes('\n'), weight: lits.join('').length });
+      } else {
+        const braces = vi.includes('{{') || vi.includes('}}');
+        const key = (braces ? lit(vi) : vi).trim();
+        exact.set(key, (braces ? lit(en) : en).trim());
+        if (code) codes.set(key, code);
+      }
+    }
+    templates.sort((a, b) => b.weight - a.weight);
+    // Mẫu có thẻ HTML: thêm từng đoạn chữ giữa các thẻ, để chữ đã nằm trong trang (từng nút chữ) vẫn dịch được
+    const TAG = /<[^>]+>/;
+    for (const vi of Object.keys(strings)) {
+      if (!vi.includes('<')) continue;
+      const a = vi.split(TAG), b = String(strings[vi]).split(TAG);
+      if (a.length !== b.length) continue;
+      a.forEach((seg, i) => {
+        if (!VI.test(seg) || !seg.trim()) return;
+        PH.lastIndex = 0;
+        if (PH.test(seg)) {                               // đoạn có chỗ biến: thêm thành mẫu
+          const pieces = seg.split(/(?<!\{)\{(\d+)\}(?!\})/);
+          const lits = pieces.filter((_, j) => j % 2 === 0).map(lit);
+          const idx = pieces.filter((_, j) => j % 2 === 1).map(Number);
+          const pattern = lits.map((l, j) => reEsc(l) + (j < lits.length - 1 ? '([\\s\\S]*?)' : '')).join('');
+          templates.push({ words: wordsOf(lits), rx: new RegExp('^\\s*' + pattern + '\\s*$'), en: b[i].trim(), code: null, idx, nl: seg.includes('\n'), weight: lits.join('').length });
+        } else if (!exact.has(lit(seg).trim())) exact.set(lit(seg).trim(), lit(b[i]).trim());
+      });
+    }
+    templates.sort((a, b) => b.weight - a.weight);
+
+    function fill(t, groups, depth) {
+      const vals = {};
+      let clean = true;
+      t.idx.forEach((n, i) => { const v = tr0(groups[i], depth + 1); if (VI.test(v)) clean = false; vals[n] = v; });
+      const text = t.en.replace(PH, (m, n) => (n in vals ? vals[n] : m)).replace(/\{\{/g, '{').replace(/\}\}/g, '}');
+      return [text, clean];
+    }
+    const mmemo = new Map(), tmemo = new Map();
+    function match(core, depth) {
+      if (mmemo.has(core)) return mmemo.get(core);
+      const res = matchRaw(core, depth);
+      if (mmemo.size > 20000) mmemo.clear();
+      mmemo.set(core, res);
+      return res;
+    }
+    function matchRaw(core, depth) {
+      if (exact.has(core)) return [exact.get(core), true];
+      const low = core.charAt(0).toLowerCase() + core.slice(1);
+      if (low !== core && exact.has(low)) { const en = exact.get(low); return [en.charAt(0).toUpperCase() + en.slice(1), true]; }
+      let partial = null;
+      const multi = core.includes('\n');
+      for (const t of templates) {
+        if (multi && !t.nl) continue;                   // nhiều dòng: chỉ mẫu nhiều dòng, còn lại tách dòng
+        if (!t.words.every((w) => core.includes(w))) continue;   // lọc nhanh: mọi chữ cố định phải có mặt
+        const m = t.rx.exec(core);
+        if (!m) continue;
+        const [text, clean] = fill(t, m.slice(1), depth);
+        if (clean) return [text.trim(), true];
+        if (partial === null) partial = text.trim();
+      }
+      return [partial, false];
+    }
+    const SENT = /(?<=[.!?])\s+/;
+    const CLAUSE = /(?<=[:;])\s+/;
+    const SUFFIX = /^([\s\S]*?)(\s*(?:<!--[\s\S]*?-->|\*\([^)]*\)\*))$/;
+    const VIG = new RegExp(VI.source, 'gi');
+    const COMMA = /,\s+/;
+    const MD = /^(\s*(?:#{1,6}\s+|[-*]\s+(?:\[[ x]\]\s+)?|>\s?|\d+\.\s+)?)([\s\S]*?)(\s*)$/;
+    function tr0(text, depth) {
+      if (!text || typeof text !== 'string' || !VI.test(text) || depth > 40) return text;
+      if (tmemo.has(text)) return tmemo.get(text);
+      const res = tr1(text, depth);
+      if (tmemo.size > 20000) tmemo.clear();
+      tmemo.set(text, res);
+      return res;
+    }
+    function tr1(text, depth) {
+      const lead = text.slice(0, text.length - text.trimStart().length);
+      const trail = text.slice(text.trimEnd().length);
+      const core0 = text.trim();
+      const cm = /^([\s\S]*?)(\s*\(E_[A-Z0-9_]+\))$/.exec(core0);   // giữ nguyên mã lỗi ở cuối: "... (E_GPU_OOM)"
+      if (cm && cm[1]) return lead + tr0(cm[1], depth) + cm[2] + trail;
+      const core = core0;
+      const [hit, clean] = match(core, depth);
+      if (clean) return lead + hit + trail;
+      let best = hit;
+      if (core.includes('\n')) {
+        const flat = core.replace(/\s+/g, ' ');            // đoạn văn xuống dòng trong HTML
+        const [h2, c2] = match(flat, depth);
+        if (c2) return lead + h2 + trail;
+      }
+      if (core.includes('\n')) return lead + core.split('\n').map((l) => tr0(l, depth + 1)).join('\n') + trail;
+      const seg = segment(core, depth);
+      if (best === null || count(seg) < count(best)) best = seg;   // khớp một phần hay tách đoạn: lấy bản ít tiếng Việt hơn
+      return lead + best + trail;
+    }
+    const count = (x) => (x.match(VIG) || []).length;
+    // Tách ở ranh giới câu/vế, rồi ghép lại đoạn liền nhau dài nhất có trong bộ dịch
+    function spans(core, depth) {
+      const pieces = core.split(/(?<=[.!?:;])(\s+)/);
+      const texts = pieces.filter((_, i) => i % 2 === 0), seps = pieces.filter((_, i) => i % 2 === 1).concat(['']);
+      const n = texts.length;
+      if (n < 2) return null;
+      const out = [];
+      let i = 0;
+      while (i < n) {
+        let j = n;
+        for (j = Math.min(n, i + 8); j > i; j--) {     // đoạn ghép tối đa 8 câu/vế
+          let cand = '';
+          for (let k = i; k < j; k++) cand += texts[k] + (k < j - 1 ? seps[k] : '');
+          if (j - i === 1) { out.push(tr0(cand, depth + 1) + seps[j - 1]); break; }
+          const [hit, clean] = match(cand.trim(), depth);
+          if (clean) { out.push(hit + seps[j - 1]); break; }
+        }
+        i = j;
+      }
+      return out.join('');
+    }
+    // Không khớp nguyên câu: tách theo cấu trúc (đầu dòng Markdown, đuôi chú thích, ô bảng, câu, vế, danh sách, ngoặc)
+    function segment(core, depth) {
+      const m = MD.exec(core);
+      if (m && m[1] && m[2]) return m[1] + tr0(m[2], depth + 1) + m[3];
+      const sm = SUFFIX.exec(core);
+      if (sm && sm[1].trim()) return tr0(sm[1], depth + 1) + tr0(sm[2], depth + 1);
+      if (core.startsWith('|') && core.endsWith('|') && core.split('|').length - 1 >= 3) {
+        return '|' + core.slice(1, -1).split('|').map((c) => tr0(c, depth + 1)).join('|') + '|';
+      }
+      let out = spans(core, depth);
+      if (out === null) { const parts = core.split(COMMA); out = parts.length > 1 ? parts.map((p) => tr0(p, depth + 1)).join(', ') : core; }
+      if (VI.test(out)) out = out.replace(/\(([^()]*)\)/g, (mm, inner) => { const t = tr0(inner, depth + 1); return '(' + (VI.test(t) ? inner : t) + ')'; });
+      return out;
+    }
+    const cache = new Map();
+    function tr(text) {
+      if (typeof text !== 'string' || !VI.test(text)) return text;
+      if (cache.has(text)) return cache.get(text);
+      const out = tr0(text, 0);
+      if (cache.size > 5000) cache.clear();
+      cache.set(text, out);
+      return out;
+    }
+    function code(text, status) {
+      if (typeof text === 'string' && text.trim()) {
+        const core = text.trim();
+        const tail = /\((E_[A-Z0-9_]+)\)$/.exec(core);   // thông báo đã kèm mã
+        if (tail) return tail[1];
+        if (codes.has(core)) return codes.get(core);
+        for (const t of templates) if (t.code && t.words.every((w) => core.includes(w)) && t.rx.test(core)) return t.code;
+        for (const part of core.split(SENT)) if (codes.has(part.trim())) return codes.get(part.trim());
+      }
+      return DEFAULT_CODES[status || 500] || `E_HTTP_${status}`;
+    }
+    const withCode = (msg, c) => (c && !String(msg).includes(c) ? `${msg} (${c})` : String(msg));
+    return { tr, code, withCode, hasVietnamese: (s) => VI.test(s || '') };
+  }
+// </i18n-catalog>
+const I18N = makeI18n(I18N_DATA);
+let LANG = 'vi';
+const T = (s) => (LANG === 'en' ? I18N.tr(s) : s);
+const NATIVE_HTML = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+const NATIVE_TEXT = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+// Bản gốc (tiếng Việt) của các khối tĩnh, để đổi ngôn ngữ qua lại không phải mở lại app
+const ORIGINAL = [...document.body.children].filter((e) => e.tagName !== 'SCRIPT').map((e) => [e.id || null, e.outerHTML]);
+function translateTree(node) {
+  if (LANG !== 'en' || !node) return;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) texts.push(walker.currentNode);
+  for (const tn of texts) { const v = I18N.tr(tn.nodeValue); if (v !== tn.nodeValue) tn.nodeValue = v; }
+  if (node.querySelectorAll) node.querySelectorAll('[title],[placeholder],[aria-label]').forEach((el) => {
+    for (const a of ['title', 'placeholder', 'aria-label']) { const v = el.getAttribute(a); if (v) { const t = I18N.tr(v); if (t !== v) el.setAttribute(a, t); } }
+  });
+}
+// Mọi chữ đặt vào trang (innerHTML, textContent, alert, confirm) đi qua bộ dịch khi chọn English
+Object.defineProperty(Element.prototype, 'innerHTML', { configurable: true, get() { return NATIVE_HTML.get.call(this); },
+  set(v) { NATIVE_HTML.set.call(this, LANG === 'en' ? I18N.tr(String(v)) : v); translateTree(this); } });
+Object.defineProperty(Node.prototype, 'textContent', { configurable: true, get() { return NATIVE_TEXT.get.call(this); },
+  set(v) { NATIVE_TEXT.set.call(this, LANG === 'en' && typeof v === 'string' ? I18N.tr(v) : v); } });
+{ const a = window.alert.bind(window), c = window.confirm.bind(window);
+  window.alert = (m) => a(T(String(m))); window.confirm = (m) => c(T(String(m))); }
+function applyLang() {
+  document.documentElement.lang = LANG;
+  translateTree(document.body);
+  const sel = document.getElementById('uiLang'); if (sel) sel.value = LANG;
+}
+async function initLang() { try { LANG = (await api().ui_lang()) === 'en' ? 'en' : 'vi'; } catch (e) { LANG = 'vi'; } applyLang(); }
+async function setLang(v) {
+  await api().set_setting('lang', v);
+  LANG = v === 'en' ? 'en' : 'vi';
+  const wizardOpen = !document.getElementById('wizard').classList.contains('hidden');
+  for (const [id, html] of ORIGINAL) {             // dựng lại khối tĩnh từ bản gốc rồi dịch theo ngôn ngữ mới
+    const old = id && document.getElementById(id);
+    if (!old) continue;
+    const tpl = document.createElement('template');
+    NATIVE_HTML.set.call(tpl, html);
+    old.replaceWith(tpl.content.firstElementChild);
+  }
+  applyLang();
+  await refresh();
+  // dữ liệu từ app cũng lấy lại theo ngôn ngữ mới
+  if (SCAN) SCAN = await api().scan(false);
+  if (U) U = await api().check_update(false);
+  if (wizardOpen) { show('wizard'); go(step); }
+  else { show('dash'); if (SCAN) renderDash(); if (U) renderUpdate(); }
+  if (typeof LAN !== 'undefined' && LAN) await loadLan();
+}
 const api = () => window.pywebview.api;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -557,6 +794,7 @@ async function closeNews() { $('newsModal').classList.add('hidden'); await api()
 async function whatsNewAll() { showNews('Nhật ký thay đổi', await api().changelog_all()); }
 
 window.addEventListener('pywebviewready', async () => {
+  await initLang();
   await refresh();
   if (S.setup_mode || !S.components.ready) { show('wizard'); go(1); }
   else {

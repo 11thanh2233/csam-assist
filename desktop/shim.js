@@ -79,6 +79,7 @@
   };
   window.GM_info = { script: { name: 'SAM3 CVAT Assist', version: boot.version }, scriptHandler: 'SAM3 Assist Desktop' };
   // Nút "SAM3" ở góc trái: thêm lệnh mở bảng điều khiển của app (cập nhật, thành phần, job gần đây).
-  setTimeout(function () { window.GM_registerMenuCommand('Bảng điều khiển của app', function () { whenReady(function (a) { a.open_control(); }); }); }, 0);
+  var menuName = boot.lang === 'en' ? 'App control panel' : 'Bảng điều khiển của app';
+  setTimeout(function () { window.GM_registerMenuCommand(menuName, function () { whenReady(function (a) { a.open_control(); }); }); }, 0);
   window.__sam3ShimReady = true;
 })();

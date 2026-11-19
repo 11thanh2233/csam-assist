@@ -20,6 +20,7 @@ import zipfile
 from typing import Callable, Optional
 from xml.etree import ElementTree as ET
 
+from ..i18n import tr
 from .library import norm
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -462,7 +463,7 @@ def llm_enrich(llm, markdown: str, analysis: dict) -> list[str]:
            "Trả về JSON: {\"labels\": [{\"name\": tên đúng như guideline, \"shape\": rectangle|polygon|polyline|mask|skeleton|points, "
            "\"prompts\": [1-3 cụm tiếng Anh cho SAM3, rỗng nếu label chỉ suy ra được từ label khác], "
            "\"definition\": định nghĩa ngắn bằng tiếng Việt theo guideline}]}. Giữ nguyên tên label của guideline, thêm label tool bỏ sót.")
-    data = parse_json(llm.complete(LLM_SYSTEM, ask, max_tokens=4000))
+    data = parse_json(llm.complete(tr(LLM_SYSTEM), tr(ask), max_tokens=4000))
     notes = []
     by_name = {norm(l["name"]): l for l in analysis["labels"]}
     for item in (data.get("labels") if isinstance(data, dict) else None) or []:

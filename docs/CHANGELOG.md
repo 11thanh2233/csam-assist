@@ -3,6 +3,24 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.8.1 (2026-11-20)
+
+Chi tiết từng mục, cách test và lỗi đã sửa ở `docs/CHECKLIST_0.8.1.md`.
+
+- **Giao diện tiếng Anh đầy đủ.** Chọn English ở tab Cài đặt của panel, ở góc trên bảng điều khiển của app, hoặc ngay
+  khi mở bộ cài. Một lựa chọn dùng chung cho cả panel, bảng điều khiển, khay hệ thống, thông báo và "Có gì mới".
+  - Dịch toàn bộ: panel, bảng điều khiển, bộ cài, thông báo của backend, tên profile, trang duyệt guideline.
+  - Bản nháp guideline và câu hỏi gửi LLM viết theo ngôn ngữ đã chọn.
+- **Mã lỗi cố định.** Mỗi lỗi kèm một mã kỹ thuật (ví dụ `E_BACKEND_UNREACHABLE`, `E_HF_NOT_APPROVED`, `E_GPU_OOM`),
+  giống nhau ở mọi ngôn ngữ, để tra cứu và báo lỗi dễ hơn.
+- **Nhật ký luôn bằng tiếng Anh kỹ thuật**, kể cả khi giao diện là tiếng Việt; gói báo lỗi cũng vậy.
+- **Bấm điểm dùng SAM 3 Tracker.** Model điểm riêng của SAM 3, nằm sẵn trong trọng số đã tải, không cần tải thêm.
+  - Chỉ nạp khi bạn bấm điểm, tự nhả sau 5 phút không dùng.
+  - Thiếu VRAM hoặc lỗi thì tự quay về cách cũ.
+- **Chuẩn bị ký số bộ cài:** quy trình build hỗ trợ SignPath và chứng chỉ PFX, hướng dẫn ở `docs/SIGNING.md`.
+- **Cho người phát triển:** chuỗi tiếng Việt mới trong mã mà chưa có bản dịch thì test báo lỗi
+  (`scripts/i18n_extract.py`, `scripts/i18n_build.py`).
+
 ## 0.8.0 (2026-11-20)
 
 37 cải tiến; chi tiết từng mục, cách test và lỗi đã sửa ở `docs/CHECKLIST_0.8.0.md`.

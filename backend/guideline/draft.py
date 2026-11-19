@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..i18n import tr
 from ..profiles import match_skeletons
 from .library import Library, norm
 from .survey import NOT_REAL
@@ -92,7 +93,7 @@ def build_questions(summary: dict, labels: list[dict], job_mode: str, lib: Libra
         if remembered and any(o[0] == remembered["answer"] for o in options):
             recommended = remembered["answer"]
             origin = "guideline mẫu" if remembered["id"].startswith("seed-") else "lần trước bạn đã chốt"
-            source = f"Theo {origin}: {remembered['text']}"
+            source = f"Căn cứ {origin}: {remembered['text']}"
             remembered_id = remembered["id"]
         else:
             remembered_id = None
@@ -650,7 +651,8 @@ def render_markdown(run: dict, lib: Library) -> tuple[str, list[dict]]:
             w.text(f"- `{lesson['id']}` ({lesson['source']}): {lesson['text']}")
         for text in w.dropped:
             w.text(f"- Đã bỏ theo lần trước: {text}")
-    return "\n".join(w.lines).strip() + "\n", list(w.used.values())
+    # Bản nháp viết theo ngôn ngữ của người soạn (lưu cùng lượt soạn, để so chỗ sửa khi duyệt cho đúng)
+    return tr("\n".join(w.lines).strip(), run.get("lang", "vi")) + "\n", list(w.used.values())
 
 
 # -------------------------------------------------------------- label ------

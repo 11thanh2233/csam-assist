@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from backend import __version__
+from backend.i18n import install_log_filter, norm_lang, tr
 
 from .backend_proc import BackendProcess
 from .bridge import Bridge, Store, origin_of
@@ -65,6 +66,7 @@ class DesktopApp:
         self.paths = Paths().ensure()
         logging.basicConfig(filename=self.paths.logs / "app.log", level=logging.INFO, encoding="utf-8",
                             format="%(asctime)s %(levelname)s %(message)s")
+        install_log_filter()                         # app.log luôn là tiếng Anh kỹ thuật
         self.comps = Components(self.paths)
         self.backend = BackendProcess(self.comps)
         self.setup_mode, self.start_hidden = setup_mode, tray
@@ -86,7 +88,7 @@ class DesktopApp:
         straight = (not self.setup_mode and not self.start_hidden and (self.comps.status()["ready"] or self.backend.remote)
                     and self.api._settings.data.get("start_mode", "cvat") == "cvat" and self.api._settings.data["sites"])
         self.control = webview.create_window(
-            "SAM3 CVAT Assist" + (" - Cài đặt" if self.setup_mode else ""), html=html, js_api=self.api,
+            "SAM3 CVAT Assist" + (tr(" - Cài đặt", self.api._lang()) if self.setup_mode else ""), html=html, js_api=self.api,
             width=980, height=760, min_size=(760, 560), hidden=self.start_hidden or bool(straight))
         if straight:
             st = self.api._settings.data
@@ -144,7 +146,8 @@ class DesktopApp:
             except Exception:  # noqa: BLE001 - cửa sổ đã bị đóng
                 self.cvat_window = None
         bridge = Bridge(self.store, self.backend, self.api._settings.origins, self._cvat_url, set_clipboard,
-                        notifier=self.notify, show_control=self.show_control)
+                        notifier=self.notify, show_control=self.show_control,
+                        lang=self.api._lang, set_lang=lambda v: self.api.set_setting("lang", v))
         self.bridge = bridge
         self.cvat_window = self.webview.create_window("CVAT - SAM3 Assist", url=origin, js_api=bridge,
                                                       width=1500, height=950, min_size=(900, 600))
@@ -185,7 +188,7 @@ class DesktopApp:
         icon = self.tray_icon
         try:
             if icon is not None and getattr(icon, "HAS_NOTIFICATION", True):
-                icon.notify(text, title)
+                icon.notify(tr(text, self.api._lang()), tr(title, self.api._lang()))
         except Exception:  # noqa: BLE001
             log.info("Không hiện được thông báo: %s - %s", title, text)
 
@@ -198,11 +201,12 @@ class DesktopApp:
             return
         icon_path = self.paths.app / "desktop" / "ui" / "icon.png"
         image = Image.open(icon_path) if icon_path.exists() else Image.new("RGB", (64, 64), (37, 99, 235))
+        lang = self.api._lang()
         menu = pystray.Menu(
-            pystray.MenuItem("Mở bảng điều khiển", lambda: self.show_control(), default=True),
-            pystray.MenuItem("Mở CVAT", lambda: self.open_cvat(self.api._settings.data.get("last_url")
+            pystray.MenuItem(tr("Mở bảng điều khiển", lang), lambda: self.show_control(), default=True),
+            pystray.MenuItem(tr("Mở CVAT", lang), lambda: self.open_cvat(self.api._settings.data.get("last_url")
                                                               or (self.api._settings.data["sites"] or [{"url": ""}])[0]["url"])),
-            pystray.MenuItem("Thoát", lambda: self.quit()),
+            pystray.MenuItem(tr("Thoát", lang), lambda: self.quit()),
         )
         self.tray_icon = pystray.Icon("sam3-cvat-assist", image, "SAM3 CVAT Assist", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
@@ -220,16 +224,41 @@ class DesktopApp:
                     pass
 
 
+def _saved_lang() -> str:
+    """Ngôn ngữ đã chọn (đọc thẳng file cài đặt, dùng khi app chưa mở cửa sổ)."""
+    try:
+        import json
+        return json.loads(Paths().settings.read_text(encoding="utf-8")).get("lang", "vi")
+    except Exception:  # noqa: BLE001
+        return "vi"
+
+
+def _save_lang(lang: str) -> None:
+    """Ghi ngôn ngữ vào cài đặt của app (panel và bảng điều khiển dùng chung)."""
+    import json
+    path = Paths().ensure().settings
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    data["lang"] = lang
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="SAM3 Assist")
     ap.add_argument("--setup", action="store_true")
     ap.add_argument("--tray", action="store_true")
+    ap.add_argument("--lang", choices=("vi", "en"))      # ngôn ngữ chọn trong bộ cài
     args = ap.parse_args(argv)
+    if args.lang:
+        _save_lang(args.lang)
     if not args.setup and not single_instance():
         if sys.platform == "win32":
             import ctypes
 
-            ctypes.windll.user32.MessageBoxW(None, "SAM3 CVAT Assist đang chạy. Bấm vào biểu tượng ở khay hệ thống để mở.",
+            lang = norm_lang(_saved_lang())
+            ctypes.windll.user32.MessageBoxW(None, tr("SAM3 CVAT Assist đang chạy. Bấm vào biểu tượng ở khay hệ thống để mở.", lang),
                                              "SAM3 CVAT Assist", 0x40)
         return 0
     DesktopApp(setup_mode=args.setup, tray=args.tray).run()

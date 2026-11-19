@@ -295,7 +295,8 @@ def test_bridge_only_allowed_pages_and_backend(tmp_path):
     br.gm_set("undo", None)
     boot = br._boot_script("/*shim*/", "/*userscript*/", "0.6.0")
     data = json.loads(boot.split("window.__sam3Boot = ", 1)[1].split(";\n", 1)[0])
-    assert data["values"]["cfg"] == {"backendUrl": be.base_url, "apiKey": "", "lane": "x"}, "backend của app, key không nằm trong trang"
+    assert data["values"]["cfg"] == {"backendUrl": be.base_url, "apiKey": "", "lane": "x", "lang": "vi"}, \
+        "backend của app, key không nằm trong trang, ngôn ngữ chung với app"
     be.state = "missing"
     r = br.gm_request({"method": "POST", "url": "http://127.0.0.1:8765/propose"})
     assert r["status"] == 503 and "Chưa có Trọng số SAM 3" in json.loads(r["responseText"])["detail"]

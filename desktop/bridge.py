@@ -15,6 +15,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Callable, Optional
 
+from backend.i18n import error_code, tr
+
 MAX_VALUE = 16_000_000
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
@@ -84,8 +86,10 @@ class Bridge:
 
     def __init__(self, store: Store, backend, allowed_origins: Callable[[], set], current_url: Callable[[], str],
                  clipboard: Optional[Callable[[str], None]] = None, notifier: Optional[Callable[[str, str], None]] = None,
-                 show_control: Optional[Callable[[], None]] = None):
+                 show_control: Optional[Callable[[], None]] = None, lang: Optional[Callable[[], str]] = None,
+                 set_lang: Optional[Callable[[str], object]] = None):
         self._store, self._backend = store, backend
+        self._lang, self._set_lang = lang or (lambda: "vi"), set_lang
         self._allowed, self._current_url, self._clip = allowed_origins, current_url, clipboard
         self._notifier, self._show_control = notifier, show_control
 
@@ -104,9 +108,16 @@ class Bridge:
         return path + (f"?{u.query}" if u.query else "")
 
     # ---------------------------------------------------------- page API ---
+    def _t(self, text: str) -> str:
+        return tr(text, self._lang())
+
     def gm_set(self, key, value):
         self._check_page()
         self._store.set(key, value)
+        # Đổi ngôn ngữ trong panel thì bảng điều khiển, khay và thông báo của app đổi theo
+        if key == "cfg" and isinstance(value, dict) and self._set_lang and value.get("lang") in ("vi", "en") \
+                and value.get("lang") != self._lang():
+            self._set_lang(value["lang"])
         return True
 
     def gm_request(self, opts):
@@ -119,12 +130,15 @@ class Bridge:
                 raise PermissionError("Phương thức không được phép.")
             path = self._backend_path(str(opts.get("url") or ""))
         except PermissionError as exc:
-            return {"error": "denied", "status": 0, "responseText": json.dumps({"detail": str(exc)}, ensure_ascii=False)}
+            detail = str(exc)
+            return {"error": "denied", "status": 0, "responseText": json.dumps(
+                {"detail": self._t(detail), "code": error_code(detail, 403)}, ensure_ascii=False)}
         info = self._backend.info()
         if info["state"] != "running":
             msg = info.get("message") or "Backend chưa chạy."
             return {"status": 503, "statusText": "Service Unavailable",
-                    "responseText": json.dumps({"detail": f"{msg} (mở bảng điều khiển SAM3 Assist)"}, ensure_ascii=False)}
+                    "responseText": json.dumps({"detail": self._t(f"{msg} (mở bảng điều khiển SAM3 Assist)"),
+                                                "code": "E_BACKEND_NOT_RUNNING"}, ensure_ascii=False)}
         data = opts.get("data")
         timeout = min(max(float(opts.get("timeout") or 300000) / 1000, 5), 900)
         try:
@@ -163,6 +177,8 @@ class Bridge:
         cfg = dict(boot["values"].get("cfg") or {})
         cfg["backendUrl"] = page_url                       # backend của app (cầu nối chuyển tiếp), cổng có thể khác 8765
         cfg["apiKey"] = ""                                 # key do app thêm, không lưu trong trang
+        cfg["lang"] = self._lang()                         # một ngôn ngữ chung cho panel và app
+        boot["lang"] = cfg["lang"]
         boot["values"]["cfg"] = cfg
         return ("window.__sam3Boot = " + json.dumps(boot, ensure_ascii=False) + ";\n" + shim + "\n"
                 "if (window.__sam3ShimReady && !window.__sam3ScriptRan) { window.__sam3ScriptRan = true;\n"

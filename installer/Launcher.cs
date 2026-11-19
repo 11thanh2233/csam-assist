@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 static class Launcher
 {
-    static readonly string[] Allowed = { "--setup", "--tray" };
+    static readonly string[] Allowed = { "--setup", "--tray", "--lang=vi", "--lang=en" };
 
     [STAThread]
     static int Main(string[] args)

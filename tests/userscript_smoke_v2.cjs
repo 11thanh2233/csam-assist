@@ -303,7 +303,7 @@ async function guidelineScenario(frameBytes) {
   assert.ok(win.document.querySelector('svg rect'), 'khoanh vùng ví dụ trên ảnh');
 
   button('Mở bản nháp').click();
-  assert.match(opened[0], new RegExp(`^${BACKEND}/guideline/run/[\\w-]+\\?key=smoke-key$`));
+  assert.match(opened[0], new RegExp(`^${BACKEND}/guideline/run/[\\w-]+\\?key=smoke-key&lang=vi$`));
   const pageHtml = await (await fetch(opened[0])).text();
   assert.match(pageHtml, /Duyệt và lưu/);
 

@@ -34,7 +34,7 @@ jobs:
       - name: Cài thư viện
         run: |
           python -m pip install -r requirements-dev.txt
-          npm install --no-save jsdom
+          npm install --no-save jsdom acorn@8 acorn-walk@8
       - name: Test backend + desktop
         run: python -m pytest -q
       - name: Test userscript và shim desktop (trình duyệt giả)
@@ -44,6 +44,7 @@ jobs:
           node tests/desktop_shim_smoke.cjs
           node tests/desktop_control_smoke.cjs
           node tests/userscript_smoke_v3.cjs
+          node tests/userscript_i18n_smoke.cjs
 
   crossplatform:
     # Bản desktop chạy từ mã nguồn trên macOS / Linux (chưa có bộ cài .dmg / .AppImage)
@@ -273,7 +274,11 @@ jobs:
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
           $section = & build\runtime\python.exe -I -X utf8 -c "import sys; from desktop.changelog import section; print(section(r'docs/CHANGELOG.md', sys.argv[1]))" $env:VERSION
           if (-not $section) { throw "docs/CHANGELOG.md chưa có mục ## $env:VERSION" }
-          $notes = ($section -join "`n") + "`n`nHướng dẫn cài: docs/DESKTOP.md`n`nSHA-256 của bộ cài: ``$hash``"
+          $sectionEn = & build\runtime\python.exe -I -X utf8 -c "import sys; from desktop.changelog import section; print(section(r'docs/CHANGELOG.en.md', sys.argv[1]))" $env:VERSION
+          if (-not $sectionEn) { throw "docs/CHANGELOG.en.md chưa có mục ## $env:VERSION" }
+          # Hai phần: tiếng Việt, rồi tiếng Anh sau dòng <!-- en --> (app hiện phần đúng ngôn ngữ giao diện)
+          $notes = ($section -join "`n") + "`n`nHướng dẫn cài: docs/DESKTOP.md`n`nSHA-256 của bộ cài: ``$hash``" +
+                   "`n`n<!-- en -->`n" + ($sectionEn -join "`n") + "`n`nInstall guide: docs/DESKTOP.md`n`nInstaller SHA-256: ``$hash``"
           Set-Content -Path notes.md -Value $notes -Encoding utf8
           gh release create $env:GITHUB_REF_NAME $exe build\app\desktop\manifest.lock.json build\build-info.json `
             --title "SAM3 CVAT Assist $env:VERSION" --notes-file notes.md

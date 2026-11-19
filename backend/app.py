@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from xml.etree.ElementTree import ParseError as ET_ParseError
+import json
 import logging
 import re
 import shutil
@@ -17,7 +18,7 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from . import __version__, datatools, keypoints, pipeline, qa, tracking
@@ -28,6 +29,7 @@ from .engines.pose import LazyEngine, create_body_pose, create_face
 from .guideline import llm as guideline_llm
 from .guideline.library import Library
 from .guideline.page import PAGE as GUIDELINE_PAGE
+from .i18n import error_code, install_log_filter, set_lang, tr, translate_obj, translate_page, _lang
 from .guideline.service import GuidelineService
 from .learning import Learner, apply_learned
 from .profiles import ProfileStore, resolve_labels
@@ -35,6 +37,7 @@ from .runtime_tools import EngineProxy, IdleWatcher, gpu_info, warmup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sam3-assist")
+install_log_filter()                     # nhật ký luôn ghi tiếng Anh kỹ thuật, dù giao diện đang là tiếng Việt
 
 
 class Runtime:
@@ -109,16 +112,45 @@ async def local_host_only(request, call_next):
         if host not in allowed:
             from fastapi.responses import PlainTextResponse
 
-            return PlainTextResponse(f"Host '{host}' không được phép. Mở backend bằng http://127.0.0.1:{settings.port} "
-                                     "hoặc đặt SAM3_ALLOWED_HOSTS.", status_code=400)
+            return PlainTextResponse(tr(f"Host '{host}' không được phép. Mở backend bằng http://127.0.0.1:{settings.port} "
+                                        "hoặc đặt SAM3_ALLOWED_HOSTS."), status_code=400)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def language(request, call_next):
+    """Ngôn ngữ theo header X-Lang của panel (hoặc ?lang= cho trang mở trong trình duyệt).
+
+    - Phản hồi JSON được dịch sang ngôn ngữ đó (thông báo, cảnh báo, cờ của đề xuất).
+    - Phản hồi lỗi luôn kèm "code": mã kỹ thuật cố định (E_...), giống nhau ở mọi ngôn ngữ.
+    """
+    token = set_lang(request.headers.get("x-lang") or request.query_params.get("lang"))
+    try:
+        response = await call_next(request)
+        lang = _lang.get()
+        ctype = response.headers.get("content-type", "")
+        if not ctype.startswith("application/json") or (lang != "en" and response.status_code < 400):
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return Response(content=body, status_code=response.status_code, headers=dict(response.headers))
+        if response.status_code >= 400 and isinstance(data, dict) and "code" not in data:
+            data["code"] = error_code(data.get("detail") if isinstance(data.get("detail"), str) else "", response.status_code)
+        data = translate_obj(data, lang)
+        headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+        return JSONResponse(content=data, status_code=response.status_code, headers=headers)
+    finally:
+        _lang.reset(token)
 
 
 @app.exception_handler(Exception)
 async def unhandled_error(_: Request, exc: Exception) -> JSONResponse:
     """Lỗi chưa lường trước: trả lý do về panel thay vì chỉ một mã 500 trống."""
     log.exception("Lỗi khi xử lý yêu cầu")
-    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {str(exc)[:400]}"})
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {str(exc)[:400]}",
+                                                  "code": error_code(str(exc), 500)})
 
 
 def require_key(x_api_key: str = Header(default="")) -> None:
@@ -1048,7 +1080,7 @@ def guideline_lesson_status(lesson_id: str, req: LessonStatusReq) -> dict:
 
 @app.get("/guideline/run/{run_id}", response_class=HTMLResponse)
 def guideline_page(run_id: str) -> str:
-    return GUIDELINE_PAGE
+    return translate_page(GUIDELINE_PAGE)
 
 
 @app.get("/guideline/run/{run_id}/data", dependencies=[Depends(require_key)])
@@ -1147,10 +1179,10 @@ def userscript() -> PlainTextResponse:
 def index() -> str:
     engine = getattr(rt.engine, "name", "?")
     device = getattr(rt.engine, "device", "?")
-    return f"""<!doctype html><html lang="vi"><meta charset="utf-8"><title>SAM3 CVAT Assist</title>
+    return tr(f"""<!doctype html><html lang="vi"><meta charset="utf-8"><title>SAM3 CVAT Assist</title>
 <body style="font-family:system-ui;max-width:640px;margin:48px auto;padding:0 16px;line-height:1.6">
 <h1>SAM3 CVAT Assist</h1>
 <p>Backend đang chạy. Engine: <b>{engine}</b>, thiết bị: <b>{device}</b>, phiên bản {__version__}.</p>
 <p><a href="/sam3-cvat-assist.user.js">Cài userscript vào Tampermonkey</a></p>
 <p>Sau khi cài, mở một job trên CVAT. Panel "SAM3 Assist" hiện ở góc phải màn hình.</p>
-</body></html>"""
+</body></html>""")

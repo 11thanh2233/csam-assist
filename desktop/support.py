@@ -16,6 +16,8 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
+from backend.i18n import tr
+
 from .paths import Paths
 
 SECRET_RE = re.compile(r"(hf_[A-Za-z0-9]{8,}|(?<=X-API-Key: )\S+|(?<=api_key=)\S+|(?<=\"key\": \")[^\"]+)")
@@ -61,8 +63,9 @@ def report_bundle(paths: Paths, extra: Optional[dict] = None, out_dir: Optional[
         z.writestr("settings.json", redact(json.dumps(_settings_public(paths), ensure_ascii=False, indent=2)))
         if paths.state.exists():
             z.writestr("components.json", paths.state.read_text(encoding="utf-8"))
-        z.writestr("README.txt", "Gói báo lỗi của SAM3 CVAT Assist: nhật ký, thông tin máy, danh sách thành phần.\n"
-                                 "Không chứa token Hugging Face, API key, cookie đăng nhập CVAT hay ảnh.\n")
+        # Gói báo lỗi viết bằng tiếng Anh kỹ thuật (như file nhật ký) để ai hỗ trợ cũng đọc được
+        z.writestr("README.txt", tr("Gói báo lỗi của SAM3 CVAT Assist: nhật ký, thông tin máy, danh sách thành phần.\n"
+                                    "Không chứa token Hugging Face, API key, cookie đăng nhập CVAT hay ảnh.\n", "en"))
     return out
 
 

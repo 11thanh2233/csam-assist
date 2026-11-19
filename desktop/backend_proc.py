@@ -18,6 +18,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from backend.i18n import tr
+
 from .components import Components
 
 _local = urllib.request.build_opener(urllib.request.ProxyHandler({}))     # không đi qua proxy hệ thống
@@ -118,7 +120,7 @@ class BackendProcess:
             if log.exists() and log.stat().st_size > 5_000_000:
                 log.replace(log.with_suffix(".log.1"))
             self._log_file = open(log, "a", encoding="utf-8", errors="replace")
-            self._log_file.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} khởi động backend, cổng {self.port} =====\n")
+            self._log_file.write(tr(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} khởi động backend, cổng {self.port} =====\n", "en"))
             self._log_file.flush()
             env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "SAM3_", "HF_", "TRANSFORMERS_"))}
             env.update(self.comps.backend_env())

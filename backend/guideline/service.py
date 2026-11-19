@@ -14,6 +14,7 @@ import numpy as np
 import yaml
 
 from ..engines import Engine
+from ..i18n import get_lang, tr
 from . import draft as D
 from .library import Library, norm
 from .llm import LLM, LLMError, parse_json
@@ -72,6 +73,7 @@ class GuidelineService:
             "job": job, "labels": [{"id": l.get("id"), "name": l["name"], "type": l.get("type") or "any"} for l in labels],
             "summary": None, "questions": [], "answers": {}, "findings": [], "llm": {}, "warnings": [],
             "markdown": "", "approved": None, "lessons_used": [], "send_images": bool(send_images),
+            "lang": get_lang(),                       # bản nháp và câu hỏi gửi LLM theo ngôn ngữ người soạn
         }
         with self.lock:
             self.live[run_id] = {"survey": Survey(concepts), "send_images": bool(send_images), "llm_discovered": False}
@@ -202,11 +204,11 @@ class GuidelineService:
             "ca_kho": [{"code": c["code"], "frame": c["frame"], "mo_ta": c["text"]} for c in s["cases"][:16]],
         }
         lessons = [l["text"] for l in self.lib.recall([D.task_of(run), "any"])[:20]]
-        return (f"Mục đích bộ dữ liệu: {run.get('purpose') or '(người dùng chưa nêu)'}\n"
+        return tr(f"Mục đích bộ dữ liệu: {run.get('purpose') or '(người dùng chưa nêu)'}\n"
                 f"Bài toán: {D.TASKS[D.task_of(run)]}\n"
                 f"Label của task: {', '.join(l['name'] + ' (' + l['type'] + ')' for l in run['labels']) or '(chưa có)'}\n"
                 f"Số liệu khảo sát (SAM3 đếm, có thể sót/nhầm): {json.dumps(compact, ensure_ascii=False)}\n"
-                f"Bài học từ các lần trước: {json.dumps(lessons, ensure_ascii=False)}")
+                f"Bài học từ các lần trước: {json.dumps(lessons, ensure_ascii=False)}", run.get("lang", "vi"))
 
     def _enrich(self, run: dict) -> None:
         """LLM viết phần tool không tự viết được: định nghĩa class mới, quy tắc cho cặp dễ nhầm, luật bổ sung."""
@@ -226,6 +228,7 @@ class GuidelineService:
                f"3. Tối đa 6 luật bổ sung mà bộ ảnh này cần nhưng số liệu cho thấy còn thiếu; mỗi luật thuộc một trong các mục: {json.dumps(SECTIONS, ensure_ascii=False)}.\n"
                'Trả về JSON: {"definitions": {"class": "..."}, "pairs": [{"a": "...", "b": "...", "rule": "..."}], '
                '"extra_rules": [{"section": "...", "text": "..."}]}')
+        system, ask = tr(system, run.get("lang", "vi")), tr(ask, run.get("lang", "vi"))
         images = []
         if run.get("send_images"):
             frames = sorted({e["frame"] for c in run["summary"]["concepts"][:8] for e in c.get("examples", [])})[:6]
@@ -249,13 +252,15 @@ class GuidelineService:
         if len(images) < 2:
             return
         guideline, _ = D.render_markdown(run, self.lib)
-        guideline = re.sub(r"\s*<!--r:[^>]+-->", "", guideline.split("## Phụ lục A")[0])
+        guideline = re.sub(r"\s*<!--r:[^>]+-->", "", re.split(r"## (?:Phụ lục|Appendix) A", guideline)[0])
         ask = (f"GUIDELINE:\n{guideline}\n\nCó {len(images)} ảnh ca khó, theo thứ tự 1..{len(images)}; đối tượng cần xét nằm trong khung đỏ. "
                "Với mỗi ảnh, gán nhãn CHỈ dựa vào guideline trên. "
                'Trả về JSON: [{"case": 1, "label": "<tên class> | không gán | không quyết được", "rule": "<luật đã dùng, trích ngắn>", '
                '"missing": "<điều guideline chưa nói mà bạn cần, hoặc rỗng>"}]')
         personas = ["Bạn là annotator làm đúng từng chữ của guideline, không suy diễn thêm. Chỉ trả lời bằng JSON.",
                     "Bạn là annotator ưu tiên không bỏ sót đối tượng; khi guideline không nói rõ, bạn chọn cách bạn cho là hợp lý nhất. Chỉ trả lời bằng JSON."]
+        lang = run.get("lang", "vi")
+        ask, personas = tr(ask, lang), [tr(p, lang) for p in personas]
         try:
             answers = []
             for persona in personas:
@@ -271,7 +276,7 @@ class GuidelineService:
                 continue
             la, lb = norm(a.get("label", "")), norm(b.get("label", ""))
             missing = "; ".join(m for m in (str(a.get("missing") or ""), str(b.get("missing") or "")) if m.strip())
-            if la != lb or "không quyết được" in (la, lb):
+            if la != lb or {"không quyết được", "cannot decide"} & {la, lb}:
                 findings.append({
                     "code": "annotator_disagree", "question": None,
                     "examples": [{"frame": case["frame"], "bbox": case["bbox"]}],

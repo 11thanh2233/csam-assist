@@ -83,6 +83,23 @@ async function main() {
     await until(() => /bao-loi-.*\.zip/.test(doc.getElementById('supportMsg').textContent), 'tạo gói báo lỗi');
     assert.strictEqual(doc.getElementById('startMode').value, 'cvat');
     assert.strictEqual(doc.getElementById('idleMin').value, '15');
+    // 0.8.1: đổi sang English ngay trong bảng điều khiển, không còn chữ tiếng Việt; đổi lại thì về tiếng Việt
+    const VI = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
+    const leftovers = () => {
+      const texts = [];
+      const walker = doc.createTreeWalker(doc.body, win.NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) if (walker.currentNode.parentNode.tagName !== 'SCRIPT') texts.push(walker.currentNode.nodeValue);
+      doc.querySelectorAll('[title],[placeholder],[aria-label]').forEach((el) => ['title', 'placeholder', 'aria-label'].forEach((a) => el.getAttribute(a) && texts.push(el.getAttribute(a))));
+      return texts.map((t) => ['Tiếng Việt', 'Ngôn ngữ'].reduce((x, w) => x.split(w).join(''), t)).filter((t) => VI.test(t));
+    };
+    await win.setLang('en');
+    await until(() => /Recent jobs/.test(doc.body.textContent) && /key: |Share/.test(doc.body.textContent), 'giao diện English');
+    await sleep(600);
+    assert.strictEqual(doc.documentElement.lang, 'en');
+    assert.deepStrictEqual(leftovers(), [], 'bảng điều khiển English còn tiếng Việt');
+    assert.strictEqual((await call('ui_lang', [])), 'en', 'app nhớ ngôn ngữ');
+    await win.setLang('vi');
+    await until(() => /Job gần đây/.test(doc.body.textContent), 'về tiếng Việt');
     assert.deepStrictEqual(errors, [], 'không có lỗi JS: ' + errors.join('\n'));
     assert.deepStrictEqual(apiErrors, [], 'không có lỗi API: ' + apiErrors.join('\n'));
     console.log('DESKTOP CONTROL SMOKE: PASS');

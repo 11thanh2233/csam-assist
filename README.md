@@ -587,6 +587,13 @@ hình LLM trong `.env` (Claude API, hoặc model chạy trên máy qua Ollama/LM
 Địa chỉ backend, API key, tự gợi ý khi chuyển frame, tải lại trang sau khi ghi, hỏi lại trước khi
 ghi, độ đậm vùng tô. Ẩn/hiện panel: menu của Tampermonkey > *SAM3 Assist: hiện/ẩn panel*.
 
+**Ngôn ngữ / Language (từ bản 0.8.1).** Chọn *English* thì mọi chữ đổi sang tiếng Anh:
+- panel và thông báo của backend;
+- tên profile, trang duyệt guideline;
+- bản nháp guideline soạn từ lúc đó.
+
+Trong app desktop, lựa chọn này dùng chung với bảng điều khiển, khay hệ thống và thông báo Windows.
+
 ---
 
 ## 5. Không có GPU: chạy backend trên Google Colab
@@ -792,7 +799,23 @@ dạng `/tasks/<id>/jobs/<id>`; panel có bị ẩn không (menu Tampermonkey > 
 trong tab mới để thử. Tampermonkey có thể đã chặn tên miền: mở trang cấu hình script > *Settings* >
 *XHR Security*, thêm tên miền vào danh sách cho phép.
 
-**"Backend trả lỗi 401".** API key trên panel khác `SAM3_API_KEY` của backend.
+**Mã lỗi (từ bản 0.8.1).** Mỗi lỗi kèm một mã cố định ở cuối, ví dụ `(E_BACKEND_UNREACHABLE)`. Mã giống nhau dù
+giao diện tiếng Việt hay tiếng Anh, nên khi báo lỗi chỉ cần gửi mã. Mã hay gặp:
+
+| Mã | Nghĩa |
+|---|---|
+| `E_BACKEND_UNREACHABLE` | Không kết nối được backend |
+| `E_BACKEND_TIMEOUT` | Backend không phản hồi |
+| `E_AUTH` | Sai hoặc thiếu API key |
+| `E_HOST_NOT_ALLOWED` | Mở backend bằng địa chỉ không được phép |
+| `E_GPU_OOM` | Thiếu bộ nhớ GPU |
+| `E_HF_NOT_APPROVED` / `E_HF_PENDING` | Tài khoản Hugging Face chưa được Meta duyệt |
+| `E_COMPONENT_MISSING` | Thiếu thành phần, mở bảng điều khiển để tải |
+| `E_CVAT_HTTP` | CVAT trả lỗi |
+
+Nhật ký (`logs/*.log`) luôn viết bằng tiếng Anh kỹ thuật.
+
+**"Backend trả lỗi 401" (`E_AUTH`).** API key trên panel khác `SAM3_API_KEY` của backend.
 
 **"Backend trả lỗi 400: Host '…' không được phép".** Từ bản 0.4.4 backend chạy trên máy chỉ nhận request gửi
 tới `127.0.0.1` hoặc `localhost`, để trang web lạ không gọi được nó. Ở tab Cài đặt, đặt địa chỉ backend là
@@ -844,7 +867,17 @@ python -m pytest -q                      # hình học, luật guideline, QA, HT
 npm install jsdom                        # test đầu-cuối cho userscript với CVAT giả
 node tests/userscript_smoke.cjs         # job ảnh: gợi ý, ghi, kiểm tra, hoàn tác
 node tests/userscript_smoke_v2.cjs      # job skeleton, gợi ý cả job, theo dõi video, CVAT local, nạp guideline
+node tests/userscript_smoke_v3.cjs      # các tính năng thao tác nhanh của bản 0.8.0
+node tests/userscript_i18n_smoke.cjs    # panel tiếng Anh không còn chữ tiếng Việt
 ```
+
+**Thêm chữ hiện cho người dùng:**
+1. Viết tiếng Việt trong mã như bình thường.
+2. Chạy `python scripts/i18n_extract.py --missing` để lấy chuỗi chưa dịch. Cần `npm install acorn acorn-walk`.
+3. Thêm bản dịch vào `backend/i18n/en.json`. Thông báo lỗi thì thêm mã vào mục `codes`.
+4. Chạy `python scripts/i18n_build.py` để nhúng bộ dịch vào userscript và bảng điều khiển.
+
+Thiếu bản dịch thì test báo lỗi.
 
 ---
 
