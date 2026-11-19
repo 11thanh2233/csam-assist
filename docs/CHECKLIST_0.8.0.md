@@ -49,7 +49,7 @@ Tên các bộ test:
 | 29 | Giao diện tiếng Anh | 🟡 | ✅ smoke v3 | — | — |
 | 30 | macOS / Linux | 🟡 | ✅ CI ubuntu + macos: test desktop, chạy backend từ mã nguồn | — | — |
 | 31 | Chọn frame đáng làm trước | ✅ | ✅ test_v080 + smoke v3 | — | — |
-| 32 | Model riêng của dự án | 🟡 | ✅ test_v080 (dữ liệu, đánh giá) · CI Windows: huấn luyện thử trên CPU | — | — |
+| 32 | Model riêng của dự án | 🟡 | ✅ test_v080 + CI Windows huấn luyện thử trên CPU (xem ghi chú) | — | — |
 | 33 | Tìm frame bằng chữ | ✅ | ✅ test_v080 + smoke v3 · GPU thật: chưa | — | — |
 | 34 | Keyframe theo chuyển động | ✅ | ✅ test_v080 + smoke v3 | — | — |
 | 35 | Độ đồng thuận giữa hai người | ✅ | ✅ test_v080 + smoke v3 | — | — |
@@ -76,8 +76,13 @@ Tên các bộ test:
 - **28. Ký số:** cần chứng chỉ (SignPath Foundation miễn phí cho mã nguồn mở, hoặc mua). Có chứng chỉ thì bước ký tự chạy.
 - **29. Tiếng Anh:** phần chữ chính của panel đã dịch. Một số thông báo sâu, phần lớn đến từ backend, vẫn là tiếng Việt.
 - **30. macOS / Linux:** chạy từ mã nguồn, có test trên máy macOS/Linux của GitHub. Chưa có bộ cài `.dmg` / `.AppImage`.
-- **32. Model riêng:** huấn luyện và đánh giá chạy được (CI huấn luyện thử trên CPU). Tốt đến đâu chỉ biết khi
-  dùng dữ liệu thật của bạn.
+- **32. Model riêng:** huấn luyện, lưu, nạp lại, dự đoán và đánh giá đều chạy được: CI Windows huấn luyện thử
+  3 vòng trên CPU với 13 ảnh tổng hợp.
+  - Học từ đầu (không có trọng số khởi đầu) với chừng đó dữ liệu thì model chưa phát hiện được gì (0%), đúng như
+    dự kiến. Cơ chế "chỉ dùng class đạt chuẩn" vì thế giữ mọi class cho SAM3.
+  - Muốn model riêng có ích: dùng trọng số khởi đầu COCO (`SAM3_DETECTOR_BASE`) và vài trăm hộp mỗi class.
+
+**CI GitHub (Windows + Ubuntu + macOS): xanh toàn bộ** ở commit `fd8cd30`, bộ cài `SAM3-CVAT-Assist-Setup-0.8.0.exe` 137 MB.
 
 **Phần cần GPU thật** (SAM 3, khởi động nóng, nhả VRAM, đồng hồ GPU, tìm bằng chữ) đã kiểm bằng model giả lập.
 Lần chạy đầu trên máy bạn là lần kiểm cuối.
