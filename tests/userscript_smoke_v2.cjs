@@ -125,7 +125,12 @@ function openPage(opts, frameBytes) {
   win.GM_setValue('cfg', { backendUrl: BACKEND, apiKey: 'smoke-key', reloadAfterApply: false });
   win.eval(fs.readFileSync(path.join(ROOT, 'userscript', 'sam3-cvat-assist.user.js'), 'utf8'));
   const root = win.document.getElementById('sam3-cvat-assist').shadowRoot;
-  const button = (text) => [...root.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(text));
+  const TAB_NAMES = ['Gợi ý', 'Cả job', 'Kiểm tra', 'Guideline', 'Label', 'Tự học', 'Suggest', 'Whole job', 'Check', 'Labels', 'Learning'];
+  // 0.9.2: bỏ qua tiêu đề mục gập (cũng là nút) và quay lại từ Cài đặt khi cần bấm tab
+  const button = (text) => {
+    if (TAB_NAMES.includes(text) && root.querySelector('nav.back')) root.querySelector('nav.back button').click();
+    return [...root.querySelectorAll('button:not(.sec-h)')].find((b) => b.textContent.trim().startsWith(text));
+  };
   const status = () => root.querySelector('.status').textContent;
   return { dom, win, root, store, button, status, errors, clipboard };
 }
@@ -167,7 +172,7 @@ async function skeletonScenario(frameBytes) {
   assert.ok(xs('#2e6fd6').length >= 7 && xs('#e8473c').length >= 7, 'phải có điểm R và điểm L');
   assert.ok(avg(xs('#2e6fd6')) > avg(xs('#e8473c')), 'điểm R (xanh) phải ở bên phải ảnh so với điểm L (đỏ)');
 
-  button('Ghi ').click();
+  button('Chỉ ghi').click();
   const patch = await until(() => store.calls.find((c) => c.method === 'PATCH' && c.path.includes('create')), 'ghi skeleton: ' + status());
   const byLabel = Object.fromEntries(patch.body.shapes.map((s) => [s.label_id, s]));
   assert.strictEqual(patch.body.shapes.length, 8);
@@ -226,7 +231,7 @@ async function trackingScenario(frameBytes) {
   const { root, store, button, status, win } = page;
   await until(() => button('Gợi ý nhãn') && !button('Gợi ý nhãn').disabled, 'panel video sẵn sàng: ' + status());
   button('Cả job').click();
-  const headings = [...root.querySelectorAll('h2')].map((x) => x.textContent);
+  const headings = [...root.querySelectorAll('.sec-h > span, h2')].map((x) => x.textContent);   // 0.9.2: mục gập có tiêu đề ở nút
   assert.match(headings[0], /Theo dõi/, 'job video: phần theo dõi đứng đầu');
   button('Theo dõi 12 frame').click();
   await until(() => /1 track/.test(root.querySelector('.body').textContent), 'theo dõi xong: ' + status());
@@ -347,7 +352,7 @@ async function learnScenario(frameBytes) {
   const box = truckItem.querySelector('input[type="checkbox"]');
   box.checked = false;
   box.dispatchEvent(new win.Event('change'));
-  button('Ghi ').click();
+  button('Chỉ ghi').click();
   const created = await until(() => store.calls.find((c) => c.method === 'PATCH' && c.path.includes('create')), 'ghi: ' + status());
   assert.ok(created.body.shapes.every((s) => s.label_id === 501));
   await until(() => /Đã ghi/.test(status()), 'đã ghi');
@@ -503,7 +508,7 @@ async function importScenario(frameBytes) {
   await until(() => button('Gợi ý nhãn') && !button('Gợi ý nhãn').disabled, 'panel trên CVAT local sẵn sàng: ' + status());
   assert.ok(store.calls.length && store.calls.every((c) => c.path.startsWith('/api/')), 'gọi API của chính CVAT local');
   button('Guideline').click();
-  const headings = [...root.querySelectorAll('h2')].map((h2) => h2.textContent);
+  const headings = [...root.querySelectorAll('.sec-h > span, h2')].map((x) => x.textContent);
   assert.match(headings[0], /Nạp guideline có sẵn/);
   const input = root.querySelector('input[type="file"]');
   Object.defineProperty(input, 'files', { value: [new win.File([NEW_GUIDELINE], 'Kho_Guideline_V1.md', { type: 'text/markdown' })] });

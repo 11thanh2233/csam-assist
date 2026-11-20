@@ -145,7 +145,12 @@ async function scenario(frameBytes) {
 
   win.eval(fs.readFileSync(path.join(ROOT, 'userscript', 'sam3-cvat-assist.user.js'), 'utf8'));
   const root = win.document.getElementById('sam3-cvat-assist').shadowRoot;
-  const button = (text) => [...root.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(text));
+  const TAB_NAMES = ['Gợi ý', 'Cả job', 'Kiểm tra', 'Guideline', 'Label', 'Tự học', 'Suggest', 'Whole job', 'Check', 'Labels', 'Learning'];
+  // 0.9.2: bỏ qua tiêu đề mục gập (cũng là nút) và quay lại từ Cài đặt khi cần bấm tab
+  const button = (text) => {
+    if (TAB_NAMES.includes(text) && root.querySelector('nav.back')) root.querySelector('nav.back button').click();
+    return [...root.querySelectorAll('button:not(.sec-h)')].find((b) => b.textContent.trim().startsWith(text));
+  };
   const statusText = () => root.querySelector('.status').textContent;
 
   // 1. Đọc job, label, chọn đúng profile
@@ -172,8 +177,8 @@ async function scenario(frameBytes) {
   const firstTicked = [...root.querySelectorAll('li.item input[type="checkbox"]')].filter((c) => c.checked).pop();
   const expected = ticked() - 1;
   firstTicked.click();
-  await until(() => button('Ghi ') && button('Ghi ').textContent.includes(` ${expected} `), 'nút ghi cập nhật số lượng');
-  button('Ghi ').click();
+  await until(() => button('Chỉ ghi') && button('Chỉ ghi').textContent.includes(` ${expected} `), 'nút ghi cập nhật số lượng');
+  button('Chỉ ghi').click();
   const patch = await until(() => calls.find((c) => c.method === 'PATCH' && c.path.includes('action=create')), 'PATCH create: ' + statusText());
   assert.strictEqual(patch.path, '/api/jobs/12/annotations?action=create');
   assert.strictEqual(patch.body.shapes.length, expected);
@@ -220,7 +225,7 @@ async function scenario(frameBytes) {
   store.shapes.push({ id: 999, type: 'rectangle', frame: 7, label_id: 102, points: [1, 1, 9, 9], source: 'semi-auto' });
   const pointsBefore = JSON.stringify(store.shapes[0].points);
   const undoBefore = gm.undoStack;
-  button('Cài đặt').click();
+  root.querySelector('button[aria-label="Cài đặt panel"]').click();
   button('Frame này').click();
   await until(() => store.shapes[0].source === 'manual' && store.shapes[1].source === 'manual', 'đổi source: ' + statusText());
   assert.strictEqual(store.shapes.find((s) => s.id === 999).source, 'semi-auto', 'không được đổi nhãn của frame khác');

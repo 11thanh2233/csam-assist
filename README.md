@@ -67,7 +67,7 @@ Vài điều cần biết trước:
   không thay được.
 - **Trường `source` của nhãn:** mặc định tool không gửi trường này, nên CVAT tự ghi giá trị
   mặc định của nó là `manual`. Muốn đánh dấu nhãn do tool tạo là `semi-auto` (giống các công cụ AI
-  có sẵn của CVAT), bật ô tương ứng ở tab Cài đặt.
+  có sẵn của CVAT), bật ô tương ứng trong Cài đặt panel (nút bánh răng).
 - **Hỏi mentor trước khi dùng cho bài chấm điểm.** Hai guideline không cấm công cụ hỗ trợ, nhưng đây
   là bài của học viên; hãy xác nhận lớp có cho phép gợi ý bằng model hay không.
 - Ảnh chỉ đi tới backend bạn cấu hình. Nếu chạy backend trên Colab, ảnh sẽ rời máy bạn.
@@ -243,7 +243,7 @@ Sau đó tải lại trang job. Không cần đổi gì ở backend. Tool dùng 
    **SAM3 Assist** hiện ở góc phải.
 2. Chấm tròn cạnh tiêu đề: xanh = đã nối backend SAM3, cam = backend đang ở chế độ mock,
    đỏ = chưa nối được.
-3. Nếu đỏ: vào tab **Cài đặt**, kiểm tra *Địa chỉ backend* (mặc định `http://127.0.0.1:8765`),
+3. Nếu đỏ: bấm nút bánh răng (Cài đặt panel), kiểm tra *Địa chỉ backend* (mặc định `http://127.0.0.1:8765`),
    nhập *API key* nếu bạn có đặt, bấm **Kiểm tra kết nối**.
 
 ---
@@ -264,12 +264,12 @@ Sau đó tải lại trang job. Không cần đổi gì ở backend. Tool dùng 
    tượng; SAM3 lấy đúng đối tượng đó. **Tìm tương tự** dùng hộp làm mẫu để tìm mọi đối tượng giống vậy
    (vật đã gán sẵn được bỏ tick). Vật nào bị nhận nhầm, bấm **Loại trừ** ở dòng của nó: vật đó thành mẫu
    *âm*, SAM3 tìm lại và bỏ mọi vật giống nó. Loại trừ nhiều lần được.
-4. Bấm **Ghi N nhãn vào CVAT** (hoặc `Alt+A`). Tool bấm Save của CVAT để lưu việc bạn đang làm
+4. Bấm **Ghi N, sang frame tiếp** (`Alt+Enter`) ở thanh Ghi dưới cùng panel, hoặc **Chỉ ghi N nhãn** (`Alt+A`) để ở lại frame này. Tool bấm Save của CVAT để lưu việc bạn đang làm
    dở, ghi các shape, rồi tải lại trang ở đúng frame.
 5. Sửa tay những gì cần sửa bằng công cụ của CVAT, rồi `Ctrl+S`.
 6. Vào tab **Kiểm tra**, bấm **Kiểm tra annotation của frame này** để đối chiếu với checklist.
 
-Ghi nhầm? Nút **Hoàn tác lần ghi gần nhất** xoá đúng các shape của lần ghi cuối.
+Ghi nhầm? Nút **Hoàn tác** ở thanh Ghi xoá đúng các shape của lần ghi cuối.
 
 ### Tab Label
 
@@ -610,7 +610,7 @@ Trong app desktop, lựa chọn này dùng chung với bảng điều khiển, k
 2. *Runtime > Change runtime type > GPU*.
 3. Chạy lần lượt các ô: tải `sam3-cvat-assist.zip` lên, cài thư viện, đăng nhập Hugging Face,
    chạy backend. Ô cuối in ra một **địa chỉ https** (`...trycloudflare.com`) và một **API key**.
-4. Trên CVAT, tab **Cài đặt** của panel: dán địa chỉ và API key, bấm **Kiểm tra kết nối**.
+4. Trên CVAT, bấm nút bánh răng (Cài đặt panel): dán địa chỉ và API key, bấm **Kiểm tra kết nối**.
 
 Địa chỉ đổi mỗi lần chạy lại notebook. API key là bắt buộc ở chế độ này vì địa chỉ là công khai.
 
@@ -825,7 +825,7 @@ Nhật ký (`logs/*.log`) luôn viết bằng tiếng Anh kỹ thuật.
 **"Backend trả lỗi 401" (`E_AUTH`).** API key trên panel khác `SAM3_API_KEY` của backend.
 
 **"Backend trả lỗi 400: Host '…' không được phép".** Từ bản 0.4.4 backend chạy trên máy chỉ nhận request gửi
-tới `127.0.0.1` hoặc `localhost`, để trang web lạ không gọi được nó. Ở tab Cài đặt, đặt địa chỉ backend là
+tới `127.0.0.1` hoặc `localhost`, để trang web lạ không gọi được nó. Ở Cài đặt panel (nút bánh răng), đặt địa chỉ backend là
 `http://127.0.0.1:8765`. Nếu cố ý dùng backend từ máy khác (qua IP hoặc tên máy), thêm tên đó vào
 `SAM3_ALLOWED_HOSTS` trong `.env` (ví dụ `SAM3_ALLOWED_HOSTS=127.0.0.1,localhost,192.168.1.20`) và đặt
 `SAM3_API_KEY`. Colab: dùng notebook mới trong thư mục `colab/` (đã cấu hình sẵn).
@@ -856,10 +856,10 @@ tên class đó, sửa hàm `readCtx` trong userscript.
 
 **Phần xem trước lệch hoặc không hiện.** Lớp xem trước bám theo phần tử ảnh nền của canvas CVAT
 (`#cvat_canvas_background`). Nếu phần tử có tên khác: bấm F12, chọn phần tử chứa ảnh, rồi nhập CSS
-selector của nó vào tab Cài đặt. Danh sách đề xuất và việc ghi vào CVAT không phụ thuộc lớp này.
+selector của nó vào Cài đặt panel → Nâng cao. Danh sách đề xuất và việc ghi vào CVAT không phụ thuộc lớp này.
 
 **Ghi xong không thấy shape.** Tải lại trang (F5). Giao diện CVAT giữ annotation trong bộ nhớ nên
-chỉ thấy shape mới sau khi tải lại; tuỳ chọn tải lại tự động nằm ở tab Cài đặt.
+chỉ thấy shape mới sau khi tải lại; tuỳ chọn tải lại tự động nằm ở Cài đặt panel.
 
 **Chậm.** Mỗi prompt là một lần chạy model. Tắt các label không cần ở tab Label; dùng GPU.
 

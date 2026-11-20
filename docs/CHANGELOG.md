@@ -3,6 +3,23 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.2 (2026-11-20)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.2.md`.
+
+- **Panel trong CVAT làm lại cho thoáng, dễ nhìn** (theo bản mẫu đã duyệt):
+  - 6 tab có icon; Cài đặt chuyển thành nút bánh răng ở góc panel;
+  - dòng Job / Frame và ô profile gọn trên một hàng;
+  - **thanh Ghi luôn nằm dưới cùng**: nút lớn "Ghi N, sang frame tiếp", hàng dưới có Chỉ ghi, Hoàn tác, Bỏ đề xuất;
+  - các tab dài (Cả job, Kiểm tra, Guideline, Tự học) chia thành mục bấm để mở hoặc gập, panel nhớ mục bạn mở;
+  - Cài đặt chia nhóm (Kết nối, Khi duyệt, Khi ghi vào CVAT, Hiển thị) với công tắc; tuỳ chọn ít dùng ở mục Nâng cao.
+- **Chép và bôi đen chữ được trong app:**
+  - nút chép nhật ký hoạt động (trước báo "Không chép được");
+  - bôi đen được nhật ký, key, giấy phép, và cả chữ trong cửa sổ CVAT.
+- **Nhật ký mặc định chỉ hiện lần chạy này**, lỗi của các lần trước không lẫn vào. Bấm "Lần chạy này" để xem mọi lần.
+- Release chỉ còn một file exe (`SAM3-Label-Assist-Setup-<bản>.exe`). App 0.9.0 trở về trước tải bản mới bằng nút
+  "Mở trang Releases" một lần.
+
 ## 0.9.1 (2026-11-20)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.1.md`.

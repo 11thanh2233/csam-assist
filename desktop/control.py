@@ -507,6 +507,36 @@ class ControlApi:
         log.info("Self-test: %s", "ok" if r.get("ok") else r.get("error"))
         return r
 
+    def copy_text(self, text):
+        """Chép vào clipboard của Windows. Cửa sổ app chặn API clipboard của trình duyệt nên chép qua đây."""
+        text = str(text or "")
+        if sys.platform != "win32":
+            return False
+        import ctypes
+        from ctypes import wintypes
+
+        u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
+        k32.GlobalAlloc.restype = wintypes.HGLOBAL
+        k32.GlobalLock.restype = wintypes.LPVOID
+        k32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        u32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        data = text.encode("utf-16-le") + b"\x00\x00"
+        for _ in range(10):                               # clipboard có thể đang bị app khác giữ: thử lại vài lần
+            if u32.OpenClipboard(None):
+                break
+            time.sleep(0.05)
+        else:
+            return False
+        try:
+            u32.EmptyClipboard()
+            h = k32.GlobalAlloc(0x0002, len(data))        # GMEM_MOVEABLE
+            ptr = k32.GlobalLock(h)
+            ctypes.memmove(ptr, data, len(data))
+            k32.GlobalUnlock(h)
+            return bool(u32.SetClipboardData(13, h))      # CF_UNICODETEXT
+        finally:
+            u32.CloseClipboard()
+
     def read_log(self, which="backend", n=400):
         """Dòng cuối của nhật ký cho trang Hỗ trợ (chỉ hai file nhật ký của app)."""
         from .backend_proc import read_tail

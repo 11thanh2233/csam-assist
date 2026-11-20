@@ -69,11 +69,13 @@ Mở một job trong CVAT, panel **SAM3** tự hiện ở góc phải.
    - Dòng có cờ là chỗ tool không chắc, nên xem kỹ.
 3. **Sót vật?** Chọn label ở ô cạnh nút **Vẽ hộp**, bấm **Vẽ hộp** rồi kéo hộp quanh vật. **Tìm tương tự** tìm mọi
    vật giống vật trong hộp.
-4. **Ghi:** bấm **Ghi N nhãn** (`Alt+A`), hoặc **Ghi + frame tiếp** (`Alt+Enter`). Ghi + frame tiếp nhanh hơn vì
-   frame sau đã được gợi ý sẵn trong lúc bạn duyệt.
+4. **Ghi:** thanh Ghi luôn nằm dưới cùng panel.
+   - Nút lớn **Ghi N, sang frame tiếp** (`Alt+Enter`): ghi rồi sang frame sau. Cách này nhanh nhất vì frame sau đã được
+     gợi ý sẵn trong lúc bạn duyệt.
+   - **Chỉ ghi N nhãn** (`Alt+A`): ghi nhưng ở lại frame này.
 5. Sửa tay chỗ cần sửa bằng công cụ của CVAT, rồi `Ctrl+S`.
 
-Ghi nhầm? Bấm **Hoàn tác** (`Alt+Z`), bấm nhiều lần để lùi tiếp.
+Ghi nhầm? Bấm **Hoàn tác** ở thanh Ghi (`Alt+Z`), bấm nhiều lần để lùi tiếp.
 
 | Chưa có đề xuất | Đang duyệt đề xuất |
 |---|---|
@@ -93,6 +95,13 @@ Tab **Cả job** của panel:
 
 Tab **Kiểm tra** đối chiếu nhãn đã lưu với checklist trong guideline. Nên lưu (`Ctrl+S`) trước khi kiểm tra.
 
+Các tab dài (Cả job, Kiểm tra, Guideline, Tự học) chia thành từng mục: bấm tiêu đề để mở hoặc gập. Panel nhớ mục bạn mở.
+
+**Cài đặt của panel:** bấm nút bánh răng ở góc trên panel. Các tuỳ chọn chia theo nhóm (Kết nối, Khi duyệt, Khi ghi vào
+CVAT, Hiển thị), bật tắt bằng công tắc. API key, phím tắt và các tuỳ chọn ít dùng nằm ở mục **Nâng cao**.
+
+![Cài đặt của panel](images/guide/panel-cai-dat.png)
+
 ---
 
 ## 4. Phím tắt hay dùng
@@ -111,7 +120,7 @@ Tab **Kiểm tra** đối chiếu nhãn đã lưu với checklist trong guidelin
 | `Alt+P` | Ẩn hoặc hiện panel |
 | giữ `Alt` + bấm lên ảnh | Tick đề xuất tại chỗ bấm |
 
-Đổi phím được ở tab **Cài đặt** của panel.
+Đổi phím được trong **Cài đặt** của panel (nút bánh răng ở góc panel → **Nâng cao**).
 
 **Trong bảng điều khiển của app:**
 

@@ -142,6 +142,14 @@ async function main() {
     await win.runSelftest('selftestD', doc.getElementById('selftestBtn'));
     assert.match(doc.getElementById('toasts').textContent, /Kiểm tra nhanh: mọi thứ hoạt động/);
     await until(() => doc.querySelectorAll('#logView div').length >= 3, 'nhật ký backend');
+    assert.ok(!/old crash from yesterday/.test(doc.getElementById('logView').textContent), '0.9.2: mặc định chỉ lần chạy này, lỗi cũ không lẫn vào');
+    win.toggleAllRuns();
+    assert.match(doc.getElementById('logView').textContent, /old crash from yesterday/, 'bật Mọi lần chạy thì thấy');
+    win.toggleAllRuns();
+    win.copyLog();
+    await until(async () => ((await call('_test_copied', [])) || []).length === 1, 'chép nhật ký qua app');
+    assert.match((await call('_test_copied', []))[0], /Loaded 6 profiles/);
+    assert.match(doc.getElementById('toasts').textContent, /Đã chép nhật ký/);
     win.toggleErrOnly();
     assert.strictEqual(doc.querySelectorAll('#logView div').length, 1, 'chỉ dòng lỗi');
     assert.match(doc.getElementById('logView').textContent, /exited with/);

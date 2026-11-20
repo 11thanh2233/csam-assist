@@ -3,6 +3,25 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.2 (2026-11-20)
+
+Details and test results are in `docs/CHECKLIST_0.9.2.md` (Vietnamese).
+
+- **The panel in CVAT is redesigned to be roomier and easier to read** (following the approved mockup):
+  - six tabs with icons; Settings moved to a gear button in the panel corner;
+  - the Job / Frame line and the profile box fit on one row;
+  - **the save bar stays at the bottom**: a large "Save N, next frame" button, with Save only, Undo and Discard below;
+  - long tabs (Whole job, Check, Guideline, Learning) are split into sections you open or fold; the panel remembers them;
+  - Settings are grouped (Connection, While reviewing, When saving to CVAT, Display) with switches; rarely used options
+    are under Advanced.
+- **Copying and selecting text works in the app:**
+  - the copy-log button works (it used to say "Could not copy");
+  - you can select logs, keys, licenses, and text in the CVAT window.
+- **Logs show only the current run by default**, so errors from earlier runs don't mix in. Click "This run" to see all
+  runs.
+- Releases have a single exe (`SAM3-Label-Assist-Setup-<version>.exe`). Apps up to 0.9.0 download the new version once
+  with the "Open Releases page" button.
+
 ## 0.9.1 (2026-11-20)
 
 Details and test results are in `docs/CHECKLIST_0.9.1.md` (Vietnamese).

@@ -365,7 +365,7 @@ class GuidelineService:
         rules.setdefault("face", {})["max_faces"] = 1 if scope == "driver" else 0
         rules.setdefault("qa", {})["one_per_label"] = scope == "driver"
         header = (f"# Sinh tự động từ guideline nháp của lượt {run['id']}: bản sao của {base['id']}, đổi {words}.\n"
-                  "# Chỉ dùng khi được chọn đích danh ở tab Cài đặt (auto_pick: false), không tự áp cho job khác.\n")
+                  "# Chỉ dùng khi được chọn đích danh ở ô profile của panel (auto_pick: false), không tự áp cho job khác.\n")
         text = header + yaml.dump(derived, Dumper=_PlainDumper, allow_unicode=True, sort_keys=False, width=140)
         return {"profile_id": derived["id"], "yaml": text,
                 "note": f"Đã tạo profile riêng từ '{base.get('title', base['id'])}' với quy ước của bản guideline này ({words})."}

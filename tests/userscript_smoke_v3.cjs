@@ -111,7 +111,12 @@ async function scenario(frameBytes) {
   win.GM_setValue('cfg', { backendUrl: BACKEND, apiKey: 'k3', reloadAfterApply: false, confirmApply: true });
   win.eval(fs.readFileSync(path.join(ROOT, 'userscript', 'sam3-cvat-assist.user.js'), 'utf8'));
   const root = doc.getElementById('sam3-cvat-assist').shadowRoot;
-  const button = (t) => [...root.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(t));
+  const TAB_NAMES = ['Gợi ý', 'Cả job', 'Kiểm tra', 'Guideline', 'Label', 'Tự học', 'Suggest', 'Whole job', 'Check', 'Labels', 'Learning'];
+  // 0.9.2: bỏ qua tiêu đề mục gập (cũng là nút) và quay lại từ Cài đặt khi cần bấm tab
+  const button = (t) => {
+    if (TAB_NAMES.includes(t) && root.querySelector('nav.back')) root.querySelector('nav.back button').click();
+    return [...root.querySelectorAll('button:not(.sec-h)')].find((b) => b.textContent.trim().startsWith(t));
+  };
   // 0.9.1: phần đầu panel không còn chữ "null" (dòng GPU / cảnh báo lệch bản khi không có gì để hiện)
   await until(() => /Job 30 · Frame 3/.test(root.textContent), 'panel đã hiện job');
   assert.ok(!/\bnull\b/.test(root.textContent), 'panel hiện chữ null: ' + root.textContent.slice(0, 200));
@@ -203,26 +208,26 @@ async function scenario(frameBytes) {
   win.__manualDialog = true;
   const dlg = () => root.querySelector('.dlg-back');
   const frame4 = () => store.shapes.filter((s) => s.frame === 4).length;
-  button('Ghi ').click();
+  button('Chỉ ghi').click();
   await until(() => dlg(), 'hiện hộp thoại xác nhận trong panel');
   assert.match(dlg().textContent, /Ghi \d+ nhãn vào frame 4/);
   assert.strictEqual(root.activeElement, dlg().querySelector('.primary'), 'tiêu điểm ở nút Đồng ý');
   dlg().querySelector('.dlg').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.ok(!dlg(), 'Esc đóng hộp thoại');
-  button('Ghi ').click();
+  button('Chỉ ghi').click();
   await until(() => dlg(), 'hỏi lại');
   dlg().dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true }));
   assert.ok(!dlg(), 'bấm ra ngoài thì đóng');
   await new Promise((r) => setTimeout(r, 200));
   assert.strictEqual(frame4(), 0, 'huỷ thì không ghi');
-  button('Ghi ').click();
+  button('Chỉ ghi').click();
   await until(() => dlg(), 'hỏi lần ba');
   dlg().querySelector('.dlg').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   win.__manualDialog = false;
 
   // 5. Hoàn tác nhiều bước: ghi thêm ở frame 4 (Enter ở trên là đồng ý), rồi lùi 2 lần
   await until(() => store.shapes.some((s) => s.frame === 4), 'ghi ở frame 4');
-  await until(() => /Hoàn tác lần ghi gần nhất \(2\)/.test(root.textContent), 'có 2 lần ghi để hoàn tác');
+  await until(() => /Hoàn tác \(2\)/.test(root.textContent), 'có 2 lần ghi để hoàn tác');
   const n4 = store.shapes.length;
   alt('z');
   await until(() => store.shapes.length < n4, 'hoàn tác lần 1');
@@ -252,7 +257,7 @@ async function scenario(frameBytes) {
   assert.match(csv, /"30","0",/, 'hoàn tác trừ lại số nhãn đã ghi của job');
 
   // 36. Đổi phím tắt: "Tick / bỏ tick" thành Alt+Y
-  button('Cài đặt').click();
+  root.querySelector('button[aria-label="Cài đặt panel"]').click();
   const row = [...root.querySelectorAll('tr')].find((tr) => /Tick \/ bỏ tick/.test(tr.textContent));
   row.querySelector('input').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'y', bubbles: true }));
   assert.strictEqual(JSON.parse(gm.cfg).keys.toggle, 'y');
@@ -268,7 +273,7 @@ async function scenario(frameBytes) {
   // 29. Tiếng Anh
   const lang = [...root.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'en'));
   lang.value = 'en'; lang.dispatchEvent(new win.Event('change'));
-  assert.match(root.querySelector('nav').textContent, /Suggest.*Settings/);
+  assert.match(root.querySelector('nav').textContent, /Panel settings|Suggest.*Guideline/, 'nav: ' + root.querySelector('nav').outerHTML.slice(0, 300));
   lang.value = 'vi'; lang.dispatchEvent(new win.Event('change'));
 
   // cỡ chữ + tương phản cao
@@ -327,10 +332,37 @@ async function scenario(frameBytes) {
   assert.match(root.textContent, /Chỉ job 31/);
   assert.match(root.textContent, /Hay gán khác nhau|Frame lệch nhiều/);
 
+  // 0.9.2: panel mới: Cài đặt mở bằng bánh răng, công tắc, phần Nâng cao gập; tab dài gập theo mục và nhớ mục đã mở
+  const gearBtn = root.querySelector('button[aria-label="Cài đặt panel"]');
+  if (!root.querySelector('nav.back')) gearBtn.click();
+  assert.ok(root.querySelector('nav.back'), 'bánh răng mở Cài đặt, thanh tab thành dòng quay lại');
+  assert.strictEqual(gearBtn.getAttribute('aria-pressed'), 'true');
+  assert.ok(root.querySelectorAll('label.check.sw input[role=switch]').length >= 7, 'cài đặt dạng công tắc');
+  const adv = [...root.querySelectorAll('.sec')].find((x) => /Nâng cao/.test(x.textContent));
+  assert.ok(adv && !adv.classList.contains('open'), 'Nâng cao gập sẵn');
+  adv.querySelector('.sec-h').click();
+  assert.ok(adv.classList.contains('open') && JSON.parse(gm.cfg).openSecs['settings:advanced'], 'mở Nâng cao và nhớ');
+  root.querySelector('nav.back button').click();
+  assert.ok(root.querySelectorAll('nav [role=tab]').length === 6 && root.querySelectorAll('nav [role=tab] svg').length === 6, '6 tab có icon');
+  button('Cả job').click();
+  const secs = [...root.querySelectorAll('.body > .sec')];
+  assert.ok(secs.length >= 2 && secs[0].classList.contains('open') && !secs[1].classList.contains('open'), 'mặc định chỉ mở mục đầu');
+  secs[1].querySelector('.sec-h').click();
+  button('Gợi ý').click(); button('Cả job').click();
+  assert.ok(root.querySelectorAll('.body > .sec')[1].classList.contains('open'), 'nhớ mục đã mở khi quay lại tab');
+  assert.strictEqual(root.querySelector('.actions').children.length, 0, 'thanh Ghi chỉ ở tab Gợi ý');
+  button('Gợi ý').click();
+  const collapse = root.querySelector('header button[aria-label^="Thu gọn panel"]');
+  assert.ok(collapse, 'nút thu gọn có nhãn và phím tắt');
+  collapse.click();
+  assert.strictEqual(root.querySelector('nav').style.display, 'none');
+  root.querySelector('header button[aria-label^="Mở rộng panel"]').click();
+  assert.notStrictEqual(root.querySelector('nav').style.display, 'none');
+
   // 0.9.1: panel và backend lệch bản: báo bên nào cũ hơn và cách cập nhật đúng trường hợp
   const recheck = async (v) => {
     win.__fakeBackendVersion = v;
-    [...root.querySelectorAll('[role=tab]')].find((t) => /Cài đặt/.test(t.textContent)).click();
+    if (!root.querySelector('nav.back')) root.querySelector('button[aria-label="Cài đặt panel"]').click();
     button('Kiểm tra kết nối').click();
     await until(() => !root.querySelector('button[disabled]') || true, '');
     await new Promise((r) => setTimeout(r, 400));

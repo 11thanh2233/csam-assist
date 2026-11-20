@@ -106,7 +106,12 @@ async function scenario(frameBytes) {
   const dialogs = __dialogs;
   win.eval(fs.readFileSync(path.join(ROOT, 'userscript', 'sam3-cvat-assist.user.js'), 'utf8'));
   const root = doc.getElementById('sam3-cvat-assist').shadowRoot;
-  const button = (t) => [...root.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(t));
+  const TAB_NAMES = ['Gợi ý', 'Cả job', 'Kiểm tra', 'Guideline', 'Label', 'Tự học', 'Suggest', 'Whole job', 'Check', 'Labels', 'Learning'];
+  // 0.9.2: bỏ qua tiêu đề mục gập (cũng là nút) và quay lại từ Cài đặt khi cần bấm tab
+  const button = (t) => {
+    if (TAB_NAMES.includes(t) && root.querySelector('nav.back')) root.querySelector('nav.back button').click();
+    return [...root.querySelectorAll('button:not(.sec-h)')].find((b) => b.textContent.trim().startsWith(t));
+  };
   const status = () => root.querySelector('.status').textContent;
   const alt = (key, extra) => doc.dispatchEvent(new win.KeyboardEvent('keydown', Object.assign({ key, altKey: true, bubbles: true }, extra || {})));
   const proposeCalls = () => calls.filter((c) => c.path === '/propose');
@@ -143,8 +148,10 @@ async function scenario(frameBytes) {
   // Hộp thoại xác nhận và lỗi từ backend
   [...root.querySelectorAll('nav button')][0].click();
   await sleep(200);
-  const save = [...root.querySelectorAll('button')].find((b) => /^Save \d+ labels$/.test(b.textContent.trim()));
-  assert.ok(save, 'nút Save N labels');
+  // 0.9.2: thanh Ghi cố định: nút chính "Save N, next frame", nút phụ "Save N only"
+  assert.ok([...root.querySelectorAll('.actions button')].some((b) => /^Save \d+, next frame/.test(b.textContent.trim())), 'nút Save N, next frame');
+  const save = [...root.querySelectorAll('button')].find((b) => /^Save \d+ only$/.test(b.textContent.trim()));
+  assert.ok(save, 'nút Save N only');
   save.click();
   await until(() => dialogs.length > 0, 'hỏi lại trước khi ghi');
   assert.ok(!VI.test(dialogs[0]) && /^Save \d+ labels to frame/.test(dialogs[0]), 'hộp thoại bằng tiếng Anh: ' + dialogs[0]);

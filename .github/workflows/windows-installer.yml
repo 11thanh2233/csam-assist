@@ -305,8 +305,7 @@ jobs:
           $notes = ($section -join "`n") + "`n`nHướng dẫn cài: docs/DESKTOP.md`n`nSHA-256 của bộ cài: ``$hash``" +
                    "`n`n<!-- en -->`n" + ($sectionEn -join "`n") + "`n`nInstall guide: docs/DESKTOP.md`n`nInstaller SHA-256: ``$hash``"
           Set-Content -Path notes.md -Value $notes -Encoding utf8
-          # App 0.9.0 trở về trước chỉ nhận bộ cài tên cũ: kèm một bản cùng nội dung với tên đó để chúng tự cập nhật được
-          $legacy = Join-Path (Split-Path $exe) ((Split-Path $exe -Leaf) -replace '^SAM3-Label-Assist-', 'SAM3-CVAT-Assist-')
-          Copy-Item $exe $legacy -Force
-          gh release create $env:GITHUB_REF_NAME $exe $legacy build\app\desktop\manifest.lock.json build\build-info.json `
+          # Một file exe. App 0.9.0 trở về trước tìm bộ cài tên cũ nên không tự cập nhật được: chúng hiện nút
+          # "Mở trang Releases" để tải tay (một lần), từ 0.9.1 trở đi tự cập nhật bình thường.
+          gh release create $env:GITHUB_REF_NAME $exe build\app\desktop\manifest.lock.json build\build-info.json `
             --title "SAM3 Label Assist $env:VERSION" --notes-file notes.md

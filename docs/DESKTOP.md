@@ -108,7 +108,7 @@ Cách dùng lại:
 | Alt+P | Ẩn / hiện panel |
 | Alt + bấm lên ảnh | Tick / bỏ tick đề xuất dưới con trỏ |
 
-Đổi phím ở tab **Cài đặt → Phím tắt**. Tool không cho đặt hai việc trùng một phím, cũng không cho dùng phím
+Đổi phím ở **Cài đặt panel (nút bánh răng) → Nâng cao → Phím tắt**. Tool không cho đặt hai việc trùng một phím, cũng không cho dùng phím
 trùng trình duyệt/Windows.
 
 ### Dùng chung trong nhóm
@@ -227,7 +227,7 @@ có xoá dữ liệu của bạn không. Mặc định là giữ.
 
 ## Ngôn ngữ
 
-Chọn ngôn ngữ ở bộ cài (lần đầu), ở trang Cài đặt của bảng điều khiển, hoặc ở tab Cài đặt của panel. Một lựa chọn chung cho
+Chọn ngôn ngữ ở bộ cài (lần đầu), ở trang Cài đặt của bảng điều khiển, hoặc ở Cài đặt của panel (nút bánh răng). Một lựa chọn chung cho
 panel, bảng điều khiển, khay hệ thống, thông báo và "Có gì mới". Nhật ký luôn bằng tiếng Anh.
 
 ## Khi có lỗi

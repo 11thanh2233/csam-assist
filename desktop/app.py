@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import logging
 import sys
 import threading
@@ -67,6 +68,8 @@ class DesktopApp:
         logging.basicConfig(filename=self.paths.logs / "app.log", level=logging.INFO, encoding="utf-8",
                             format="%(asctime)s %(levelname)s %(message)s")
         install_log_filter()                         # app.log luôn là tiếng Anh kỹ thuật
+        # Mốc đầu mỗi lần chạy: trang Hỗ trợ dùng để mặc định chỉ hiện nhật ký của lần chạy này (lỗi cũ không lẫn vào)
+        log.info("===== %s app %s starting =====", time.strftime("%Y-%m-%d %H:%M:%S"), __version__)
         self.comps = Components(self.paths)
         self.backend = BackendProcess(self.comps)
         self.backend.on_change = self._backend_changed
@@ -90,7 +93,8 @@ class DesktopApp:
                     and self.api._settings.data.get("start_mode", "cvat") == "cvat" and self.api._settings.data["sites"])
         self.control = webview.create_window(
             "SAM3 Label Assist" + (tr(" - Cài đặt", self.api._lang()) if self.setup_mode else ""), html=html, js_api=self.api,
-            width=980, height=760, min_size=(760, 560), hidden=self.start_hidden or bool(straight))
+            width=980, height=760, min_size=(760, 560), hidden=self.start_hidden or bool(straight),
+            text_select=True)                        # pywebview mặc định chặn bôi đen: cần để chép nhật ký, key, lỗi
         if straight:
             st = self.api._settings.data
             self.open_cvat(st.get("last_url") or st["sites"][0]["url"])
@@ -161,8 +165,9 @@ class DesktopApp:
                         notifier=self.notify, show_control=self.show_control,
                         lang=self.api._lang, set_lang=lambda v: self.api.set_setting("lang", v))
         self.bridge = bridge
-        self.cvat_window = self.webview.create_window("CVAT - SAM3 Assist", url=origin, js_api=bridge,
-                                                      width=1500, height=950, min_size=(900, 600))
+        self.cvat_window = self.webview.create_window("CVAT - SAM3 Label Assist", url=origin, js_api=bridge,
+                                                      width=1500, height=950, min_size=(900, 600),
+                                                      text_select=True)   # bôi đen được như trình duyệt (tên task, ghi chú, panel)
         self.cvat_window.events.loaded += self._inject
         self.cvat_window.events.closed += self._cvat_closed
 

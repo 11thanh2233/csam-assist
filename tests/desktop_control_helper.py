@@ -82,7 +82,11 @@ paths.store.mkdir(parents=True, exist_ok=True)
 fake_backend = FakeBackend()
 api = ControlApi(paths, comps, fake_backend, open_site=lambda o: None, on_quit=lambda: None)
 api._test_crash = fake_backend.crash
-(paths.logs / "backend.log").write_text("\n===== 2026-11-20 12:00:56 starting backend, port 8765 =====\nLoaded 6 profiles\n"
+COPIED = []
+api.copy_text = lambda text: COPIED.append(text) or True      # clipboard Windows: test chỉ ghi lại nội dung
+api._test_copied = lambda: COPIED
+(paths.logs / "backend.log").write_text("===== 2026-11-19 09:00:00 starting backend, port 8765 =====\nTypeError: old crash from yesterday\n"
+                                        "\n===== 2026-11-20 12:00:56 starting backend, port 8765 =====\nLoaded 6 profiles\n"
                                         "[app] 12:00:58 Backend process exited with code -1073741515 (0xC0000135)\n", encoding="utf-8")
 api._record_visit("https://cvat.edufun.ai/tasks/5/jobs/12?frame=3")
 import desktop.support as _sup  # noqa: E402
