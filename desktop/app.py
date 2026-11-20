@@ -96,12 +96,15 @@ class DesktopApp:
         self.control.events.closing += self._on_control_closing
         if not self.setup_mode:
             self._start_tray()
-        webview.start(self._after_start, private_mode=False, storage_path=str(self.paths.webview), debug=False)
+        icon = self.paths.app / "desktop" / "ui" / "icon.ico"      # icon cửa sổ và taskbar (thay icon của Python)
+        webview.start(self._after_start, private_mode=False, storage_path=str(self.paths.webview), debug=False,
+                      icon=str(icon) if icon.exists() else None)
         self.backend.stop()
         if self.tray_icon:
             self.tray_icon.stop()
 
     def _after_start(self) -> None:
+        _signal_ready()
         self.api._pick_folder = self._pick_folder
         self.api._pick_file = self._pick_file
         try:
@@ -233,6 +236,38 @@ def _saved_lang() -> str:
         return "vi"
 
 
+APP_ID = "SAM3CvatAssist.App"
+READY_EVENT = "Local\\SAM3Assist-Ready"
+
+
+def set_app_identity() -> None:
+    """Windows nhận cửa sổ là của SAM3 CVAT Assist (icon và tên riêng trên taskbar), không phải của pythonw.exe."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
+
+
+def _signal_ready() -> None:
+    """Báo cho SAM3 Assist.exe đóng màn hình chờ: cửa sổ của app đã hiện."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        k = ctypes.windll.kernel32
+        handle = k.OpenEventW(0x0002, False, READY_EVENT)       # EVENT_MODIFY_STATE
+        if handle:
+            k.SetEvent(handle)
+            k.CloseHandle(handle)
+    except (AttributeError, OSError):
+        pass
+
+
 def _save_lang(lang: str) -> None:
     """Ghi ngôn ngữ vào cài đặt của app (panel và bảng điều khiển dùng chung)."""
     import json
@@ -260,7 +295,9 @@ def main(argv=None) -> int:
             lang = norm_lang(_saved_lang())
             ctypes.windll.user32.MessageBoxW(None, tr("SAM3 CVAT Assist đang chạy. Bấm vào biểu tượng ở khay hệ thống để mở.", lang),
                                              "SAM3 CVAT Assist", 0x40)
+        _signal_ready()                           # đóng màn hình chờ của SAM3 Assist.exe
         return 0
+    set_app_identity()
     DesktopApp(setup_mode=args.setup, tray=args.tray).run()
     return 0
 

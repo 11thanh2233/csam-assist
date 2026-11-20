@@ -4,134 +4,242 @@
 <meta charset="utf-8">
 <title>SAM3 CVAT Assist</title>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2430;--mut:#5d6878;--line:#dfe3ea;--acc:#2563eb;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--chip:#eef2f7}
-@media (prefers-color-scheme:dark){:root{--bg:#14181f;--card:#1c222b;--ink:#e6e9ee;--mut:#9aa4b2;--line:#2c3440;--acc:#5b8def;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--chip:#26303c}}
+/* Thiết kế 0.8.3: cột trái xanh đậm có logo và các bước, nội dung bên phải, thanh nút cố định ở dưới; sáng/tối theo Windows */
+:root{--bg:#f4f6fa;--card:#fff;--ink:#17213a;--mut:#4a5672;--line:#e1e5ee;--acc:#2456d6;--acc-ink:#fff;--link:#2456d6;
+  --ok:#1c7c46;--ok-bg:#e3f4ea;--warn:#a15c00;--warn-bg:#fdf1de;--bad:#b42318;--bad-bg:#fde7e5;--info-bg:#eef3ff;--chip:#eef2f8;--bar:#fafbfd;--track:#e1e7f3;
+  --side:#0e1a36;--side2:#1d2d55;--side-ink:#fff;--side-mut:#a9b5cf;--side-line:#33467a}
+@media (prefers-color-scheme:dark){:root{--bg:#11161f;--card:#1c2336;--ink:#e8ecf5;--mut:#a7b1c6;--line:#2c3550;--acc:#2f6bff;--link:#8fb0ff;
+  --ok:#5fd08e;--ok-bg:#163a28;--warn:#f3b55c;--warn-bg:#3a2c12;--bad:#ff8a80;--bad-bg:#3d1c1a;--info-bg:#1d2a4a;--chip:#262f45;--bar:#181f31;--track:#2c3550;
+  --side:#0b1328;--side2:#1a2850}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--card)}
-header h1{font-size:17px;margin:0;font-weight:600}
-header .v{color:var(--mut);font-size:12px}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI Variable","Segoe UI",system-ui,sans-serif}
+.shell{display:flex;height:100vh}
+.side{width:236px;flex:none;background:var(--side);color:var(--side-ink);display:flex;flex-direction:column;gap:24px;padding:24px 18px;overflow:auto}
+.brand{display:flex;align-items:center;gap:10px}
+.brand svg{flex:none}
+.brand strong{display:block;font-size:15px;font-weight:600}
+.brand .v{font-size:12px;color:var(--side-mut)}
+.stepnav{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.stepnav li{display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:8px;color:var(--side-mut);font-size:14px}
+.stepnav .n{width:22px;height:22px;flex:none;border-radius:11px;border:1.5px solid #5d6b8c;display:flex;align-items:center;justify-content:center;font-size:11px}
+.stepnav li.done{color:#dce3f2}
+.stepnav li.done .n{background:#2f6bff;border-color:#2f6bff}
+.stepnav li.on{background:var(--side2);color:#fff;font-weight:600}
+.stepnav li.on .n{border:2px solid #6f9bff}
+.dashnav{display:flex;flex-direction:column;gap:2px}
+.dashnav a{display:block;padding:8px 10px;border-radius:8px;color:#dce3f2;text-decoration:none;font-size:14px}
+.dashnav a:hover,.dashnav a:focus-visible{background:var(--side2);outline:none}
+.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:10px;font-size:12px}
+.side select{font:inherit;font-size:13px;padding:6px 8px;border-radius:8px;border:1px solid var(--side-line);background:var(--side2);color:#fff}
+.side .pill{align-self:flex-start;background:var(--side2);color:#dce3f2}
+.side .pill.ok{color:#7ee2a8}.side .pill.warn{color:#f6c46f}.side .pill.bad{color:#ff9b91}
+.side button.primary{width:100%}
+.content{flex:1;min-width:0;overflow:auto}
+main{max-width:940px;margin:0 auto;padding:28px 32px}
+h1{font-size:22px;font-weight:600;margin:0}
+.sub{margin:4px 0 0;color:var(--mut)}
 .pill{padding:3px 10px;border-radius:999px;background:var(--chip);font-size:12px}
 .pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.bad{color:var(--bad)}
-#updBadge{margin-left:auto}
-main{padding:18px 22px;max-width:980px;margin:0 auto}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
-.card h2{font-size:15px;margin:0 0 10px;font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px;scroll-margin-top:16px}
+.card h2{font-size:15px;margin:0 0 12px;font-weight:600}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .grow{flex:1}
-button{font:inherit;padding:6px 14px;border-radius:7px;border:1px solid var(--line);background:var(--chip);color:var(--ink);cursor:pointer}
-button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
-button.small{padding:3px 10px;font-size:12.5px}
+button{font:inherit;padding:0 16px;min-height:34px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button:hover:not(:disabled){border-color:var(--acc)}
+button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button.primary{background:var(--acc);border-color:var(--acc);color:var(--acc-ink);font-weight:600}
+button.small{min-height:28px;padding:0 10px;font-size:12.5px}
+button.quiet{border-color:transparent;background:none;color:var(--mut)}
 button:disabled{opacity:.5;cursor:default}
-button.link{border:none;background:none;color:var(--acc);padding:0;text-decoration:underline}
-input[type=text],input[type=password]{font:inherit;padding:6px 9px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button.link{border:none;background:none;color:var(--link);padding:0;min-height:0;text-decoration:underline}
+input[type=text],input[type=password],select{font:inherit;min-height:36px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+input[type=checkbox]{width:18px;height:18px;margin:2px 0 0;accent-color:var(--acc);flex:none}
 .mut{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
 .small-text{font-size:12.5px}
-.steps{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
-.steps span{padding:3px 10px;border-radius:999px;background:var(--chip);color:var(--mut);font-size:12px}
-.steps span.on{background:var(--acc);color:#fff}
-.license{height:300px;overflow:auto;white-space:pre-wrap;font-size:12.5px;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg)}
-.bar{height:10px;border-radius:5px;background:var(--chip);overflow:hidden}
-.bar>div{height:100%;background:var(--acc);width:0;transition:width .4s}
+code{font:12.5px Consolas,monospace;background:var(--chip);padding:1px 5px;border-radius:5px}
+.license{height:280px;overflow:auto;white-space:pre-wrap;font-size:12.5px;border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--bar)}
+.bar{height:10px;border-radius:5px;background:var(--track);overflow:hidden}
+.bar>div{height:100%;background:#2f6bff;width:0;transition:width .4s}
+.bar.thin{height:6px;border-radius:3px}
 .bar.indet>div{width:30%;animation:slide 1.2s infinite linear}
 @keyframes slide{from{margin-left:-30%}to{margin-left:100%}}
-pre.log{max-height:200px;overflow:auto;font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;white-space:pre-wrap}
+pre.log{max-height:200px;overflow:auto;font:12px/1.5 Consolas,monospace;background:var(--bar);border:1px solid var(--line);border-radius:8px;padding:10px 12px;white-space:pre-wrap}
 table{width:100%;border-collapse:collapse}
-td{padding:7px 4px;border-top:1px solid var(--line);vertical-align:middle}
+td{padding:9px 6px;border-top:1px solid var(--line);vertical-align:middle}
 tr:first-child td{border-top:none}
 .hidden{display:none!important}
-label.chk{display:flex;gap:8px;align-items:flex-start;margin:6px 0}
+label.chk{display:flex;gap:10px;align-items:flex-start;margin:8px 0}
 ol,ul.list{margin:6px 0 6px 20px;padding:0}
-.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;background:var(--chip)}
-.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.acc{color:var(--acc)}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:10;padding:20px}
-.modal .box{background:var(--card);border-radius:12px;max-width:720px;width:100%;max-height:85vh;overflow:auto;padding:20px 22px;border:1px solid var(--line)}
+.tag{display:inline-block;padding:1px 9px;border-radius:999px;font-size:12px;background:var(--chip)}
+.tag.ok{color:var(--ok);background:var(--ok-bg)}.tag.warn{color:var(--warn);background:var(--warn-bg)}.tag.acc{color:var(--link);background:var(--info-bg)}
+.modal{position:fixed;inset:0;background:rgba(9,14,28,.55);display:flex;align-items:center;justify-content:center;z-index:10;padding:20px}
+.modal .box{background:var(--card);border-radius:14px;max-width:720px;width:100%;max-height:85vh;overflow:auto;padding:22px 24px;border:1px solid var(--line)}
 .notes h3{font-size:14px;margin:14px 0 4px}
 .notes ul{margin:4px 0 4px 20px;padding:0}
 .banner{border-left:4px solid var(--acc)}
+/* trình cài: mỗi bước một trang, thanh nút dính ở đáy */
+.step{display:flex;flex-direction:column;min-height:calc(100vh - 56px)}
+.step-body{flex:1;display:flex;flex-direction:column;gap:18px;padding-bottom:20px}
+.actions{position:sticky;bottom:0;display:flex;align-items:center;gap:10px;margin:0 -32px -28px;padding:14px 32px;border-top:1px solid var(--line);background:var(--bar)}
+.actions .grow{flex:1}
+.checks{border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden}
+.check{display:flex;align-items:flex-start;gap:14px;padding:13px 16px;border-top:1px solid var(--line)}
+.check:first-child{border-top:none}
+.check svg{flex:none;margin-top:1px}
+.check b{display:block;font-weight:600}
+.check .d{color:var(--mut);font-size:13px}
+.check.info{background:var(--info-bg)}
+.note-ok{display:flex;gap:10px;align-items:center;padding:11px 14px;border-radius:10px;background:var(--ok-bg);color:var(--ok)}
+.note-bad{display:flex;gap:10px;align-items:center;padding:11px 14px;border-radius:10px;background:var(--bad-bg);color:var(--bad)}
+.items{border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.item{display:flex;align-items:center;gap:14px;padding:12px 16px;border-top:1px solid var(--line)}
+.item:first-child{border-top:none}
+.item .name{flex:1}
+.item .st{font-size:13px;color:var(--mut);text-align:right;min-width:150px}
+.item .bar{width:120px}
+.big{display:flex;justify-content:space-between;gap:10px;font-size:13px;color:var(--mut);margin-top:8px}
+.big strong{color:var(--ink)}
+.done-page{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:14px}
+.done-page p{max-width:440px;margin:0;color:var(--mut)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin 1s linear infinite;transform-origin:50% 50%}
+@media (max-width:760px){.shell{flex-direction:column;height:auto}.side{width:auto}.step{min-height:0}}
 </style>
 </head>
 <body>
-<header id="topbar"><h1>SAM3 CVAT Assist</h1><span class="v" id="ver"></span>
-  <button id="updBadge" class="primary small hidden" onclick="showDash();document.getElementById('updCard').scrollIntoView()">Có bản mới</button>
-  <span class="pill" id="pill">Đang tải...</span>
-  <select id="uiLang" class="small" title="Ngôn ngữ / Language" aria-label="Ngôn ngữ / Language" onchange="setLang(this.value)">
-    <option value="vi">Tiếng Việt</option><option value="en">English</option></select></header>
+<div class="shell" id="shell">
+  <aside class="side" aria-label="SAM3 CVAT Assist">
+    <div class="brand">
+      <svg width="36" height="36" viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="#2F6BFF"/><path d="M19 8H10l-2 3 2 3h8l2 3-2 3H9" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><g fill="#fff"><circle cx="19" cy="8" r="1.7"/><circle cx="8" cy="11" r="1.7"/><circle cx="18" cy="14" r="1.7"/><circle cx="20" cy="17" r="1.7"/><circle cx="9" cy="20" r="1.7"/></g></svg>
+      <div><strong>SAM3 CVAT Assist</strong><span class="v" id="ver"></span></div>
+    </div>
+    <ol class="stepnav hidden" id="stepbar"></ol>
+    <nav class="dashnav hidden" id="dashnav">
+      <a href="#recentCard">Job gần đây</a>
+      <a href="#sitesCard">Mở CVAT</a>
+      <a href="#backendCard">Backend</a>
+      <a href="#compsCard">Thành phần</a>
+      <a href="#updCard">Cập nhật app</a>
+      <a href="#teamCard">Dùng chung trong nhóm</a>
+      <a href="#supportCard">Hỗ trợ và sao lưu</a>
+      <a href="#settingsCard">Cài đặt và dữ liệu</a>
+    </nav>
+    <div class="side-foot">
+      <button id="updBadge" class="primary small hidden" onclick="showDash();document.getElementById('updCard').scrollIntoView()">Có bản mới</button>
+      <span class="pill" id="pill">Đang tải...</span>
+      <select id="uiLang" title="Ngôn ngữ / Language" aria-label="Ngôn ngữ / Language" onchange="setLang(this.value)">
+        <option value="vi">Tiếng Việt</option><option value="en">English</option></select>
+    </div>
+  </aside>
+  <div class="content">
 <main id="mainArea">
   <!-- ================= TRÌNH CÀI ================= -->
   <section id="wizard" class="hidden">
-    <div class="steps" id="stepbar"></div>
 
-    <div class="card step" data-step="1">
-      <h2>1. Kiểm tra máy và quét những gì đã có</h2>
-      <div id="machine"></div>
-      <div id="scanBox" class="mut">Đang quét máy...</div>
-      <div id="remoteWiz" class="card hidden" style="margin-top:10px">
-        <b>Dùng backend ở máy khác</b>
-        <p class="mut small-text">Trên máy có GPU: mở SAM3 CVAT Assist → Dùng chung trong nhóm → bật "Chia sẻ backend của máy này", rồi nhập địa chỉ và key nó hiện vào đây.</p>
-        <div class="row"><input type="text" id="remoteUrlW" class="grow" placeholder="http://192.168.1.20:8765">
-          <input type="password" id="remoteKeyW" placeholder="key" style="width:200px"><button class="primary" onclick="connectRemote('W')">Kết nối</button></div>
-        <div id="remoteMsgW" style="margin-top:6px"></div>
+    <div class="step" data-step="1">
+      <div class="step-body">
+        <div><h1>Kiểm tra máy</h1><p class="sub">Tool xem máy có đủ điều kiện và tìm những file đã có sẵn để không phải tải lại.</p></div>
+        <div id="machine"></div>
+        <div>
+          <h2 style="font-size:15px;margin:0 0 8px">Thành phần trên máy</h2>
+          <div id="scanBox" class="mut">Đang quét máy...</div>
+        </div>
+        <div id="remoteWiz" class="card hidden" style="margin:0">
+          <b>Dùng backend ở máy khác</b>
+          <p class="mut small-text">Trên máy có GPU: mở SAM3 CVAT Assist → Dùng chung trong nhóm → bật "Chia sẻ backend của máy này", rồi nhập địa chỉ và key nó hiện vào đây.</p>
+          <div class="row"><input type="text" id="remoteUrlW" class="grow" placeholder="http://192.168.1.20:8765" aria-label="Địa chỉ backend">
+            <input type="password" id="remoteKeyW" placeholder="key" style="width:200px" aria-label="Key"><button class="primary" onclick="connectRemote('W')">Kết nối</button></div>
+          <div id="remoteMsgW" style="margin-top:6px"></div>
+        </div>
+        <div class="row">
+          <button class="small" onclick="addScanFolder()" title="Ví dụ thư mục sam3-cvat-assist của bản cài tay cũ">Thêm thư mục tool cũ để quét</button>
+          <button class="small" onclick="runScan(true)">Quét lại</button>
+          <button class="small" onclick="toggleRemoteForm()" title="Máy không có card NVIDIA: dùng SAM3 của một máy khác trong nhóm, không cần tải gì">Dùng backend ở máy khác</button>
+        </div>
       </div>
-      <div class="row" style="margin-top:12px">
-        <button onclick="addScanFolder()" title="Ví dụ thư mục sam3-cvat-assist của bản cài tay cũ">Thêm thư mục tool cũ để quét</button>
-        <button onclick="runScan(true)">Quét lại</button>
-        <button onclick="toggleRemoteForm()" title="Máy không có card NVIDIA: dùng SAM3 của một máy khác trong nhóm, không cần tải gì">Dùng backend ở máy khác</button>
-        <span class="grow"></span>
+      <div class="actions"><button class="quiet cancelSetup" onclick="cancelSetup()">Huỷ</button><span class="grow"></span>
         <button id="nothingBtn" class="hidden" onclick="finishWizard()">Xong (không cần tải gì)</button>
         <button class="primary" id="step1Next" onclick="afterScan()">Tiếp</button></div>
     </div>
 
-    <div class="card step" data-step="2">
-      <h2>2. Giấy phép SAM</h2>
-      <p class="mut">Trọng số SAM 3 là của Meta, dùng theo giấy phép dưới đây (bản gốc tiếng Anh). Tóm tắt: được dùng và chia sẻ,
-        phải kèm giấy phép khi chia sẻ, không dùng cho quân sự, vũ khí, gián điệp, phải tuân luật kiểm soát xuất khẩu.
-        Tóm tắt này không thay cho văn bản gốc.</p>
-      <div class="license" id="license">Đang tải...</div>
-      <label class="chk"><input type="checkbox" id="agree"> <span>Tôi đã đọc và đồng ý với SAM License.</span></label>
-      <div class="row"><button onclick="go(1)">Quay lại</button><span class="grow"></span><button class="primary" onclick="acceptLicense()">Tiếp</button></div>
+    <div class="step" data-step="2">
+      <div class="step-body">
+        <div><h1>Giấy phép SAM</h1>
+          <p class="sub">Trọng số SAM 3 là của Meta, dùng theo giấy phép dưới đây (bản gốc tiếng Anh). Tóm tắt: được dùng và chia sẻ,
+          phải kèm giấy phép khi chia sẻ, không dùng cho quân sự, vũ khí, gián điệp, phải tuân luật kiểm soát xuất khẩu.
+          Tóm tắt này không thay cho văn bản gốc.</p></div>
+        <div class="license" id="license" tabindex="0">Đang tải...</div>
+        <label class="chk"><input type="checkbox" id="agree"> <span>Tôi đã đọc và đồng ý với SAM License.</span></label>
+      </div>
+      <div class="actions"><button class="quiet cancelSetup" onclick="cancelSetup()">Huỷ</button><span class="grow"></span>
+        <button onclick="go(1)">Quay lại</button><button class="primary" onclick="acceptLicense()">Tiếp</button></div>
     </div>
 
-    <div class="card step" data-step="3">
-      <h2>3. Token Hugging Face</h2>
-      <div id="tokenNotNeeded" class="ok hidden" style="margin-bottom:8px"></div>
-      <div id="tokenNeeded">
-        <p>SAM 3 nằm trong repo có cổng của Meta. Cần làm một lần:</p>
-        <ol>
-          <li>Có tài khoản Hugging Face (<button class="link" onclick="link('signup')">tạo tài khoản</button>).</li>
-          <li>Mở <button class="link" onclick="link('sam3')">huggingface.co/facebook/sam3</button>, điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).</li>
-          <li>Tạo token loại <b>Read</b> tại <button class="link" onclick="link('tokens')">Settings → Access Tokens</button> rồi dán vào đây.</li>
-        </ol>
-        <div class="row"><input type="password" id="token" class="grow" placeholder="hf_..." autocomplete="off">
-          <button class="primary" onclick="checkToken()">Kiểm tra</button></div>
-        <label class="chk" id="rememberRow"><input type="checkbox" id="remember"> <span>Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.</span></label>
-        <div id="tokenMsg" style="margin-top:6px"></div>
+    <div class="step" data-step="3">
+      <div class="step-body">
+        <div><h1>Token Hugging Face</h1><p class="sub">Trọng số SAM 3 nằm trong kho của Meta, cần tài khoản đã được duyệt. Token chỉ gửi tới huggingface.co.</p></div>
+        <div id="tokenNotNeeded" class="note-ok hidden"></div>
+        <div id="tokenNeeded" style="display:flex;flex-direction:column;gap:12px">
+          <ol style="margin:0 0 0 20px">
+            <li>Có tài khoản Hugging Face (<button class="link" onclick="link('signup')">tạo tài khoản</button>).</li>
+            <li>Mở <button class="link" onclick="link('sam3')">huggingface.co/facebook/sam3</button>, điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).</li>
+            <li>Tạo token loại <b>Read</b> tại <button class="link" onclick="link('tokens')">Settings → Access Tokens</button> rồi dán vào đây.</li>
+          </ol>
+          <label for="token" style="font-weight:600;font-size:13px">Token (loại Read)</label>
+          <div class="row" style="margin-top:-6px"><input type="password" id="token" class="grow" placeholder="hf_..." autocomplete="off">
+            <button onclick="checkToken()">Kiểm tra</button></div>
+          <div id="tokenMsg"></div>
+          <label class="chk" id="rememberRow"><input type="checkbox" id="remember"> <span>Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.</span></label>
+        </div>
       </div>
-      <div class="row" style="margin-top:12px"><button onclick="go(S.license_accepted ? 1 : 2)">Quay lại</button><span class="grow"></span>
+      <div class="actions"><button class="quiet cancelSetup" onclick="cancelSetup()">Huỷ</button><span class="grow"></span>
+        <button onclick="go(S.license_accepted ? 1 : 2)">Quay lại</button>
         <button id="skipTokenBtn" onclick="skipToken()" title="Meta chưa duyệt? Cài phần còn lại trước, nhập token sau trong app.">Cài trước, nhập token sau</button>
         <button class="primary" id="tokenNext" disabled onclick="go(4)">Tiếp</button></div>
     </div>
 
-    <div class="card step" data-step="4">
-      <h2>4. Chọn thành phần</h2>
-      <p class="mut">Chỉ tải phần nặng còn thiếu hoặc cần cập nhật. Phần đã có đúng bản, hoặc dùng lại được từ bản cũ, không tải lại.</p>
-      <table id="pick"></table>
-      <div id="estimate" style="margin-top:10px" class="mut"></div>
-      <div class="row" style="margin-top:12px"><button onclick="go(3)">Quay lại</button><span class="grow"></span>
+    <div class="step" data-step="4">
+      <div class="step-body">
+        <div><h1>Chọn thành phần</h1><p class="sub">Chỉ tải phần nặng còn thiếu hoặc cần cập nhật. Phần đã có đúng bản, hoặc dùng lại được từ bản cũ, không tải lại.</p></div>
+        <div class="checks" style="padding:4px 10px"><table id="pick"></table></div>
+        <div id="estimate" class="mut"></div>
+      </div>
+      <div class="actions"><button class="quiet cancelSetup" onclick="cancelSetup()">Huỷ</button><span class="grow"></span>
+        <button onclick="go(3)">Quay lại</button>
         <button class="primary" id="installBtn" onclick="startInstall()">Tải và cài</button></div>
     </div>
 
-    <div class="card step" data-step="5">
-      <h2>5. Tải và cài</h2>
-      <div id="pstep">...</div>
-      <div class="bar" id="pbar" style="margin:10px 0"><div></div></div>
-      <div class="mut" id="pfile"></div>
-      <div id="perr" class="bad" style="margin-top:8px"></div>
-      <details style="margin-top:8px"><summary class="mut">Nhật ký</summary><pre class="log" id="plog"></pre></details>
-      <div class="row" style="margin-top:12px"><span class="grow"></span>
-        <button id="cancelBtn" onclick="api().cancel_install()">Dừng</button>
-        <button id="retryBtn" class="hidden" onclick="startInstall()">Thử lại (tải tiếp từ chỗ dừng)</button>
-        <button id="doneBtn" class="primary hidden" onclick="finishWizard()">Xong</button></div>
+    <div class="step" data-step="5">
+      <div class="step-body">
+        <div><h1>Đang tải và cài thành phần</h1><p class="sub" id="pstep">...</p></div>
+        <div>
+          <div class="bar" id="pbar"><div></div></div>
+          <div class="big"><span id="ptotal"></span><span id="peta"></span></div>
+        </div>
+        <div class="items" id="pitems"></div>
+        <div class="mut small-text" id="pfile"></div>
+        <div id="perr" class="hidden"></div>
+        <details><summary class="mut">Chi tiết kỹ thuật</summary><pre class="log" id="plog"></pre></details>
+      </div>
+      <div class="actions"><span class="grow"></span>
+        <button id="cancelBtn" onclick="api().cancel_install()">Tạm dừng</button>
+        <button id="retryBtn" class="hidden primary" onclick="startInstall()">Thử lại (tải tiếp từ chỗ dừng)</button>
+        <button id="doneBtn" class="primary hidden" onclick="go(6)">Tiếp</button></div>
+    </div>
+
+    <div class="step" data-step="6">
+      <div class="step-body">
+        <div class="done-page">
+          <svg width="84" height="84" viewBox="0 0 24 24" role="img" aria-label="Hoàn tất"><circle cx="12" cy="12" r="11" fill="var(--ok-bg)"/><path d="M7 12.5l3.2 3.2L17 9" stroke="var(--ok)" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <h1 style="font-size:26px">Sẵn sàng</h1>
+          <p>SAM3 CVAT Assist đã cài xong. Lần sau mở app từ menu Start hoặc biểu tượng trên Desktop.</p>
+          <label class="chk"><input type="checkbox" id="autostartW" onchange="api().set_autostart(this.checked)"> <span>Chạy nền khi Windows khởi động</span></label>
+        </div>
+      </div>
+      <div class="actions"><span class="grow"></span>
+        <button id="doneDash" class="hidden" onclick="finishWizard()">Mở bảng điều khiển</button>
+        <button id="doneCvat" class="primary" onclick="finishAndOpenCvat()">Mở CVAT</button></div>
     </div>
   </section>
 
@@ -144,18 +252,18 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
       <table id="recent"></table>
     </div>
 
-    <div class="card">
+    <div class="card" id="sitesCard">
       <h2>Mở CVAT</h2>
       <table id="sites"></table>
       <div class="row" style="margin-top:10px">
-        <input type="text" id="siteName" placeholder="Tên (tuỳ chọn)" style="width:180px">
-        <input type="text" id="siteUrl" class="grow" placeholder="https://cvat.ten-mien.com hoặc localhost:8080">
+        <input type="text" id="siteName" placeholder="Tên (tuỳ chọn)" aria-label="Tên (tuỳ chọn)" style="width:180px">
+        <input type="text" id="siteUrl" class="grow" placeholder="https://cvat.ten-mien.com hoặc localhost:8080" aria-label="Địa chỉ CVAT">
         <button onclick="addSite()">Thêm</button></div>
       <div id="siteMsg" class="warn" style="margin-top:6px"></div>
-      <p class="mut" style="margin-bottom:0">Bảng của tool chỉ hiện trên các địa chỉ trong danh sách này. Đăng nhập CVAT ngay trong cửa sổ mở ra; app nhớ đăng nhập cho lần sau.</p>
+      <p class="mut small-text" style="margin-bottom:0">Bảng của tool chỉ hiện trên các địa chỉ trong danh sách này. Đăng nhập CVAT ngay trong cửa sổ mở ra; app nhớ đăng nhập cho lần sau.</p>
     </div>
 
-    <div class="card">
+    <div class="card" id="backendCard">
       <h2>Backend</h2>
       <div class="row"><span id="bstate" class="grow"></span>
         <button onclick="be('start')">Bật</button><button onclick="be('stop')">Tắt</button><button onclick="be('restart')">Khởi động lại</button>
@@ -163,7 +271,7 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
       <pre class="log hidden" id="blog"></pre>
     </div>
 
-    <div class="card">
+    <div class="card" id="compsCard">
       <h2>Thành phần</h2>
       <table id="comps"></table>
       <div class="row" style="margin-top:10px"><span class="grow mut" id="gpuLine"></span>
@@ -181,18 +289,18 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
         <button onclick="checkUpdate(true)">Kiểm tra ngay</button></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="teamCard">
       <h2>Dùng chung trong nhóm</h2>
       <label class="chk"><input type="checkbox" id="lanShare" onchange="setLanShare(this.checked)"> <span>Chia sẻ backend của máy này cho máy khác trong mạng nội bộ (LAN)</span></label>
       <div id="lanBox" class="small-text"></div>
       <div class="row" style="margin-top:8px"><span class="grow"><b>Hoặc dùng backend ở máy khác</b> <span class="mut small-text">(máy này không cần GPU, không cần tải model)</span></span></div>
-      <div class="row"><input type="text" id="remoteUrlD" class="grow" placeholder="http://192.168.1.20:8765">
-        <input type="password" id="remoteKeyD" placeholder="key" style="width:200px">
+      <div class="row"><input type="text" id="remoteUrlD" class="grow" placeholder="http://192.168.1.20:8765" aria-label="Địa chỉ backend">
+        <input type="password" id="remoteKeyD" placeholder="key" style="width:200px" aria-label="Key">
         <button onclick="connectRemote('D')">Kết nối</button><button id="remoteOff" class="hidden" onclick="clearRemote()">Thôi, dùng máy này</button></div>
       <div id="remoteMsgD" class="small-text" style="margin-top:6px"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="supportCard">
       <h2>Hỗ trợ, sao lưu và đồng bộ</h2>
       <div class="row">
         <button onclick="doReport()" title="Gom nhật ký và thông tin máy thành một file zip để gửi người hỗ trợ. Không có token, key, cookie hay ảnh.">Gửi báo lỗi (tạo file)</button>
@@ -204,7 +312,7 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
       <div id="supportMsg" class="small-text" style="margin-top:6px"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="settingsCard">
       <h2>Cài đặt và dữ liệu</h2>
       <div class="row small-text">
         <label>Khi mở app: <select id="startMode" onchange="api().set_setting('start_mode', this.value)">
@@ -222,12 +330,14 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
         <button onclick="api().open_folder('learning')">Dữ liệu tự học</button>
         <button onclick="api().open_folder('logs')">Nhật ký</button>
         <span class="grow"></span><button onclick="api().quit()">Thoát app</button></div>
-      <p class="mut" id="dataDir" style="margin-bottom:0"></p>
+      <p class="mut small-text" id="dataDir" style="margin-bottom:0"></p>
     </div>
   </section>
 </main>
+  </div>
+</div>
 
-<div class="modal hidden" id="newsModal"><div class="box">
+<div class="modal hidden" id="newsModal" role="dialog" aria-modal="true" aria-labelledby="newsTitle"><div class="box">
   <h2 style="margin-top:0" id="newsTitle">Có gì mới</h2>
   <div class="notes" id="newsBody"></div>
   <div class="row" style="margin-top:14px"><span class="grow"></span><button class="primary" onclick="closeNews()">Đã xem</button></div>
@@ -236,7 +346,7 @@ ol,ul.list{margin:6px 0 6px 20px;padding:0}
 <script>
 // ---- đa ngôn ngữ: chung bộ dịch và ngôn ngữ với panel trong CVAT ----
 // <i18n-catalog> phần này do scripts/i18n_build.py sinh, đừng sửa tay
-  const I18N_DATA = {"codes":{"Chưa chọn thư mục chung.":"E_BAD_REQUEST"},"strings":{" (tuỳ chọn)":" (optional)"," <span class=\"mut\">(tuỳ chọn)</span>":" <span class=\"mut\">(optional)</span>"," <span class=\"ok\">Đây là bản mới nhất</span> <span class=\"mut small-text\">(kiểm lúc {0})</span>":" <span class=\"ok\">This is the latest version</span> <span class=\"mut small-text\">(checked at {0})</span>"," <span class=\"tag acc\">Có bản mới {0}</span>{1}\n      <div class=\"notes\" style=\"margin-top:8px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 12px\">{2}</div>\n      <p class=\"mut small-text\">Cập nhật chỉ thay phần app. PyTorch, trọng số, profile và dữ liệu tự học giữ nguyên. App sẽ tự đóng, cài rồi mở lại.</p>":" <span class=\"tag acc\">New version {0}</span>{1}\n      <div class=\"notes\" style=\"margin-top:8px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 12px\">{2}</div>\n      <p class=\"mut small-text\">Updating only replaces the app. PyTorch, weights, profiles and learning data stay as they are. The app closes, installs and reopens.</p>"," hoặc ":" or ","(không thấy IP mạng nội bộ)":"(no local network IP found)","(máy này không cần GPU, không cần tải model)":"(this machine needs no GPU and no model download)","(trống)":"(empty)","(áp dụng khi bật lại backend)":"(applies when the backend restarts)",", điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).":", fill in the form, accept the terms, wait for Meta's approval (you get an email).","1. Kiểm tra máy và quét những gì đã có":"1. Check the machine and scan what is already there","15 phút":"15 minutes","2. Giấy phép SAM":"2. SAM licence","30 phút":"30 minutes","4. Chọn thành phần":"4. Choose components","5 phút":"5 minutes","5. Tải và cài":"5. Download and install","60 phút":"60 minutes","<b>Bản app này cần cập nhật: {0}.</b>\n      <span class=\"mut\">{1}</span>\n      <div class=\"row\" style=\"margin-top:8px\"><span class=\"grow\"></span><button class=\"primary\" onclick=\"openWizard(1)\">Cập nhật ngay</button></div>":"<b>This app version needs an update: {0}.</b>\n      <span class=\"mut\">{1}</span>\n      <div class=\"row\" style=\"margin-top:8px\"><span class=\"grow\"></span><button class=\"primary\" onclick=\"openWizard(1)\">Update now</button></div>","<button onclick=\"removeComp('{0}')\">Gỡ</button>":"<button onclick=\"removeComp('{0}')\">Remove</button>","<details style=\"margin-top:8px\"><summary class=\"mut small-text\">Đã quét {0} nơi</summary><ul class=\"list small-text mut\">{1}</ul>{2}</details>":"<details style=\"margin-top:8px\"><summary class=\"mut small-text\">Scanned {0} locations</summary><ul class=\"list small-text mut\">{1}</ul>{2}</details>","<div class=\"row\"><span class=\"grow\"></span><button onclick=\"skipVersion()\">Bỏ qua bản này</button>\n        <button id=\"updDl\" class=\"primary\" onclick=\"downloadUpdate()\">Tải bản cập nhật</button>\n        <button id=\"updGo\" class=\"primary hidden\" onclick=\"installUpdate()\">Cài và mở lại app</button></div>":"<div class=\"row\"><span class=\"grow\"></span><button onclick=\"skipVersion()\">Skip this version</button>\n        <button id=\"updDl\" class=\"primary\" onclick=\"downloadUpdate()\">Download update</button>\n        <button id=\"updGo\" class=\"primary hidden\" onclick=\"installUpdate()\">Install and reopen app</button></div>","<div class=\"small-text\">Thư mục bạn thêm: {0}</div>":"<div class=\"small-text\">Folders you added: {0}</div>","<h3>Bản {0}{1}</h3>{2}":"<h3>Version {0}{1}</h3>{2}","<li>Không thấy bộ nhớ đệm hay thư mục tool cũ nào.</li>":"<li>No cache or old tool folder found.</li>","<p class=\"mut small-text\">Python và thư viện nhỏ của app: có sẵn trong bộ cài, cập nhật cùng app. Dữ liệu và model: {0}</p>":"<p class=\"mut small-text\">Python and the app's small libraries: included in the installer, updated with the app. Data and models: {0}</p>","<p class=\"warn\"><b>Không thấy card NVIDIA.</b> Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm. Nếu máy có card NVIDIA, hãy <button class=\"link\" onclick=\"link('nvidia')\">cài driver mới</button> rồi mở lại.</p>":"<p class=\"warn\"><b>No NVIDIA card found.</b> The tool still runs on the CPU (smaller PyTorch build) but is very slow. If the machine has an NVIDIA card, <button class=\"link\" onclick=\"link('nvidia')\">install a new driver</button> and reopen.</p>","<p class=\"warn\">Driver NVIDIA cũ, PyTorch CUDA 12 có thể không chạy. Nên <button class=\"link\" onclick=\"link('nvidia')\">cập nhật driver</button>.</p>":"<p class=\"warn\">Old NVIDIA driver; PyTorch CUDA 12 may not run. <button class=\"link\" onclick=\"link('nvidia')\">Update the driver</button>.</p>","<p class=\"warn\">VRAM dưới 6 GB: SAM 3 có thể thiếu bộ nhớ với ảnh lớn.</p>":"<p class=\"warn\">Less than 6 GB VRAM: SAM 3 may run out of memory on large images.</p>","<p class=\"warn\">{0}</p><div class=\"row\"><span class=\"grow\"></span><button onclick=\"openReleasePage()\">Mở trang Releases</button></div>":"<p class=\"warn\">{0}</p><div class=\"row\"><span class=\"grow\"></span><button onclick=\"openReleasePage()\">Open Releases page</button></div>","<span class=\"bad\">Không đủ chỗ trống.</span>":"<span class=\"bad\">Not enough free space.</span>","<span class=\"mut grow\">Đã nhớ token Hugging Face.</span><button onclick=\"api().forget_token().then(refresh)\">Quên token</button>":"<span class=\"mut grow\">Hugging Face token remembered.</span><button onclick=\"api().forget_token().then(refresh)\">Forget token</button>","<span class=\"mut\">(tuỳ chọn)</span>":"<span class=\"mut\">(optional)</span>","<span class=\"mut\">Đang kiểm tra...</span>":"<span class=\"mut\">Checking...</span>","<span class=\"mut\">Đang kết nối...</span>":"<span class=\"mut\">Connecting...</span>","<span class=\"mut\">Đang quét máy (bộ nhớ đệm Hugging Face, thư mục tool cũ, model đã cài)...</span>":"<span class=\"mut\">Scanning the machine (Hugging Face cache, old tool folders, installed models)...</span>","<span class=\"ok\">Đã tạo {0}. Gửi file này cho người hỗ trợ.</span>":"<span class=\"ok\">Created {0}. Send this file to support.</span>","<span class=\"ok\">đã cài</span>":"<span class=\"ok\">installed</span>","<span class=\"tag acc\">cần cập nhật{0}</span> <span class=\"mut small-text\">{1} · tải {2}</span>":"<span class=\"tag acc\">needs update{0}</span> <span class=\"mut small-text\">{1} · download {2}</span>","<span class=\"warn\">chưa có</span>":"<span class=\"warn\">missing</span>","<tr><td class=\"mut\">Chưa có địa chỉ nào.</td></tr>":"<tr><td class=\"mut\">No addresses yet.</td></tr>","<tr><td><b>Job {0}</b> <span class=\"mut\">task {1} · {2} · {3}</span></td>\n    <td style=\"text-align:right\"><button class=\"primary small\" onclick=\"openJob({4})\">Mở</button></td></tr>":"<tr><td><b>Job {0}</b> <span class=\"mut\">task {1} · {2} · {3}</span></td>\n    <td style=\"text-align:right\"><button class=\"primary small\" onclick=\"openJob({4})\">Open</button></td></tr>","<tr><td><b>{0}</b> <span class=\"mut\">{1}</span></td>\n    <td style=\"text-align:right;white-space:nowrap\"><button class=\"primary\" onclick=\"openSite({2})\">Mở</button>\n    <button onclick=\"removeSite({3})\">Xoá</button></td></tr>":"<tr><td><b>{0}</b> <span class=\"mut\">{1}</span></td>\n    <td style=\"text-align:right;white-space:nowrap\"><button class=\"primary\" onclick=\"openSite({2})\">Open</button>\n    <button onclick=\"removeSite({3})\">Delete</button></td></tr>","App sẽ đóng, cài bản {0} rồi tự mở lại. Tiếp tục?":"The app will close, install version {0} and reopen. Continue?","Backend lỗi":"Backend error","Backend đang chạy":"Backend running","Backend đang khởi động":"Backend starting","Backend đang tắt":"Backend stopped","Bảng của tool chỉ hiện trên các địa chỉ trong danh sách này. Đăng nhập CVAT ngay trong cửa sổ mở ra; app nhớ đăng nhập cho lần sau.":"The tool's panel only appears on the addresses in this list. Sign in to CVAT in the window that opens; the app remembers your login next time.","Bật":"On","Bộ nhớ đệm Hugging Face: {0}":"Hugging Face cache: {0}","Chia sẻ backend của máy này cho máy khác trong mạng nội bộ (LAN)":"Share this machine's backend with other machines on the local network (LAN)","Chưa chọn thư mục chung.":"No shared folder chosen.","Chỉ tải phần nặng còn thiếu hoặc cần cập nhật. Phần đã có đúng bản, hoặc dùng lại được từ bản cũ, không tải lại.":"Only heavy parts that are missing or need updating are downloaded. Parts already present at the right version, or reusable from an old version, are not downloaded again.","Chọn thư mục chung":"Choose shared folder","Cài trước, nhập token sau":"Install first, token later","Cài đặt và dữ liệu":"Settings and data","Có bản mới":"Update available","Có bản {0}":"Version available: {0}","Có gì mới":"What's new","Có tài khoản Hugging Face (":"Have a Hugging Face account (","Cần tick ô đồng ý để tiếp tục.":"Tick the consent box to continue.","Cập nhật":"Update","Cập nhật app":"Update app","Dùng backend ở máy khác":"Use a backend on another machine","Dùng chung trong nhóm":"Team sharing","Dừng":"Stop","Dữ liệu tự học":"Learning data","Dữ liệu: {0} · Python {1}":"Data: {0} · Python {1}","Giấy phép":"Licence","Gom nhật ký và thông tin máy thành một file zip để gửi người hỗ trợ. Không có token, key, cookie hay ảnh.":"Bundle logs and system info into a zip file to send to support. No tokens, keys, cookies or images.","Gỡ {0}? Muốn dùng lại phải tải lại.":"Remove {0}? To use it again you will have to download it again.","Gửi báo lỗi (tạo file)":"Send error report (create file)","Gửi lên":"Upload","Hoặc dùng backend ở máy khác":"Or use a backend on another machine","Hỗ trợ, sao lưu và đồng bộ":"Support, backup and sync","Job gần đây":"Recent jobs","Khi mở app:":"When the app opens:","Khôi phục":"Restore","Khôi phục sẽ ghi đè profile, guideline và dữ liệu tự học bằng bản sao lưu (dữ liệu hiện tại được tự sao lưu trước). Tiếp tục?":"Restoring overwrites profiles, guidelines and learning data with the backup (current data is backed up automatically first). Continue?","Không bắt đầu được.":"Could not start.","Không có card NVIDIA: chạy bằng CPU":"No NVIDIA card: running on CPU","Không có gì cần tải.":"Nothing to download.","Khởi động lại":"Restart","Kiểm tra":"Check","Kiểm tra cập nhật thành phần":"Check for component updates","Kiểm tra ngay":"Check now","Kết nối":"Connect","Lấy về":"Download","Meta chưa duyệt? Cài phần còn lại trước, nhập token sau trong app.":"Meta has not approved yet? Install the rest first and enter the token later in the app.","Máy khác nhập địa chỉ: {0}\n     và key: <code id=\"lanKey\">{1}</code> <button class=\"small\" onclick=\"copyKey()\">Chép key</button>\n     <div class=\"mut\">Windows có thể hỏi cho phép qua tường lửa: chọn \"Private networks\". Chỉ máy có key mới dùng được.</div>":"Other machines enter the address: {0}\n     and key: <code id=\"lanKey\">{1}</code> <button class=\"small\" onclick=\"copyKey()\">Copy key</button>\n     <div class=\"mut\">Windows may ask to allow it through the firewall: choose \"Private networks\". Only machines with the key can use it.</div>","Máy không có card NVIDIA: dùng SAM3 của một máy khác trong nhóm, không cần tải gì":"No NVIDIA card: use SAM3 from another machine in the team, nothing to download","Mở":"Open","Mở CVAT":"Open CVAT","Ngôn ngữ / Language":"Language / Ngôn ngữ","Nhả model khỏi VRAM sau:":"Release the model from VRAM after:","Nhật ký":"Log","Nhật ký thay đổi":"Changelog","Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.":"Remember the token (stored in Windows Credential Manager, never written to a file) to download new model versions later.","Quay lại":"Back","Quét lại":"Scan again","Quét máy":"Scan machine","Quét và tải thành phần":"Scan and download components","SAM 3 nằm trong repo có cổng của Meta. Cần làm một lần:":"SAM 3 is in a gated Meta repo. Do this once:","Sao lưu":"Back up","Thiếu thành phần":"Missing components","Thoát app":"Quit app","Thành phần":"Components","Thêm":"Add","Thêm thư mục tool cũ để quét":"Add an old tool folder to scan","Thôi, dùng máy này":"Never mind, use this machine","Thư mục chung: OneDrive, Google Drive hay ổ mạng của nhóm. Đồng bộ profile, guideline và bài học; dữ liệu tự học là của từng người nên không gửi. Không bao giờ xoá file.":"Shared folder: OneDrive, Google Drive or a team network drive. Syncs profiles, guidelines and lessons; learning data is per person so it is not sent. Files are never deleted.","Thư mục chung: {0}":"Shared folder: {0}","Thư mục dữ liệu":"Data folder","Thư mục tool cũ: {0}":"Old tool folder: {0}","Thử lại (tải tiếp từ chỗ dừng)":"Retry (resume from where it stopped)","Tiếng Việt":"Tiếng Việt","Tiếp":"Next","Trên máy có GPU: mở SAM3 CVAT Assist → Dùng chung trong nhóm → bật \"Chia sẻ backend của máy này\", rồi nhập địa chỉ và key nó hiện vào đây.":"On the machine with the GPU: open SAM3 CVAT Assist → Team sharing → turn on \"Share this machine's backend\", then enter the address and key it shows here.","Trọng số SAM 3 là của Meta, dùng theo giấy phép dưới đây (bản gốc tiếng Anh). Tóm tắt: được dùng và chia sẻ, phải kèm giấy phép khi chia sẻ, không dùng cho quân sự, vũ khí, gián điệp, phải tuân luật kiểm soát xuất khẩu. Tóm tắt này không thay cho văn bản gốc.":"The SAM 3 weights belong to Meta and are used under the licence below (original English text). Summary: you may use and share them, must include the licence when sharing, may not use them for military, weapons or espionage purposes, and must follow export control laws. This summary does not replace the original text.","Trọng số SAM 3 đã có và đúng bản: không cần token.":"SAM 3 weights are present and up to date: no token needed.","Tên (tuỳ chọn)":"Name (optional)","Tôi đã đọc và đồng ý với SAM License.":"I have read and agree to the SAM License.","Tạo token loại":"Create a token of type","Tải":"Download","Tải và cài":"Download and install","Tải về khoảng <b>{0}</b>, cần khoảng <b>{1}</b> trên ổ đĩa (còn trống {2}). {3}":"Downloads about <b>{0}</b>, needs about <b>{1}</b> on disk ({2} free). {3}","Tắt":"Off","Tự chạy nền khi bật Windows":"Run in the background when Windows starts","Tự kiểm bản mới mỗi ngày (hỏi GitHub Releases của tool)":"Check for a new version daily (asks the tool's GitHub Releases)","Ví dụ thư mục sam3-cvat-assist của bản cài tay cũ":"E.g. the sam3-cvat-assist folder of an old manual install","Vẫn muốn chọn thành phần":"Choose components anyway","Xong (không cần tải gì)":"Done (nothing to download)","Xoá {0} khỏi danh sách?":"Delete {0} from the list?","bản CPU":"CPU build","bản CUDA":"CUDA build","bắt buộc":"required","cho job 50 điểm mặt":"for 50-point face jobs","cho job skeleton người":"for human skeleton jobs","chưa có":"missing","cần cập nhật":"needs update","dùng lại file có sẵn":"reuse existing files","dùng lại {0} đã có trên máy":"reuse {0} already on this machine","https://cvat.ten-mien.com hoặc localhost:8080":"https://cvat.your-domain.com or localhost:8080","không cần tải":"nothing to download","không nhả":"never","mở bảng điều khiển":"open the control panel","mở thẳng CVAT":"open CVAT directly","nhập token sau trong app":"enter the token later in the app","phiên bản {0}":"version {0}","rồi dán vào đây.":"and paste it here.","tại":"at","tạo tài khoản":"create an account","tải {0}":"download {0}","{0} <button class=\"link small-text\" data-d=\"{1}\" onclick=\"removeScanFolder(this.dataset.d)\">bỏ</button>":"{0} <button class=\"link small-text\" data-d=\"{1}\" onclick=\"removeScanFolder(this.dataset.d)\">remove</button>","Đang dùng bản <b>{0}</b>.":"Using version <b>{0}</b>.","Đang kiểm tra...":"Checking...","Đang quét máy...":"Scanning the machine...","Đang tính dung lượng...":"Calculating size...","Đang tải...":"Downloading...","Đã cập nhật lên bản {0}: có gì mới":"Updated to version {0}: what's new","Đã tìm thấy đủ trọng số SAM 3 trên máy (sẽ kiểm mã băm khi cài): không cần token.":"All SAM 3 weights were found on this machine (hashes are checked during install): no token needed.","Đã xem":"Got it","đã có, đúng bản":"present, correct version"}};
+  const I18N_DATA = {"codes":{"Chưa chọn thư mục chung.":"E_BAD_REQUEST"},"strings":{" (tuỳ chọn)":" (optional)"," <span class=\"mut\">(tuỳ chọn)</span>":" <span class=\"mut\">(optional)</span>"," <span class=\"ok\">Đây là bản mới nhất</span> <span class=\"mut small-text\">(kiểm lúc {0})</span>":" <span class=\"ok\">This is the latest version</span> <span class=\"mut small-text\">(checked at {0})</span>"," <span class=\"tag acc\">Có bản mới {0}</span>{1}\n      <div class=\"notes\" style=\"margin-top:8px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 12px\">{2}</div>\n      <p class=\"mut small-text\">Cập nhật chỉ thay phần app. PyTorch, trọng số, profile và dữ liệu tự học giữ nguyên. App sẽ tự đóng, cài rồi mở lại.</p>":" <span class=\"tag acc\">New version {0}</span>{1}\n      <div class=\"notes\" style=\"margin-top:8px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 12px\">{2}</div>\n      <p class=\"mut small-text\">Updating only replaces the app. PyTorch, weights, profiles and learning data stay as they are. The app closes, installs and reopens.</p>"," hoặc ":" or ","(không thấy IP mạng nội bộ)":"(no local network IP found)","(máy này không cần GPU, không cần tải model)":"(this machine needs no GPU and no model download)","(trống)":"(empty)","(áp dụng khi bật lại backend)":"(applies when the backend restarts)",", điền thông tin, đồng ý điều khoản, đợi Meta duyệt (có email báo).":", fill in the form, accept the terms, wait for Meta's approval (you get an email).",". VRAM dưới 6 GB: SAM 3 có thể thiếu bộ nhớ với ảnh lớn.":". Less than 6 GB VRAM: SAM 3 may run out of memory on large images.","15 phút":"15 minutes","30 phút":"30 minutes","5 phút":"5 minutes","60 phút":"60 minutes","<b>Bản app này cần cập nhật: {0}.</b>\n      <span class=\"mut\">{1}</span>\n      <div class=\"row\" style=\"margin-top:8px\"><span class=\"grow\"></span><button class=\"primary\" onclick=\"openWizard(1)\">Cập nhật ngay</button></div>":"<b>This app version needs an update: {0}.</b>\n      <span class=\"mut\">{1}</span>\n      <div class=\"row\" style=\"margin-top:8px\"><span class=\"grow\"></span><button class=\"primary\" onclick=\"openWizard(1)\">Update now</button></div>","<button onclick=\"removeComp('{0}')\">Gỡ</button>":"<button onclick=\"removeComp('{0}')\">Remove</button>","<details style=\"margin-top:8px\"><summary class=\"mut small-text\">Đã quét {0} nơi</summary><ul class=\"list small-text mut\">{1}</ul>{2}</details>":"<details style=\"margin-top:8px\"><summary class=\"mut small-text\">Scanned {0} locations</summary><ul class=\"list small-text mut\">{1}</ul>{2}</details>","<div class=\"row\"><span class=\"grow\"></span><button onclick=\"skipVersion()\">Bỏ qua bản này</button>\n        <button id=\"updDl\" class=\"primary\" onclick=\"downloadUpdate()\">Tải bản cập nhật</button>\n        <button id=\"updGo\" class=\"primary hidden\" onclick=\"installUpdate()\">Cài và mở lại app</button></div>":"<div class=\"row\"><span class=\"grow\"></span><button onclick=\"skipVersion()\">Skip this version</button>\n        <button id=\"updDl\" class=\"primary\" onclick=\"downloadUpdate()\">Download update</button>\n        <button id=\"updGo\" class=\"primary hidden\" onclick=\"installUpdate()\">Install and reopen app</button></div>","<div class=\"small-text\">Thư mục bạn thêm: {0}</div>":"<div class=\"small-text\">Folders you added: {0}</div>","<h3>Bản {0}{1}</h3>{2}":"<h3>Version {0}{1}</h3>{2}","<li>Không thấy bộ nhớ đệm hay thư mục tool cũ nào.</li>":"<li>No cache or old tool folder found.</li>","<p class=\"warn\">{0}</p><div class=\"row\"><span class=\"grow\"></span><button onclick=\"openReleasePage()\">Mở trang Releases</button></div>":"<p class=\"warn\">{0}</p><div class=\"row\"><span class=\"grow\"></span><button onclick=\"openReleasePage()\">Open Releases page</button></div>","<span class=\"bad\">Không đủ chỗ trống.</span>":"<span class=\"bad\">Not enough free space.</span>","<span class=\"mut grow\">Đã nhớ token Hugging Face.</span><button onclick=\"api().forget_token().then(refresh)\">Quên token</button>":"<span class=\"mut grow\">Hugging Face token remembered.</span><button onclick=\"api().forget_token().then(refresh)\">Forget token</button>","<span class=\"mut\">(tuỳ chọn)</span>":"<span class=\"mut\">(optional)</span>","<span class=\"mut\">Đang kiểm tra...</span>":"<span class=\"mut\">Checking...</span>","<span class=\"mut\">Đang kết nối...</span>":"<span class=\"mut\">Connecting...</span>","<span class=\"mut\">Đang quét máy (bộ nhớ đệm Hugging Face, thư mục tool cũ, model đã cài)...</span>":"<span class=\"mut\">Scanning the machine (Hugging Face cache, old tool folders, installed models)...</span>","<span class=\"ok\">Đã tạo {0}. Gửi file này cho người hỗ trợ.</span>":"<span class=\"ok\">Created {0}. Send this file to support.</span>","<span class=\"ok\">đã cài</span>":"<span class=\"ok\">installed</span>","<span class=\"tag acc\">cần cập nhật{0}</span> <span class=\"mut small-text\">{1} · tải {2}</span>":"<span class=\"tag acc\">needs update{0}</span> <span class=\"mut small-text\">{1} · download {2}</span>","<span class=\"warn\">chưa có</span>":"<span class=\"warn\">missing</span>","<tr><td class=\"mut\">Chưa có địa chỉ nào.</td></tr>":"<tr><td class=\"mut\">No addresses yet.</td></tr>","<tr><td><b>Job {0}</b> <span class=\"mut\">task {1} · {2} · {3}</span></td>\n    <td style=\"text-align:right\"><button class=\"primary small\" onclick=\"openJob({4})\">Mở</button></td></tr>":"<tr><td><b>Job {0}</b> <span class=\"mut\">task {1} · {2} · {3}</span></td>\n    <td style=\"text-align:right\"><button class=\"primary small\" onclick=\"openJob({4})\">Open</button></td></tr>","<tr><td><b>{0}</b> <span class=\"mut\">{1}</span></td>\n    <td style=\"text-align:right;white-space:nowrap\"><button class=\"primary\" onclick=\"openSite({2})\">Mở</button>\n    <button onclick=\"removeSite({3})\">Xoá</button></td></tr>":"<tr><td><b>{0}</b> <span class=\"mut\">{1}</span></td>\n    <td style=\"text-align:right;white-space:nowrap\"><button class=\"primary\" onclick=\"openSite({2})\">Open</button>\n    <button onclick=\"removeSite({3})\">Delete</button></td></tr>","App sẽ đóng, cài bản {0} rồi tự mở lại. Tiếp tục?":"The app will close, install version {0} and reopen. Continue?","Backend lỗi":"Backend error","Backend đang chạy":"Backend running","Backend đang khởi động":"Backend starting","Backend đang tắt":"Backend stopped","Bản {0} đã cũ, PyTorch CUDA 12 có thể không chạy. Nên <button class=\"link\" onclick=\"link('nvidia')\">cập nhật driver</button>.":"Version {0} is old; PyTorch CUDA 12 may not run. <button class=\"link\" onclick=\"link('nvidia')\">Update the driver</button>.","Bản {0}, đủ mới để chạy PyTorch CUDA 12":"Version {0}, new enough for PyTorch CUDA 12","Bảng của tool chỉ hiện trên các địa chỉ trong danh sách này. Đăng nhập CVAT ngay trong cửa sổ mở ra; app nhớ đăng nhập cho lần sau.":"The tool's panel only appears on the addresses in this list. Sign in to CVAT in the window that opens; the app remembers your login next time.","Bật":"On","Bộ nhớ đệm Hugging Face: {0}":"Hugging Face cache: {0}","Card đồ hoạ":"Graphics card","Chi tiết kỹ thuật":"Technical details","Chia sẻ backend của máy này cho máy khác trong mạng nội bộ (LAN)":"Share this machine's backend with other machines on the local network (LAN)","Chưa chọn thư mục chung.":"No shared folder chosen.","Chạy nền khi Windows khởi động":"Run in the background when Windows starts","Chỉ tải phần nặng còn thiếu hoặc cần cập nhật. Phần đã có đúng bản, hoặc dùng lại được từ bản cũ, không tải lại.":"Only heavy parts that are missing or need updating are downloaded. Parts already present at the right version, or reusable from an old version, are not downloaded again.","Chọn thành phần":"Choose components","Chọn thư mục chung":"Choose shared folder","Chờ":"Waiting","Cài trước, nhập token sau":"Install first, token later","Cài đặt và dữ liệu":"Settings and data","Có bản mới":"Update available","Có bản {0}":"Version available: {0}","Có gì mới":"What's new","Có sẵn trong bộ cài, cập nhật cùng app. Dữ liệu và model: {0}":"Included in the installer, updated with the app. Data and models: {0}","Có tài khoản Hugging Face (":"Have a Hugging Face account (","Cần tick ô đồng ý để tiếp tục.":"Tick the consent box to continue.","Cập nhật":"Update","Cập nhật app":"Update app","Dùng backend ở máy khác":"Use a backend on another machine","Dùng chung trong nhóm":"Team sharing","Dừng cài thành phần? Bạn có thể tải sau trong bảng điều khiển của app.":"Stop installing components? You can download them later from the app's control panel.","Dữ liệu tự học":"Learning data","Dữ liệu: {0} · Python {1}":"Data: {0} · Python {1}","Giấy phép SAM":"SAM licence","Gom nhật ký và thông tin máy thành một file zip để gửi người hỗ trợ. Không có token, key, cookie hay ảnh.":"Bundle logs and system info into a zip file to send to support. No tokens, keys, cookies or images.","Gỡ {0}? Muốn dùng lại phải tải lại.":"Remove {0}? To use it again you will have to download it again.","Gửi báo lỗi (tạo file)":"Send error report (create file)","Gửi lên":"Upload","Hoàn tất":"Finish","Hoặc dùng backend ở máy khác":"Or use a backend on another machine","Huỷ":"Cancel","Hỗ trợ và sao lưu":"Support and backup","Hỗ trợ, sao lưu và đồng bộ":"Support, backup and sync","Job gần đây":"Recent jobs","Khi mở app:":"When the app opens:","Khôi phục":"Restore","Khôi phục sẽ ghi đè profile, guideline và dữ liệu tự học bằng bản sao lưu (dữ liệu hiện tại được tự sao lưu trước). Tiếp tục?":"Restoring overwrites profiles, guidelines and learning data with the backup (current data is backed up automatically first). Continue?","Không bắt đầu được.":"Could not start.","Không có card NVIDIA: chạy bằng CPU":"No NVIDIA card: running on CPU","Không có gì cần tải.":"Nothing to download.","Không thấy card NVIDIA":"No NVIDIA card found","Khởi động lại":"Restart","Kiểm tra":"Check","Kiểm tra cập nhật thành phần":"Check for component updates","Kiểm tra máy":"Check this computer","Kiểm tra ngay":"Check now","Kết nối":"Connect","Lưu ý":"Note","Lấy về":"Download","Lỗi":"Error","Meta chưa duyệt? Cài phần còn lại trước, nhập token sau trong app.":"Meta has not approved yet? Install the rest first and enter the token later in the app.","Máy khác nhập địa chỉ: {0}\n     và key: <code id=\"lanKey\">{1}</code> <button class=\"small\" onclick=\"copyKey()\">Chép key</button>\n     <div class=\"mut\">Windows có thể hỏi cho phép qua tường lửa: chọn \"Private networks\". Chỉ máy có key mới dùng được.</div>":"Other machines enter the address: {0}\n     and key: <code id=\"lanKey\">{1}</code> <button class=\"small\" onclick=\"copyKey()\">Copy key</button>\n     <div class=\"mut\">Windows may ask to allow it through the firewall: choose \"Private networks\". Only machines with the key can use it.</div>","Máy không có card NVIDIA: dùng SAM3 của một máy khác trong nhóm, không cần tải gì":"No NVIDIA card: use SAM3 from another machine in the team, nothing to download","Mở":"Open","Mở CVAT":"Open CVAT","Mở bảng điều khiển":"Open control panel","Ngôn ngữ / Language":"Language / Ngôn ngữ","Nhả model khỏi VRAM sau:":"Release the model from VRAM after:","Nhật ký":"Log","Nhật ký thay đổi":"Changelog","Nhớ token (cất trong Windows Credential Manager, không ghi ra file) để tải bản model mới sau này.":"Remember the token (stored in Windows Credential Manager, never written to a file) to download new model versions later.","Python và thư viện nhỏ của app":"Python and the app's small libraries","Quay lại":"Back","Quét lại":"Scan again","Quét và tải thành phần":"Scan and download components","SAM3 CVAT Assist đã cài xong. Lần sau mở app từ menu Start hoặc biểu tượng trên Desktop.":"SAM3 CVAT Assist is installed. Next time, open the app from the Start menu or the desktop icon.","Sao lưu":"Back up","Sẵn sàng":"Ready","Thiếu thành phần":"Missing components","Thoát app":"Quit app","Thành phần":"Components","Thành phần trên máy":"Components on this computer","Thêm":"Add","Thêm thư mục tool cũ để quét":"Add an old tool folder to scan","Thôi, dùng máy này":"Never mind, use this machine","Thông tin":"Information","Thư mục chung: OneDrive, Google Drive hay ổ mạng của nhóm. Đồng bộ profile, guideline và bài học; dữ liệu tự học là của từng người nên không gửi. Không bao giờ xoá file.":"Shared folder: OneDrive, Google Drive or a team network drive. Syncs profiles, guidelines and lessons; learning data is per person so it is not sent. Files are never deleted.","Thư mục chung: {0}":"Shared folder: {0}","Thư mục dữ liệu":"Data folder","Thư mục tool cũ: {0}":"Old tool folder: {0}","Thử lại (tải tiếp từ chỗ dừng)":"Retry (resume from where it stopped)","Tiếng Việt":"Tiếng Việt","Tiếp":"Next","Token (loại Read)":"Token (Read type)","Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm. Nếu máy có card NVIDIA, hãy <button class=\"link\" onclick=\"link('nvidia')\">cài driver mới</button> rồi mở lại.":"The tool still runs on the CPU (smaller PyTorch build) but is very slow. If the machine has an NVIDIA card, <button class=\"link\" onclick=\"link('nvidia')\">install a new driver</button> and reopen.","Tool xem máy có đủ điều kiện và tìm những file đã có sẵn để không phải tải lại.":"The tool checks that this computer meets the requirements and looks for files already present so they are not downloaded again.","Trên máy có GPU: mở SAM3 CVAT Assist → Dùng chung trong nhóm → bật \"Chia sẻ backend của máy này\", rồi nhập địa chỉ và key nó hiện vào đây.":"On the machine with the GPU: open SAM3 CVAT Assist → Team sharing → turn on \"Share this machine's backend\", then enter the address and key it shows here.","Trọng số SAM 3 là của Meta, dùng theo giấy phép dưới đây (bản gốc tiếng Anh). Tóm tắt: được dùng và chia sẻ, phải kèm giấy phép khi chia sẻ, không dùng cho quân sự, vũ khí, gián điệp, phải tuân luật kiểm soát xuất khẩu. Tóm tắt này không thay cho văn bản gốc.":"The SAM 3 weights belong to Meta and are used under the licence below (original English text). Summary: you may use and share them, must include the licence when sharing, may not use them for military, weapons or espionage purposes, and must follow export control laws. This summary does not replace the original text.","Trọng số SAM 3 nằm trong kho của Meta, cần tài khoản đã được duyệt. Token chỉ gửi tới huggingface.co.":"The SAM 3 weights are in Meta's gated repo and need an approved account. The token is only sent to huggingface.co.","Trọng số SAM 3 đã có và đúng bản: không cần token.":"SAM 3 weights are present and up to date: no token needed.","Tên (tuỳ chọn)":"Name (optional)","Tôi đã đọc và đồng ý với SAM License.":"I have read and agree to the SAM License.","Tạm dừng":"Pause","Tạo token loại":"Create a token of type","Tải":"Download","Tải và cài":"Download and install","Tải về khoảng <b>{0}</b>, cần khoảng <b>{1}</b> trên ổ đĩa (còn trống {2}). {3}":"Downloads about <b>{0}</b>, needs about <b>{1}</b> on disk ({2} free). {3}","Tắt":"Off","Tự chạy nền khi bật Windows":"Run in the background when Windows starts","Tự kiểm bản mới mỗi ngày (hỏi GitHub Releases của tool)":"Check for a new version daily (asks the tool's GitHub Releases)","Ví dụ thư mục sam3-cvat-assist của bản cài tay cũ":"E.g. the sam3-cvat-assist folder of an old manual install","Vẫn muốn chọn thành phần":"Choose components anyway","Xong (không cần tải gì)":"Done (nothing to download)","Xoá {0} khỏi danh sách?":"Delete {0} from the list?","bản CPU":"CPU build","bản CUDA":"CUDA build","bắt buộc":"required","cho job 50 điểm mặt":"for 50-point face jobs","cho job skeleton người":"for human skeleton jobs","chưa có":"missing","cần cập nhật":"needs update","dùng lại file có sẵn":"reuse existing files","dùng lại {0} đã có trên máy":"reuse {0} already on this machine","https://cvat.ten-mien.com hoặc localhost:8080":"https://cvat.your-domain.com or localhost:8080","không cần tải":"nothing to download","không nhả":"never","mở bảng điều khiển":"open the control panel","mở thẳng CVAT":"open CVAT directly","nhập token sau trong app":"enter the token later in the app","phiên bản {0}":"version {0}","rồi dán vào đây.":"and paste it here.","tại":"at","tạo tài khoản":"create an account","tải {0}":"download {0}","{0} <button class=\"link small-text\" data-d=\"{1}\" onclick=\"removeScanFolder(this.dataset.d)\">bỏ</button>":"{0} <button class=\"link small-text\" data-d=\"{1}\" onclick=\"removeScanFolder(this.dataset.d)\">remove</button>","Đang dùng bản <b>{0}</b>.":"Using version <b>{0}</b>.","Đang kiểm tra...":"Checking...","Đang quét máy...":"Scanning the machine...","Đang tính dung lượng...":"Calculating size...","Đang tải":"Downloading","Đang tải và cài thành phần":"Downloading and installing components","Đang tải...":"Downloading...","Đã có sẵn, không tải":"Already present, not downloaded","Đã cập nhật lên bản {0}: có gì mới":"Updated to version {0}: what's new","Đã tìm thấy đủ trọng số SAM 3 trên máy (sẽ kiểm mã băm khi cài): không cần token.":"All SAM 3 weights were found on this machine (hashes are checked during install): no token needed.","Đã xem":"Got it","Đã xong":"Done","Đạt":"Passed","Địa chỉ CVAT":"CVAT address","Địa chỉ backend":"Backend address","đã có, đúng bản":"present, correct version"}};
   // Bộ máy dịch dùng chung cho panel và bảng điều khiển của app. Cách khớp giống hệt backend/i18n/__init__.py.
   // makeI18n({strings: {vi: en}, codes: {vi: 'E_...'}}) -> { tr(text), code(text, status), withCode(msg, code) }
   function makeI18n(data) {
@@ -502,7 +612,10 @@ async function refresh() {
                    error: 'Backend lỗi', stopped: 'Backend đang tắt'}[b.state] || b.state;
   renderDash();
 }
-function show(which) { $('wizard').classList.toggle('hidden', which !== 'wizard'); $('dash').classList.toggle('hidden', which !== 'dash'); }
+function show(which) {
+  $('wizard').classList.toggle('hidden', which !== 'wizard'); $('dash').classList.toggle('hidden', which !== 'dash');
+  $('stepbar').classList.toggle('hidden', which !== 'wizard'); $('dashnav').classList.toggle('hidden', which !== 'dash');   // cột trái: các bước hoặc mục lục
+}
 function showDash() { show('dash'); refresh(); }
 
 // --------------------------------------------------------------- quét ---
@@ -548,28 +661,59 @@ function afterScan() {
 }
 
 // ------------------------------------------------------------ trình cài ---
-const STEP_NAMES = ['Quét máy', 'Giấy phép', 'Token', 'Thành phần', 'Tải và cài'];
+const STEP_NAMES = ['Kiểm tra máy', 'Giấy phép SAM', 'Token Hugging Face', 'Thành phần', 'Tải và cài', 'Hoàn tất'];
+const ICON_DONE = '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="#fff" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function go(n) {
   step = n;
-  $('stepbar').innerHTML = STEP_NAMES.map((t, i) => `<span class="${i + 1 === n ? 'on' : ''}">${i + 1}. ${t}</span>`).join('');
+  // cột trái: bước đã qua có dấu ✓, bước đang làm tô đậm
+  $('stepbar').innerHTML = STEP_NAMES.map((t, i) => {
+    const st = i + 1 < n ? 'done' : i + 1 === n ? 'on' : '';
+    return `<li class="${st}"${st === 'on' ? ' aria-current="step"' : ''}><span class="n">${st === 'done' ? ICON_DONE : i + 1}</span>${t}</li>`;
+  }).join('');
   document.querySelectorAll('.step').forEach((el) => el.classList.toggle('hidden', +el.dataset.step !== n));
   if (n === 1) { renderMachine(); runScan(false); }
   if (n === 2 && $('license').textContent === 'Đang tải...') api().license_text().then((t) => { $('license').textContent = t; });
   if (n === 3) renderToken();
   if (n === 4) renderPick();
+  if (n === 6) {
+    $('autostartW').checked = !!S.autostart_windows;
+    $('doneDash').classList.toggle('hidden', !!S.setup_mode);
+    $('doneCvat').textContent = S.setup_mode ? 'Xong' : 'Mở CVAT';
+  }
+  document.querySelectorAll('.cancelSetup').forEach((b) => b.classList.toggle('hidden', n >= 5));
+  const c = document.querySelector('.content'); if (c) c.scrollTop = 0;
+}
+async function cancelSetup() {
+  if (!S.setup_mode) return showDash();
+  if (confirm('Dừng cài thành phần? Bạn có thể tải sau trong bảng điều khiển của app.')) await api().finish_setup();
+}
+async function finishAndOpenCvat() {
+  if (S.setup_mode) { await api().finish_setup(); return; }
+  showDash(); checkComponents();
+  if (S.sites && S.sites.length) openSite(0);
 }
 function openWizard(n) { show('wizard'); go(n); }
 
+// nhãn đọc cho máy đọc màn hình đặt riêng (thay @@) để bộ dịch tìm được
+const ICON_LABEL = { ok: 'Đạt', warn: 'Lưu ý', info: 'Thông tin' };
+const ICON = {
+  ok: '<svg width="22" height="22" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="11" fill="var(--ok-bg)"/><path d="M7 12.5l3.2 3.2L17 9" stroke="var(--ok)" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  warn: '<svg width="22" height="22" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="11" fill="var(--warn-bg)"/><path d="M12 6.5v7M12 17v.5" stroke="var(--warn)" stroke-width="2.2" stroke-linecap="round"/></svg>',
+  info: '<svg width="22" height="22" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="11" fill="var(--track)"/><path d="M12 11v6M12 7.5v.5" stroke="var(--link)" stroke-width="2.2" stroke-linecap="round"/></svg>',
+};
+function checkRow(kind, title, detail) {
+  return `<div class="check${kind === 'info' ? ' info' : ''}">${ICON[kind].replace('@@', ICON_LABEL[kind])}<div><b>${title}</b><span class="d">${detail}</span></div></div>`;
+}
 function renderMachine() {
-  const g = S.gpu, lines = [];
-  if (!g.ok) lines.push('<p class="warn"><b>Không thấy card NVIDIA.</b> Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm. Nếu máy có card NVIDIA, hãy <button class="link" onclick="link(\'nvidia\')">cài driver mới</button> rồi mở lại.</p>');
+  const g = S.gpu, rows = [];
+  if (!g.ok) rows.push(checkRow('warn', 'Không thấy card NVIDIA', 'Tool vẫn chạy bằng CPU (bản PyTorch nhỏ hơn) nhưng rất chậm. Nếu máy có card NVIDIA, hãy <button class="link" onclick="link(\'nvidia\')">cài driver mới</button> rồi mở lại.'));
   else {
-    lines.push(`<p class="ok">Card: <b>${esc(g.name)}</b>, ${(g.vram_mb / 1024).toFixed(1)} GB VRAM, driver ${esc(g.driver)}.</p>`);
-    if (g.driver_old) lines.push('<p class="warn">Driver NVIDIA cũ, PyTorch CUDA 12 có thể không chạy. Nên <button class="link" onclick="link(\'nvidia\')">cập nhật driver</button>.</p>');
-    if (g.small) lines.push('<p class="warn">VRAM dưới 6 GB: SAM 3 có thể thiếu bộ nhớ với ảnh lớn.</p>');
+    rows.push(checkRow(g.small ? 'warn' : 'ok', 'Card đồ hoạ', `${esc(g.name)} · ${(g.vram_mb / 1024).toFixed(1)} GB VRAM` + (g.small ? '. VRAM dưới 6 GB: SAM 3 có thể thiếu bộ nhớ với ảnh lớn.' : '')));
+    rows.push(g.driver_old ? checkRow('warn', 'Driver NVIDIA', `Bản ${esc(g.driver)} đã cũ, PyTorch CUDA 12 có thể không chạy. Nên <button class="link" onclick="link('nvidia')">cập nhật driver</button>.`)
+      : checkRow('ok', 'Driver NVIDIA', `Bản ${esc(g.driver)}, đủ mới để chạy PyTorch CUDA 12`));
   }
-  lines.push(`<p class="mut small-text">Python và thư viện nhỏ của app: có sẵn trong bộ cài, cập nhật cùng app. Dữ liệu và model: ${esc(S.data_dir)}</p>`);
-  $('machine').innerHTML = lines.join('');
+  rows.push(checkRow('info', 'Python và thư viện nhỏ của app', `Có sẵn trong bộ cài, cập nhật cùng app. Dữ liệu và model: ${esc(S.data_dir)}`));
+  $('machine').innerHTML = '<div class="checks">' + rows.join('') + '</div>';
 }
 
 async function acceptLicense() {
@@ -594,7 +738,7 @@ async function checkToken() {
   $('tokenMsg').innerHTML = '<span class="mut">Đang kiểm tra...</span>';
   const r = await api().check_token($('token').value, $('remember').checked);
   tokenOk = r.ok; skipSam = false;
-  $('tokenMsg').innerHTML = `<span class="${r.ok ? 'ok' : 'bad'}">${esc(r.message)}</span>`;
+  $('tokenMsg').innerHTML = `<div class="${r.ok ? 'note-ok' : 'note-bad'}">${esc(r.message)}</div>`;
   $('tokenNext').disabled = !r.ok;
   $('token').value = '';
   if (r.ok) SCAN = await api().scan(false);
@@ -635,21 +779,38 @@ async function startInstall() {
   window.lastKeys = keys;
   const r = await api().install(keys);
   if (!r.ok) { alert(r.message || 'Không bắt đầu được.'); return; }
-  go(5); $('perr').textContent = ''; $('retryBtn').classList.add('hidden'); $('doneBtn').classList.add('hidden'); $('cancelBtn').classList.remove('hidden');
+  go(5); $('perr').classList.add('hidden'); $('retryBtn').classList.add('hidden'); $('doneBtn').classList.add('hidden'); $('cancelBtn').classList.remove('hidden');
   clearInterval(polling); polling = setInterval(pollInstall, 700);
 }
+const ITEM_STATE = {
+  wait: ['<svg width="20" height="20" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="9" fill="none" stroke="var(--mut)" stroke-width="2" stroke-dasharray="3 3"/></svg>', 'Chờ'],
+  active: ['<svg width="20" height="20" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="9" fill="none" stroke="var(--track)" stroke-width="3"/><path class="spin" d="M12 3a9 9 0 0 1 9 9" fill="none" stroke="#2f6bff" stroke-width="3" stroke-linecap="round"/></svg>', 'Đang tải'],
+  skip: ['<svg width="20" height="20" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="11" fill="var(--ok)"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>', 'Đã có sẵn, không tải'],
+  done: ['<svg width="20" height="20" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="11" fill="var(--ok)"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>', 'Đã xong'],
+  error: ['<svg width="20" height="20" viewBox="0 0 24 24" role="img" aria-label="@@"><circle cx="12" cy="12" r="11" fill="var(--bad)"/><path d="M8 8l8 8M16 8l-8 8" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>', 'Lỗi'],
+};
 async function pollInstall() {
   const p = await api().install_progress();
   $('pstep').textContent = p.step || '';
-  $('pfile').textContent = p.total ? `${p.done_h} / ${p.total_h} (${p.percent}%)` : (p.done ? p.done_h : '');
-  const bar = $('pbar'); bar.classList.toggle('indet', p.running && !p.total);
-  bar.firstElementChild.style.width = p.total ? p.percent + '%' : (p.finished && !p.error ? '100%' : '');
+  // thanh tổng + số liệu của file đang tải
+  const bar = $('pbar'); bar.classList.toggle('indet', p.running && !p.total && !p.overall);
+  bar.firstElementChild.style.width = (p.overall || 0) + '%';
+  $('ptotal').innerHTML = `<strong>${p.overall || 0}%</strong>` + (p.total ? ` · ${esc(p.done_h)} / ${esc(p.total_h)}` : '') + (p.rate_h ? ` · ${esc(p.rate_h)}` : '');
+  $('peta').textContent = p.eta_h || '';
+  $('pitems').innerHTML = (p.order || []).map((k) => {
+    const st = (p.items || {})[k] || 'wait', [icon0, label] = ITEM_STATE[st] || ITEM_STATE.wait;
+    const icon = icon0.replace('@@', label);
+    const mini = st === 'active' && p.total ? `<div class="bar thin"><div style="width:${p.percent || 0}%"></div></div>` : '';
+    const text = st === 'active' && p.total ? `${p.percent || 0}% · ${esc(p.total_h)}` : label;
+    return `<div class="item">${icon}<span class="name">${esc(p.titles[k])}</span>${mini}<span class="st">${text}</span></div>`;
+  }).join('');
+  $('pfile').textContent = p.file || '';
   $('plog').textContent = (p.log || []).join('\n');
   if (p.finished) {
     clearInterval(polling);
     $('cancelBtn').classList.add('hidden');
-    if (p.error) { $('perr').textContent = p.error; $('retryBtn').classList.remove('hidden'); }
-    else { $('doneBtn').classList.remove('hidden'); SCAN = null; await refresh(); }
+    if (p.error) { $('perr').innerHTML = `<div class="note-bad">${esc(p.error)}</div>`; $('perr').classList.remove('hidden'); $('retryBtn').classList.remove('hidden'); }
+    else { $('doneBtn').classList.remove('hidden'); SCAN = null; await refresh(); go(6); }
   }
 }
 async function finishWizard() {

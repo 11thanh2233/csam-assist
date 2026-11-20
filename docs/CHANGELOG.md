@@ -3,6 +3,23 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.8.3 (2026-11-20)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.8.3.md`.
+
+- **Logo mới:** chữ S vẽ bằng nét polyline có đỉnh.
+  - Dùng ở file exe, bộ cài, lối tắt, khay hệ thống, cửa sổ app, panel trong CVAT, tab trình duyệt của backend.
+  - Cỡ nhỏ (16–24 px) dùng nét dày riêng cho dễ nhìn.
+- **Taskbar hiện đúng icon và tên SAM3 CVAT Assist**, không còn biểu tượng của Python.
+- **Màn hình chờ có logo** hiện ngay khi mở app, tự đóng khi cửa sổ app hiện.
+- **Cửa sổ cài đặt làm lại theo bản mẫu:**
+  - cột trái xanh đậm có logo và 6 bước; bước xong có dấu ✓, bước đang làm tô đậm;
+  - thanh nút Huỷ / Quay lại / Tiếp cố định ở dưới;
+  - trang tải có thanh tiến độ tổng, tốc độ, thời gian còn lại, trạng thái từng thành phần, nhật ký thu gọn;
+  - trang "Sẵn sàng" ở cuối.
+- **Bảng điều khiển** cùng kiểu: cột trái có mục lục nhảy tới từng phần; sáng/tối theo Windows.
+- **Bộ cài** có dải màu thương hiệu và logo; lối tắt gom chung một biểu tượng trên taskbar.
+
 ## 0.8.2 (2026-11-20)
 
 - **Sửa ô chọn ngôn ngữ của bộ cài:** bản 0.8.1 hiện "English" hai lần, giờ hiện "Tiếng Việt" và "English".

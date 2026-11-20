@@ -198,6 +198,15 @@ có xoá dữ liệu của bạn không. Mặc định là giữ.
   - App cảnh báo khi bạn thêm địa chỉ `http` không mã hoá trên mạng ngoài.
 - **Không cần quyền admin:** app cài và chạy với quyền người dùng thường.
 
+## Giao diện (từ bản 0.8.3)
+
+- **Logo và taskbar:** app có logo riêng (chữ S nét polyline). Taskbar hiện đúng icon và tên SAM3 CVAT Assist.
+- **Màn hình chờ:** hiện có logo trong vài giây lúc Python khởi động.
+- **Cửa sổ cài đặt và bảng điều khiển:** cùng một kiểu.
+  - Cột trái là các bước (lúc cài) hoặc mục lục (lúc dùng); thanh nút ở dưới.
+  - Sáng hoặc tối theo cài đặt của Windows.
+- **Đổi logo:** sửa `desktop/ui/logo.svg` và `logo-small.svg` (bản cỡ nhỏ), rồi chạy `python scripts/make_icons.py`.
+
 ## Ngôn ngữ
 
 Chọn ngôn ngữ ở bộ cài (lần đầu), ở góc trên bảng điều khiển, hoặc ở tab Cài đặt của panel. Một lựa chọn chung cho

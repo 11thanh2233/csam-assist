@@ -71,6 +71,19 @@ async function main() {
     const torch = doc.querySelector('#pick input[data-k="torch"]');
     assert.ok(torch.checked && torch.disabled, 'PyTorch bắt buộc cập nhật: chọn sẵn, không bỏ được');
     await until(() => /Tải về khoảng/.test(doc.getElementById('estimate').textContent), 'ước lượng dung lượng');
+    // 0.8.3: cột trái hiện các bước (bước qua có dấu ✓, bước đang làm đánh dấu), trang hoàn tất, mục lục ở bảng điều khiển
+    assert.ok(!doc.getElementById('stepbar').classList.contains('hidden') && doc.getElementById('dashnav').classList.contains('hidden'));
+    assert.strictEqual(doc.querySelectorAll('#stepbar li.done').length, 3, 'bước 4: ba bước trước đã xong');
+    assert.match(doc.querySelector('#stepbar li[aria-current="step"]').textContent, /Thành phần/);
+    assert.ok(doc.querySelectorAll('#machine .check').length >= 2, 'kiểm tra máy dạng danh sách');
+    win.go(6);
+    assert.strictEqual(doc.querySelectorAll('#stepbar li.done').length, 5);
+    assert.match(doc.querySelector('.step[data-step="6"]').textContent, /Sẵn sàng/);
+    assert.ok(!doc.getElementById('doneDash').classList.contains('hidden'), 'mở từ app (không phải bộ cài): có nút về bảng điều khiển');
+    assert.strictEqual(doc.getElementById('doneCvat').textContent, 'Mở CVAT');
+    win.showDash();
+    assert.ok(!doc.getElementById('dashnav').classList.contains('hidden') && doc.getElementById('stepbar').classList.contains('hidden'));
+    assert.ok(doc.querySelectorAll('#dashnav a').length === 8 && [...doc.querySelectorAll('#dashnav a')].every((a) => doc.getElementById(a.getAttribute('href').slice(1))), 'mục lục trỏ đúng thẻ');
     // 0.8.0: job gần đây, dùng chung trong nhóm, hỗ trợ/sao lưu/đồng bộ
     await until(() => !doc.getElementById('recentCard').classList.contains('hidden'), 'job gần đây');
     assert.match(doc.getElementById('recent').textContent, /Job 12/);

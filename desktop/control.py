@@ -69,13 +69,18 @@ class Installer:
         self.cancel = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.p = {"running": False, "finished": False, "error": "", "step": "", "file": "", "done": 0, "total": None,
-                  "log": [], "results": {}}
+                  "log": [], "results": {}, "order": [], "items": {}, "rate": 0.0}
+        self._last: Optional[tuple[float, int]] = None
 
     def start(self, keys: list[str], gpu: Gpu, token: str) -> bool:
         if self.thread and self.thread.is_alive():
             return False
         self.cancel.clear()
-        self.p.update(running=True, finished=False, error="", step="Chuẩn bị...", file="", done=0, total=None, log=[], results={})
+        order = [k for k in ("torch", "sam3", "vitpose", "face") if k in keys]
+        # Trạng thái từng thành phần cho trang tải: wait | active | skip (đã có) | done | error
+        self.p.update(running=True, finished=False, error="", step="Chuẩn bị...", file="", done=0, total=None, log=[], results={},
+                      order=order, items={k: "wait" for k in order}, rate=0.0)
+        self._last = None
         self.thread = threading.Thread(target=self._run, args=(keys, gpu, token), daemon=True)
         self.thread.start()
         return True
@@ -84,6 +89,13 @@ class Installer:
         if kw.get("step") and kw["step"] != self.p["step"]:
             self.p["log"].append(f"{time.strftime('%H:%M:%S')} {kw['step']}")
             self.p["log"] = self.p["log"][-200:]
+        if "done" in kw and kw.get("done"):
+            now, done = time.time(), int(kw["done"])
+            if self._last and done > self._last[1] and now > self._last[0]:
+                inst = (done - self._last[1]) / (now - self._last[0])
+                self.p["rate"] = inst if not self.p["rate"] else 0.8 * self.p["rate"] + 0.2 * inst   # tốc độ làm mượt
+            if not self._last or now - self._last[0] >= 0.5 or done < self._last[1]:
+                self._last = (now, done)
         self.p.update({k: v for k, v in kw.items() if k in ("step", "file", "done", "total")})
 
     def _run(self, keys, gpu, token) -> None:
@@ -93,18 +105,29 @@ class Installer:
             plan = self.comps.plan(order, gpu, token)
             for key in order:
                 if plan[key]["action"] == "none":
+                    self.p["items"][key] = "skip"
                     self._progress(step=f"{COMPONENTS[key]['title']}: đã có, đúng bản, không tải")
                     continue
+                self.p["items"][key] = "active"
+                self._last, self.p["rate"] = None, 0.0
                 self.p["results"][key] = self.comps.install(key, gpu=gpu, token=token, progress=self._progress, cancel=self.cancel)
+                self.p["items"][key] = "done"
                 self._progress(step=f"{COMPONENTS[key]['title']}: xong")
             self._progress(step="Hoàn tất.", file="", done=0, total=None)
         except D.Cancelled:
             self.p["error"] = "Đã dừng. Bấm cài lại để tải tiếp từ chỗ dừng."
+            self._mark_active("wait")
         except Exception as exc:  # noqa: BLE001 - hiện lý do cho người dùng
             self.p["error"] = str(exc)
             self.p["log"].append(f"LỖI: {exc}")
+            self._mark_active("error")
         finally:
             self.p.update(running=False, finished=True)
+
+    def _mark_active(self, state: str) -> None:
+        for k, v in self.p["items"].items():
+            if v == "active":
+                self.p["items"][k] = state
 
 
 class ControlApi:
@@ -333,6 +356,19 @@ class ControlApi:
         p = dict(self._installer.p)
         p["done_h"], p["total_h"] = human(p["done"]), human(p["total"])
         p["percent"] = round(100 * p["done"] / p["total"], 1) if p["total"] else None
+        p["items"], p["order"] = dict(p.get("items") or {}), list(p.get("order") or [])
+        p["titles"] = {k: COMPONENTS[k]["title"] for k in p["order"]}
+        # Tiến độ tổng: số thành phần đã xong + phần đang tải của thành phần hiện tại
+        n = len(p["order"])
+        finished = sum(1 for k in p["order"] if p["items"].get(k) in ("done", "skip"))
+        frac = (p["done"] / p["total"]) if p["total"] else 0
+        p["overall"] = round(100 * (finished + (frac if p["running"] else 0)) / n) if n else (100 if p["finished"] else 0)
+        if p["finished"] and not p["error"]:
+            p["overall"] = 100
+        rate = p.get("rate") or 0
+        p["rate_h"] = (human(int(rate)) + "/s") if rate > 1024 and p["running"] and p["total"] else ""
+        left = (p["total"] - p["done"]) / rate if rate > 1024 and p["total"] else None
+        p["eta_h"] = ("" if left is None else f"còn khoảng {int(left // 60) + 1} phút" if left >= 60 else "còn dưới 1 phút")
         if p["finished"] and not p["error"] and self._settings.data.get("autostart_backend") and self._comps.status()["ready"] \
                 and self._backend.state in ("stopped", "missing", "error") and not self._setup_mode:
             self._backend.start()

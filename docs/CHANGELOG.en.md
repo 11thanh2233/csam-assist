@@ -3,6 +3,23 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.8.3 (2026-11-20)
+
+Details and test results are in `docs/CHECKLIST_0.8.3.md` (Vietnamese).
+
+- **New logo:** an S drawn as a polyline with vertices.
+  - Used for the exe, installer, shortcuts, tray, app window, the panel in CVAT and the backend's browser tab.
+  - Small sizes (16–24 px) use a thicker variant so they stay legible.
+- **The taskbar shows the SAM3 CVAT Assist icon and name**, no longer Python's.
+- **Splash screen with the logo** appears as soon as the app opens and closes when the app window shows.
+- **Setup window redesigned from the mockup:**
+  - dark blue left column with the logo and 6 steps; finished steps get a ✓, the current step is highlighted;
+  - Cancel / Back / Next bar fixed at the bottom;
+  - the download page shows overall progress, speed, time left, each component's state and a collapsed log;
+  - a "Ready" page at the end.
+- **Control panel** in the same style: a left column with links to each section; light/dark follows Windows.
+- **Installer** carries the brand strip and logo; shortcuts group under one taskbar icon.
+
 ## 0.8.2 (2026-11-20)
 
 - **Installer language picker fixed:** version 0.8.1 showed "English" twice; it now shows "Tiếng Việt" and

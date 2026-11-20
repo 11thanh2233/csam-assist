@@ -9,7 +9,7 @@ PAGE = r"""<!doctype html>
 <style>
   :root {
     --bg: #ffffff; --bg-soft: #f4f5f7; --line: #d9dce1; --text: #1d2433; --muted: #5b6475;
-    --accent: #1b6ef3; --accent-text: #ffffff; --ok: #0f7b3f; --warn: #a15c00; --err: #b42318;
+    --accent: #2456d6; --accent-text: #ffffff; --ok: #0f7b3f; --warn: #a15c00; --err: #b42318;
     --radius: 6px; --gap: 8px;
   }
   * { box-sizing: border-box; }
@@ -50,6 +50,7 @@ PAGE = r"""<!doctype html>
 </head>
 <body>
 <header>
+  <svg width="26" height="26" viewBox="0 0 28 28" aria-hidden="true" style="flex:none"><rect width="28" height="28" rx="7" fill="#2F6BFF"/><path d="M19 8H10l-2 3 2 3h8l2 3-2 3H9" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><g fill="#fff"><circle cx="19" cy="8" r="1.7"/><circle cx="8" cy="11" r="1.7"/><circle cx="18" cy="14" r="1.7"/><circle cx="20" cy="17" r="1.7"/><circle cx="9" cy="20" r="1.7"/></g></svg>
   <h1 id="title">Guideline nháp</h1>
   <span id="status" role="status" class="muted"></span>
   <button id="download" type="button">Tải bản .md</button>

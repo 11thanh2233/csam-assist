@@ -32,6 +32,9 @@ UninstallDisplayName={#AppName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; Ảnh thương hiệu (dựng bằng scripts/make_icons.py): dải xanh đậm có logo, logo nhỏ ở góc phải
+WizardImageFile=wizard.bmp,wizard-2x.bmp
+WizardSmallImageFile=wizard-small.bmp,wizard-small-2x.bmp
 AppMutex=SAM3CvatAssistDesktopMutex
 CloseApplications=yes
 
@@ -120,8 +123,9 @@ Source: "{#BuildDir}\app\*"; DestDir: "{app}\app"; Flags: recursesubdirs createa
 Source: "{#BuildDir}\{#ExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"
-Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#ExeName}"; Tasks: desktopicon
+; AppUserModelID trùng với app (desktop/app.py) để taskbar gom đúng một biểu tượng SAM3 Assist
+Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"; AppUserModelID: "SAM3CvatAssist.App"
+Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#ExeName}"; Tasks: desktopicon; AppUserModelID: "SAM3CvatAssist.App"
 
 [Run]
 Filename: "{app}\{#ExeName}"; Parameters: "--setup --lang={language}"; StatusMsg: "{cm:OpeningDownloader}"; Flags: waituntilterminated skipifsilent

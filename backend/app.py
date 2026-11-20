@@ -1175,6 +1175,18 @@ def userscript() -> PlainTextResponse:
     )
 
 
+LOGO_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#2F6BFF"/>'
+            '<path d="M19 8H10l-2 3 2 3h8l2 3-2 3H9" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" '
+            'stroke-linejoin="round"/><g fill="#fff"><circle cx="19" cy="8" r="1.7"/><circle cx="8" cy="11" r="1.7"/>'
+            '<circle cx="18" cy="14" r="1.7"/><circle cx="20" cy="17" r="1.7"/><circle cx="9" cy="20" r="1.7"/></g></svg>')
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    """Logo của tool trên tab trình duyệt (trang chủ backend, trang duyệt guideline)."""
+    return Response(LOGO_SVG, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     engine = getattr(rt.engine, "name", "?")

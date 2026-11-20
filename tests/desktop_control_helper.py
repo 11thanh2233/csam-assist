@@ -59,7 +59,7 @@ import desktop.support as _sup  # noqa: E402
 
 _orig_report = _sup.report_bundle
 _sup.report_bundle = lambda p, extra=None, out_dir=None: _orig_report(p, extra, out_dir=tmp)
-api._update_info = {"available": True, "auto": True, "version": "99.0.0", "notes": "## 99.0.0\n- **Sửa** lỗi `x`\n  dòng tiếp",
+api._update_info = {"available": True, "auto": True, "version": "99.0.0", "notes": "## 99.0.0\n- **Sửa** lỗi `x`\n  dòng tiếp\n\n<!-- en -->\n## 99.0.0\n- **Fixed** bug `x`\n  next line",
                     "size": 136_000_000, "page": "https://github.com/11thanh2233/csam-assist/releases/tag/v99.0.0"}
 api._settings.data["auto_update_check"] = False
 
