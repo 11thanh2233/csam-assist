@@ -144,7 +144,7 @@ class DesktopApp:
         if self.cvat_window is not None:
             try:
                 self.cvat_window.load_url(origin)
-                self.cvat_window.show()
+                bring_to_front(self.cvat_window)
                 return
             except Exception:  # noqa: BLE001 - cửa sổ đã bị đóng
                 self.cvat_window = None
@@ -180,11 +180,7 @@ class DesktopApp:
             log.exception("Tiêm bảng vào CVAT lỗi")
 
     def show_control(self) -> None:
-        try:
-            self.control.show()
-            self.control.restore()
-        except Exception:  # noqa: BLE001
-            pass
+        bring_to_front(self.control)
 
     def notify(self, title: str, text: str) -> None:
         """Thông báo Windows (qua biểu tượng ở khay hệ thống)."""
@@ -265,6 +261,20 @@ def _signal_ready() -> None:
             k.SetEvent(handle)
             k.CloseHandle(handle)
     except (AttributeError, OSError):
+        pass
+
+
+def bring_to_front(window) -> None:
+    """Hiện cửa sổ và đưa lên trên cùng (cửa sổ đã mở nhưng nằm sau cửa sổ khác thì bấm "Mở" mới thấy phản ứng)."""
+    for step in (window.show, window.restore):
+        try:
+            step()
+        except Exception:  # noqa: BLE001 - cửa sổ không thu nhỏ thì restore báo lỗi, bỏ qua
+            pass
+    try:
+        window.on_top = True                     # mẹo của pywebview: bật rồi tắt "luôn trên cùng" để kéo cửa sổ lên
+        window.on_top = False
+    except Exception:  # noqa: BLE001
         pass
 
 

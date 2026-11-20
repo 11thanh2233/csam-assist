@@ -48,7 +48,7 @@ def system_info(paths: Paths, extra: Optional[dict] = None) -> dict:
     }, **(extra or {}))
 
 
-def report_bundle(paths: Paths, extra: Optional[dict] = None, out_dir: Optional[Path] = None) -> Path:
+def report_bundle(paths: Paths, extra: Optional[dict] = None, out_dir: Optional[Path] = None, note: str = "") -> Path:
     """Gói nhật ký + thông tin máy để gửi người hỗ trợ. KHÔNG có: token, API key, cookie đăng nhập, ảnh, dữ liệu panel."""
     out_dir = Path(out_dir or (Path.home() / "Downloads" if (Path.home() / "Downloads").is_dir() else paths.data))
     out = out_dir / f"sam3-assist-bao-loi-{time.strftime('%Y%m%d-%H%M%S')}.zip"
@@ -59,6 +59,8 @@ def report_bundle(paths: Paths, extra: Optional[dict] = None, out_dir: Optional[
             except OSError:
                 continue
             z.writestr(f"logs/{log.name}", redact(text[-2_000_000:]))
+        if note and note.strip():                    # mô tả của người dùng (không bắt buộc)
+            z.writestr("description.txt", redact(note.strip()[:20000]))
         z.writestr("system.json", json.dumps(system_info(paths, extra), ensure_ascii=False, indent=2))
         z.writestr("settings.json", redact(json.dumps(_settings_public(paths), ensure_ascii=False, indent=2)))
         if paths.state.exists():

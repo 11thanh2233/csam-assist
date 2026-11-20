@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import json
 import os
 import re
@@ -29,6 +30,9 @@ DEFAULT_SITES = [
     {"name": "CVAT trên máy này", "url": "http://localhost:8080"},
 ]
 SAM3_REPO = "facebook/sam3"
+
+
+log = logging.getLogger("sam3-desktop")
 
 
 class Settings:
@@ -426,12 +430,12 @@ class ControlApi:
         return {"ok": True}
 
     # ------------------------------------------------- hỗ trợ và chia sẻ ---
-    def report(self):
-        """Gói báo lỗi một chạm: nhật ký + thông tin máy, không có token/key/cookie/ảnh."""
+    def report(self, note: str = ""):
+        """Gói báo lỗi một chạm: nhật ký + thông tin máy (+ mô tả nếu người dùng viết), không có token/key/cookie/ảnh."""
         from . import support
 
         out = support.report_bundle(self._paths, {"app_version": __version__, "backend": self._backend.info(),
-                                                  "components": self._comps.status()})
+                                                  "components": self._comps.status()}, note=str(note or ""))
         self._reveal(out)
         return {"ok": True, "file": str(out)}
 
@@ -654,10 +658,16 @@ def set_autostart(on: bool) -> None:
 
 
 def _translated(fn):
-    """Kết quả trả cho bảng điều khiển được dịch theo ngôn ngữ giao diện (thông báo, trạng thái, tên thành phần)."""
+    """Kết quả trả cho bảng điều khiển được dịch theo ngôn ngữ giao diện (thông báo, trạng thái, tên thành phần).
+
+    Lỗi bất ngờ được ghi vào app.log (kèm traceback) rồi báo lên trang, để nút bấm không bao giờ "im lặng"."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
-        return translate_obj(fn(self, *args, **kwargs), self._lang())
+        try:
+            return translate_obj(fn(self, *args, **kwargs), self._lang())
+        except Exception:
+            log.exception("Control panel action %s failed", fn.__name__)
+            raise
     return wrapper
 
 

@@ -41,6 +41,26 @@ def pick_port(preferred: int = 8765) -> int:
     raise RuntimeError("Không còn cổng trống từ 8765 tới 8804 cho backend.")
 
 
+# Mã thoát hay gặp của Windows khi tiến trình chết trước khi kịp ghi gì (số âm/không dấu đều nhận)
+EXIT_CODES = {
+    0xC0000135: "STATUS_DLL_NOT_FOUND: thiếu DLL (thường là Microsoft Visual C++ Redistributable)",
+    0xC0000005: "STATUS_ACCESS_VIOLATION: lỗi bộ nhớ trong thư viện C (PyTorch/CUDA/driver)",
+    0xC0000409: "STATUS_STACK_BUFFER_OVERRUN: thư viện C dừng khẩn (thường do DLL không khớp phiên bản)",
+    0xC000001D: "STATUS_ILLEGAL_INSTRUCTION: CPU không hỗ trợ lệnh mà thư viện cần",
+    0xC0000142: "STATUS_DLL_INIT_FAILED: một DLL không khởi tạo được",
+    0xC0000022: "STATUS_ACCESS_DENIED: bị chặn quyền (phần mềm diệt virus?)",
+}
+
+
+def describe_exit(code: Optional[int]) -> str:
+    """'mã 3221225781 (0xC0000135, STATUS_DLL_NOT_FOUND: ...)' cho nhật ký và bảng điều khiển."""
+    if code is None:
+        return ""
+    u = code & 0xFFFFFFFF
+    meaning = EXIT_CODES.get(u, "")
+    return f"mã {code} (0x{u:08X}, {meaning})" if meaning else f"mã {code} (0x{u:08X})"
+
+
 def hint(log: str) -> str:
     """Gợi ý cách sửa cho các lỗi hay gặp trên Windows."""
     low = log.lower()
@@ -125,14 +145,25 @@ class BackendProcess:
             env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "SAM3_", "HF_", "TRANSFORMERS_"))}
             env.update(self.comps.backend_env())
             env.update(self.extra_env)
+            env.update({"PYTHONUNBUFFERED": "1", "PYTHONFAULTHANDLER": "1"})   # ghi log ngay; lỗi tầng C cũng có traceback
             env.update({"SAM3_HOST": "0.0.0.0" if self.share_key else "127.0.0.1", "SAM3_PORT": str(self.port), "SAM3_API_KEY": self.key,
                         "SAM3_ALLOWED_HOSTS": "*" if self.share_key else "127.0.0.1,localhost",
                         "SAM3_DESKTOP_PACKAGES": str(self.paths.packages), "SAM3_DESKTOP_DATA": str(self.paths.data)})
-            flags = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            # Windows: không mở cửa sổ console cho backend
+            popen_opts = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
             # Bản cài (Python nhúng): -I cô lập khỏi Python khác trên máy. Chạy từ mã nguồn: dùng site-packages của người dùng.
-            flags = ["-X", "utf8"] if self.comps.system else ["-I", "-X", "utf8"]
-            self.proc = subprocess.Popen([self.python, *flags, "-m", "desktop.run_backend"], cwd=str(self.paths.app), env=env,
-                                         stdout=self._log_file, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)
+            py_flags = ["-X", "utf8"] if self.comps.system else ["-I", "-X", "utf8"]
+            try:
+                self.proc = subprocess.Popen([self.python, *py_flags, "-m", "desktop.run_backend"], cwd=str(self.paths.app),
+                                             env=env, stdout=self._log_file, stderr=subprocess.STDOUT,
+                                             stdin=subprocess.DEVNULL, **popen_opts)
+            except (OSError, ValueError, TypeError) as exc:
+                # Không chạy được tiến trình: báo rõ trên bảng điều khiển và ghi nhật ký, không im lặng
+                self._log_file.write(f"Could not start backend process: {type(exc).__name__}: {exc}\n")
+                self._log_file.flush()
+                self.proc = None
+                self.state, self.message = "error", f"Không chạy được backend: {type(exc).__name__}: {exc}"
+                return self.info()
             self.state, self.message, self.health = "starting", "Đang nạp model (lần đầu có thể mất 1-2 phút)...", {}
         threading.Thread(target=self._watch, daemon=True).start()
         return self.info()
@@ -148,8 +179,20 @@ class BackendProcess:
                 break
             time.sleep(1.5)
         if proc is not None and proc.poll() is not None and proc is self.proc:
+            why = describe_exit(proc.returncode)
+            self._note(f"Backend process exited with {tr(why, 'en')}")
             self.state = "error"
-            self.message = "Backend dừng khi đang khởi động. " + hint(self.tail(60)) + self.tail(12)
+            low = why.lower()
+            extra = hint(self.tail(60)) or (hint("msvcp140") if "dll" in low else "")
+            self.message = f"Backend dừng khi đang khởi động, {why}. " + extra + self.tail(12)
+
+    def _note(self, line: str) -> None:
+        """Dòng của app (không phải của backend) trong backend.log."""
+        try:
+            with open(self.log_path(), "a", encoding="utf-8") as f:
+                f.write(f"[app] {time.strftime('%H:%M:%S')} {line}\n")
+        except OSError:
+            pass
 
     def get_health(self) -> dict:
         try:
@@ -188,7 +231,8 @@ class BackendProcess:
             return {"state": self.state, "message": self.message, "port": None, "url": self.remote["base"], "health": self.health,
                     "remote": True}
         if self.state == "running" and self.proc is not None and self.proc.poll() is not None:
-            self.state, self.message = "error", "Backend đã dừng bất ngờ. " + self.tail(12)
+            why = describe_exit(self.proc.returncode)
+            self.state, self.message = "error", f"Backend đã dừng bất ngờ, {why}. " + self.tail(12)
         return {"state": self.state, "message": self.message, "port": self.port, "url": self.base_url if self.port else "",
                 "health": self.health}
 
