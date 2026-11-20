@@ -38,7 +38,7 @@ PLATFORM = ["--platform", "win_amd64", "--python-version", "3.12", "--implementa
             "--only-binary=:all:"]
 HEAVY = {"torch", "torchvision"}
 SDIST_ONLY = {"proxy-tools": "0.1.0"}          # phụ thuộc của pywebview, PyPI chỉ có mã nguồn: tự dựng wheel
-APP_PARTS = ["backend", "desktop", "profiles", "guideline_library", "userscript", "README.md", "docs"]
+APP_PARTS = ["backend", "desktop", "profiles", "guideline_library", "userscript", "README.md", "docs", "LICENSE"]
 SKIP = {"__pycache__", ".pytest_cache", "runs", "learning", "lessons.jsonl", "manifest.lock.json"}
 
 

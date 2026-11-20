@@ -333,6 +333,26 @@ class BackendProcess:
                 "health": self.health, "problem": self.problem, "auto_restart": self.auto_restart,
                 "uptime": int(time.time() - self.started_at) if self.state == "running" and getattr(self, "started_at", 0) else 0}
 
+    def selftest(self, wait: float = 600) -> dict:
+        """Kiểm tra nhanh: bật backend nếu chưa chạy, đợi nạp model, rồi chạy model thật một lượt trên ảnh mẫu."""
+        if self.state not in ("running", "starting") and not self.remote:
+            self.start()
+        deadline = time.time() + wait
+        while self.state == "starting" and time.time() < deadline:
+            time.sleep(1)
+        if self.state != "running" and not self.remote:
+            p = self.problem or {}
+            return {"ok": False, "stage": "backend", "error": p.get("title") or str(self.message).split("\n")[0], "problem": p or None}
+        code, body = self.request("POST", "/selftest", "{}", timeout=300)
+        try:
+            out = json.loads(body)
+        except ValueError:
+            out = {"ok": False, "error": body[:300]}
+        if code != 200:
+            out = {"ok": False, "error": out.get("detail") or f"HTTP {code}"}
+        out["stage"] = "model"
+        return out
+
     def request(self, method: str, path: str, body: Optional[str], content_type: str = "application/json",
                 timeout: float = 300) -> tuple[int, str]:
         """Gửi yêu cầu tới backend kèm API key. Trả (mã HTTP, nội dung)."""

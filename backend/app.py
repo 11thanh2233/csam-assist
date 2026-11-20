@@ -530,6 +530,27 @@ def health() -> dict:
     }
 
 
+@app.post("/selftest", dependencies=[Depends(require_key)])
+def selftest() -> dict:
+    """Kiểm tra nhanh sau khi cài: chạy model thật một lượt trên ảnh mẫu tự vẽ (vòng tròn đỏ trên nền sáng).
+
+    Đạt khi model nạp được và chạy xong không lỗi; số vật tìm thấy chỉ để tham khảo (ảnh mẫu không phải ảnh thật)."""
+    import time
+
+    image = np.full((480, 640, 3), 235, np.uint8)
+    cv2.circle(image, (320, 240), 90, (220, 40, 40), -1)
+    started = time.time()
+    try:
+        state = rt.engine.encode(image)
+        found = rt.engine.segment_text(state, "red circle", 0.3)
+    except Exception as exc:  # noqa: BLE001 - báo nguyên nhân cho bảng điều khiển, không làm backend dừng
+        log.exception("Self-test failed")
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "engine": getattr(rt.engine, "name", None)}
+    return {"ok": True, "found": len(found), "seconds": round(time.time() - started, 2),
+            "engine": getattr(rt.engine, "name", None), "device": getattr(rt.engine, "device", None),
+            "is_mock": getattr(rt.engine, "name", "") == "mock", "gpu": gpu_info()}
+
+
 @app.get("/profiles", dependencies=[Depends(require_key)])
 def profiles() -> dict:
     return {"profiles": rt.store.summary()}

@@ -38,14 +38,37 @@ SAM3_REPO = "facebook/sam3"
 log = logging.getLogger("sam3-desktop")
 
 
+# Phiên bản định dạng settings.json. Từ 1.0: bản mới luôn đọc được file của bản cũ (thêm mục, không đổi nghĩa mục cũ),
+# và giữ nguyên mục lạ (file của bản mới hơn sau khi quay về bản cũ). Xem docs/COMPAT.md.
+SETTINGS_SCHEMA = 1
+SETTINGS_TYPES = {"sites": list, "recent_jobs": list, "scan_dirs": list, "autostart_backend": bool, "auto_update_check": bool,
+                  "auto_restart_backend": bool, "idle_unload_min": (int, float), "start_mode": str, "lang": str, "theme": str}
+
+
 class Settings:
     def __init__(self, path: Path):
         self.path = path
         self.existed = path.exists()
         try:
             self.data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            if not isinstance(self.data, dict):
+                raise ValueError("settings.json is not an object")
+        except OSError:
             self.data = {}
+        except ValueError:
+            # File hỏng (mất điện khi đang ghi…): giữ một bản để không mất gì, rồi chạy với cài đặt mặc định
+            broken = path.with_name(f"settings.broken-{time.strftime('%Y%m%d-%H%M%S')}.json")
+            try:
+                path.replace(broken)
+                log.warning("settings.json is unreadable, kept as %s", broken.name)
+            except OSError:
+                pass
+            self.data = {}
+        for key, kind in SETTINGS_TYPES.items():          # sai kiểu: bỏ riêng mục đó để dùng mặc định
+            if key in self.data and not isinstance(self.data[key], kind):
+                log.warning("settings.json: %s has wrong type, using default", key)
+                del self.data[key]
+        self.data["schema"] = max(SETTINGS_SCHEMA, int(self.data.get("schema") or 0))
         self.data.setdefault("sites", list(DEFAULT_SITES))
         self.data.setdefault("autostart_backend", True)
         self.data.setdefault("license_accepted", "")
@@ -57,8 +80,10 @@ class Settings:
         self.data.setdefault("lang", "vi")                   # ngôn ngữ giao diện: vi | en (panel và bảng điều khiển dùng chung)
         self.data.setdefault("theme", "system")             # giao diện: system (theo Windows) | light | dark
         self.data.setdefault("auto_restart_backend", True)  # backend tắt bất thường: tự bật lại (tối đa 3 lần / 10 phút)
+        self.data["sites"] = [s for s in self.data["sites"] if isinstance(s, dict) and s.get("url")]
         for site in self.data["sites"]:
             site.setdefault("platform", "cvat")              # cài đặt từ bản trước 0.9: mọi trang đều là CVAT
+            site.setdefault("name", site["url"])
         if "last_seen_version" not in self.data:
             # Cài mới: không có gì để báo. Có cài đặt mà chưa có mục này: đang cập nhật từ 0.6.0 (bản desktop đầu tiên).
             self.data["last_seen_version"] = "0.6.0" if self.existed else __version__
@@ -191,6 +216,8 @@ class ControlApi:
             "auto_update_check": bool(self._settings.data.get("auto_update_check", True)),
             "lang": self._lang(), "platforms": PLATFORMS, "theme": self._settings.data.get("theme", "system"),
             "last_update_check": self._settings.data.get("last_update_check", 0),
+            "last_selftest": self._settings.data.get("last_selftest"),
+            "rolled_back": getattr(self, "_rolled_back", None),
         }
 
     # ------------------------------------------------------ quét thành phần ---
@@ -279,8 +306,18 @@ class ControlApi:
             return {"ok": False, "message": "Chưa tải xong bộ cài."}
         if self._installer.p["running"]:
             return {"ok": False, "message": "Đang tải thành phần, đợi xong rồi cập nhật."}
+        from . import safe_update
+
+        to_version = self._updater.p.get("version") or "?"
+        try:
+            backup = safe_update.auto_backup(self._paths, __version__, to_version)
+        except Exception as exc:  # noqa: BLE001 - chưa sao lưu được thì không cập nhật
+            log.exception("Backup before update failed")
+            return {"ok": False, "message": f"Không sao lưu được dữ liệu trước khi cập nhật ({exc}). Chưa cập nhật."}
+        log.info("Backup before update: %s", backup)
         self._backend.stop()
-        self._updater.launch(Path(ready))
+        app_dir = self._paths.app.parent if self._paths.app.name == "app" else self._paths.app
+        self._updater.launch(Path(ready), app_dir, self._paths.data, __version__, to_version)
         self._on_quit()
         return {"ok": True}
 
@@ -326,6 +363,29 @@ class ControlApi:
 
     def license_text(self):
         return self._paths.sam_license.read_text(encoding="utf-8")
+
+    def about(self):
+        """Trang Giới thiệu: phiên bản, giấy phép của tool và của phần mềm, model đi kèm (desktop/licenses/third_party.json)."""
+        data = json.loads((self._paths.app / "desktop" / "licenses" / "third_party.json").read_text(encoding="utf-8"))
+        lic = self._paths.app / data["tool"]["license_file"]
+        data["tool"]["license_text"] = lic.read_text(encoding="utf-8") if lic.exists() else ""
+        data["version"] = __version__
+        return data
+
+    def open_url_fixed(self, kind, index):
+        """Mở trang chính thức của một model / phần mềm trong danh sách giấy phép (chỉ địa chỉ có sẵn trong danh sách)."""
+        data = json.loads((self._paths.app / "desktop" / "licenses" / "third_party.json").read_text(encoding="utf-8"))
+        items = data["models"] if kind == "m" else data["software"]
+        try:
+            url = items[int(index)]["url"]
+        except (IndexError, ValueError, KeyError):
+            return False
+        if not url.startswith("https://"):
+            return False
+        import webbrowser
+
+        webbrowser.open(url)
+        return True
 
     def accept_license(self):
         self._settings.data["license_accepted"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -414,6 +474,38 @@ class ControlApi:
         if action == "log":
             return {"log": self._backend.tail(200)}
         return self._backend.info()
+
+    def work_stats(self):
+        """Số liệu công việc (panel đếm) cho trang Tổng quan."""
+        from . import workstats
+
+        return workstats.summary(workstats.load(self._paths.store))
+
+    def export_stats(self):
+        from . import workstats
+
+        name = f"sam3-assist-bao-cao-{time.strftime('%Y-%m-%d')}.csv"
+        dest = self._pick_file(True, name) if self._pick_file else str(Path.home() / name)
+        if not dest:
+            return {"ok": False, "message": ""}
+        Path(dest).write_text(workstats.csv_text(workstats.load(self._paths.store)), encoding="utf-8")
+        return {"ok": True, "message": f"Đã xuất báo cáo vào {dest}."}
+
+    def note_rollback(self, note: dict) -> None:
+        """Bản mới không mở được, script đã trả bản cũ về: không mời cập nhật lên bản đó nữa, báo trên bảng điều khiển."""
+        self._rolled_back = dict(note)
+        if note.get("to"):
+            self._settings.data["skip_version"] = note["to"]
+            self._settings.save()
+
+    def selftest(self):
+        """Kiểm tra nhanh sau khi cài (và nút ở trang Hỗ trợ): model chạy được trên máy này chưa. Lưu kết quả lần cuối."""
+        r = self._backend.selftest()
+        r["at"] = time.strftime("%Y-%m-%d %H:%M")
+        self._settings.data["last_selftest"] = {k: r.get(k) for k in ("ok", "at", "seconds", "found", "engine", "device", "error", "is_mock")}
+        self._settings.save()
+        log.info("Self-test: %s", "ok" if r.get("ok") else r.get("error"))
+        return r
 
     def read_log(self, which="backend", n=400):
         """Dòng cuối của nhật ký cho trang Hỗ trợ (chỉ hai file nhật ký của app)."""
@@ -621,7 +713,10 @@ class ControlApi:
         url = {"sam3": "https://huggingface.co/facebook/sam3", "tokens": "https://huggingface.co/settings/tokens",
                "signup": "https://huggingface.co/join", "webview2": "https://developer.microsoft.com/microsoft-edge/webview2/",
                "nvidia": "https://www.nvidia.com/Download/index.aspx",
-               "vcredist": "https://aka.ms/vs/17/release/vc_redist.x64.exe"}.get(which)
+               "vcredist": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+               "repo": f"https://github.com/{U.REPO}", "releases": f"https://github.com/{U.REPO}/releases",
+               "guide": f"https://github.com/{U.REPO}/blob/main/docs/HUONG_DAN.md",
+               "privacy": f"https://github.com/{U.REPO}/blob/main/docs/PRIVACY.md"}.get(which)
         if url:
             import webbrowser
 

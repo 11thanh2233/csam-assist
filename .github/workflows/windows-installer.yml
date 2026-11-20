@@ -175,6 +175,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ký số lỗi" }
           "SIGNTOOL=$signtool" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Tải Microsoft Visual C++ Redistributable (để bộ cài tự cài khi máy thiếu)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile build\vc_redist.x64.exe
+          $sig = Get-AuthenticodeSignature build\vc_redist.x64.exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw "vc_redist.x64.exe không có chữ ký hợp lệ của Microsoft: $($sig.Status) $($sig.SignerCertificate.Subject)" }
+          Write-Host "vc_redist: $((Get-Item build\vc_redist.x64.exe).VersionInfo.ProductVersion), ký bởi Microsoft"
+
       - name: Đóng gói bằng Inno Setup
         shell: pwsh
         run: |
@@ -220,6 +228,23 @@ jobs:
           if (-not $relaunched) { Get-Content update.log -Tail 30; throw "cập nhật xong không tự mở lại app" }
           Write-Host "cập nhật /update=1: app tự mở lại OK"
           Start-Sleep 2
+          # 0.9.1: bộ cài của bản mới lỗi -> script cập nhật phải trả bản cũ về chỗ, mở lại app và để lại ghi chú.
+          # Giả lập "bộ cài lỗi" bằng where.exe (tham số lạ -> thoát mã khác 0, không đụng gì).
+          $data = "$env:LOCALAPPDATA\SAM3CvatAssist"
+          New-Item -ItemType Directory -Force "$data\logs" | Out-Null
+          Set-Content "$app\app\rollback-marker.txt" "old"
+          & "$app\runtime\python.exe" -I -X utf8 -c "import sys, pathlib; from desktop.safe_update import update_script; pathlib.Path(sys.argv[1]).write_text(update_script(r'C:\Windows\System32\where.exe', sys.argv[2], sys.argv[3], '0.9.1', '9.9.9'), encoding='utf-8')" "$env:RUNNER_TEMP\u.cmd" $app $data
+          $r = Start-Process cmd.exe -ArgumentList "/c", "`"$env:RUNNER_TEMP\u.cmd`"" -PassThru -WindowStyle Hidden
+          if (-not $r.WaitForExit(300000)) { throw "script cập nhật chạy quá 5 phút" }
+          Get-Content "$data\logs\update.log" -Tail 10
+          if (-not (Test-Path "$app\app\rollback-marker.txt")) { throw "bộ cài lỗi mà không quay về bản cũ" }
+          if (Test-Path "$app\app.prev") { throw "còn sót app.prev" }
+          $note = Get-Content "$data\update-rolled-back.json" -Raw | ConvertFrom-Json
+          if ($note.to -ne "9.9.9") { throw "thiếu ghi chú quay về bản cũ" }
+          Start-Sleep 5
+          Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" | Where-Object { $_.ExecutablePath -like "$app*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          Remove-Item "$data\update-rolled-back.json", "$app\app\rollback-marker.txt" -ErrorAction SilentlyContinue
+          Write-Host "cập nhật lỗi: quay về bản cũ OK"
           Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
           Start-Sleep 3
           if (Test-Path "$app\runtime") { throw "gỡ cài đặt chưa sạch" }

@@ -106,6 +106,14 @@ class DesktopApp:
 
     def _after_start(self) -> None:
         _signal_ready()
+        from . import safe_update
+
+        safe_update.mark_boot_ok(self.paths.data, __version__)    # script cập nhật đợi dấu này để biết bản mới chạy được
+        note = safe_update.take_rollback_note(self.paths.data)
+        if note:
+            log.warning("Update %s -> %s did not start; rolled back", note.get("from"), note.get("to"))
+            self.api.note_rollback(note)
+            self.notify("Đã quay về bản cũ", f"Bản {note.get('to', '?')} không mở được nên app đã quay về bản {__version__}.")
         self.api._pick_folder = self._pick_folder
         self.api._pick_file = self._pick_file
         try:

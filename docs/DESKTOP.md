@@ -18,6 +18,9 @@ Cài bằng một file, mở bằng một biểu tượng. Không cần Python, 
       trong app.
    4. **Chọn thành phần** và xem dung lượng: PyTorch (bắt buộc), SAM 3 (bắt buộc), skeleton người, skeleton mặt.
    5. **Tải và cài:** có thanh tiến trình. Rớt mạng thì bấm **Thử lại**, app tải tiếp từ chỗ dừng.
+   6. **Sẵn sàng:** app chạy thử SAM 3 trên một ảnh mẫu (từ 0.9.1) và báo **Mọi thứ hoạt động** hoặc lỗi kèm cách sửa.
+
+   Máy thiếu Microsoft Visual C++ (PyTorch cần) thì bộ cài tự cài trước, Windows hỏi quyền admin một lần (từ 0.9.1).
 
 Dung lượng (máy có card NVIDIA): bộ cài khoảng 150 MB; tải thêm khoảng 6 GB; sau khi cài chiếm khoảng 9–10 GB,
 lúc đang cài cần trống khoảng 12 GB.
@@ -38,6 +41,12 @@ Mở **SAM3 Label Assist** từ Desktop hoặc Start Menu. Bảng điều khiể
 
 Backend tự bật khi mở app. Nếu đang chạy mà tắt bất ngờ, app tự bật lại (tối đa 3 lần trong 10 phút) và báo qua khay
 hệ thống; tắt được trong Cài đặt.
+
+Trang **Tổng quan** còn có số nhãn đã ghi hôm nay, thời gian tiết kiệm ước tính và biểu đồ 7 ngày (nút **Xuất CSV**).
+Bấm số phiên bản ở thanh bên để mở trang **Giới thiệu**: giấy phép của SAM 3 và các phần mềm đi kèm.
+
+Cập nhật an toàn (từ 0.9.1): app tự sao lưu dữ liệu trước khi cài bản mới; bản mới không mở được thì tự quay về bản cũ.
+Chi tiết: [COMPAT.md](COMPAT.md).
 
 Thao tác nhanh: **Ctrl+K** mở ô tìm thao tác (mở CVAT, bật backend, gửi báo lỗi…), **Alt+1…6** chuyển trang.
 Mọi hộp thoại đóng được bằng **Esc**, bấm ra ngoài hoặc nút ✕. Xoá một trang gán nhãn có nút **Hoàn tác**.

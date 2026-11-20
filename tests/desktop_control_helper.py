@@ -55,6 +55,11 @@ class FakeBackend:
         self.state, self.problem = "running", None
         return self.info()
 
+    def selftest(self):
+        if self.state != "running":
+            self.start()
+        return {"ok": True, "found": 1, "seconds": 0.4, "engine": "sam3", "device": "cuda", "gpu": self.HEALTH["gpu"], "stage": "model"}
+
     def crash(self):
         """Giả lập máy thiếu Visual C++ (0xC0000135): bảng điều khiển phải hiện cách sửa."""
         from desktop.backend_proc import describe_exit, diagnose
@@ -66,6 +71,14 @@ class FakeBackend:
         return "log"
 
 
+import datetime as _dt, hashlib as _hl
+_today = _dt.date.today()
+paths.store.mkdir(parents=True, exist_ok=True)
+(paths.store / (_hl.sha1(b"stats").hexdigest() + ".json")).write_text(json.dumps({"key": "stats", "value": {
+    _today.isoformat(): {"applied": 126, "rejected": 9, "shown": 140, "frames": [f"30:{i}" for i in range(48)], "saved": 2880,
+                         "jobs": {"30": {"applied": 126, "rejected": 9, "shown": 140}}},
+    (_today - _dt.timedelta(days=2)).isoformat(): {"applied": 60, "rejected": 2, "shown": 70, "frames": ["31:1"], "saved": 1200, "jobs": {}},
+}}), encoding="utf-8")
 fake_backend = FakeBackend()
 api = ControlApi(paths, comps, fake_backend, open_site=lambda o: None, on_quit=lambda: None)
 api._test_crash = fake_backend.crash

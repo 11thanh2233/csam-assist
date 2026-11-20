@@ -102,13 +102,12 @@ class Updater:
         finally:
             self.p["running"] = False
 
-    def launch(self, setup: Path) -> None:
-        """Chạy bộ cài ở chế độ cập nhật sau khi app đã thoát (đợi vài giây để app nhả file)."""
-        setup = Path(setup)
+    def launch(self, setup: Path, app_dir: Path, data_dir: Path, from_version: str, to_version: str) -> None:
+        """Chạy bộ cài ở chế độ cập nhật sau khi app đã thoát; bản mới không mở được thì quay về bản cũ (safe_update)."""
+        from .safe_update import update_script
+
         script = self.folder / "run-update.cmd"
-        script.write_text("@echo off\r\nchcp 65001 >nul\r\ntimeout /t 4 /nobreak >nul\r\n"
-                          f'start "" "{setup}" /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /update=1\r\n',
-                          encoding="utf-8")
+        script.write_text(update_script(Path(setup), app_dir, data_dir, from_version, to_version), encoding="utf-8")
         flags = 0x08000000 | 0x00000008 if sys.platform == "win32" else 0         # CREATE_NO_WINDOW | DETACHED_PROCESS
         subprocess.Popen(["cmd.exe", "/c", str(script)], creationflags=flags, close_fds=True)
 

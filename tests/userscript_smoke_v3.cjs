@@ -102,12 +102,19 @@ async function scenario(frameBytes) {
   win.GM_xmlhttpRequest = (o) => {
     calls.push({ method: o.method, path: o.url.replace(BACKEND, ''), body: o.data ? JSON.parse(o.data) : null });
     fetch(o.url, { method: o.method, headers: o.headers, body: o.data })
-      .then(async (r) => o.onload({ status: r.status, responseText: await r.text() })).catch(() => o.onerror());
+      .then(async (r) => {
+        let text = await r.text();
+        if (win.__fakeBackendVersion && o.url.endsWith('/health')) text = JSON.stringify({ ...JSON.parse(text), version: win.__fakeBackendVersion });
+        o.onload({ status: r.status, responseText: text });
+      }).catch(() => o.onerror());
   };
   win.GM_setValue('cfg', { backendUrl: BACKEND, apiKey: 'k3', reloadAfterApply: false, confirmApply: true });
   win.eval(fs.readFileSync(path.join(ROOT, 'userscript', 'sam3-cvat-assist.user.js'), 'utf8'));
   const root = doc.getElementById('sam3-cvat-assist').shadowRoot;
   const button = (t) => [...root.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(t));
+  // 0.9.1: phần đầu panel không còn chữ "null" (dòng GPU / cảnh báo lệch bản khi không có gì để hiện)
+  await until(() => /Job 30 · Frame 3/.test(root.textContent), 'panel đã hiện job');
+  assert.ok(!/\bnull\b/.test(root.textContent), 'panel hiện chữ null: ' + root.textContent.slice(0, 200));
   const status = () => root.querySelector('.status').textContent;
   const alt = (key, extra) => doc.dispatchEvent(new win.KeyboardEvent('keydown', Object.assign({ key, altKey: true, bubbles: true }, extra || {})));
   const proposeCalls = () => calls.filter((c) => c.path === '/propose');
@@ -319,6 +326,26 @@ async function scenario(frameBytes) {
   await until(() => /Đồng thuận chung \d+% trên 1 frame chung/.test(status()), 'so sánh xong: ' + status());
   assert.match(root.textContent, /Chỉ job 31/);
   assert.match(root.textContent, /Hay gán khác nhau|Frame lệch nhiều/);
+
+  // 0.9.1: panel và backend lệch bản: báo bên nào cũ hơn và cách cập nhật đúng trường hợp
+  const recheck = async (v) => {
+    win.__fakeBackendVersion = v;
+    [...root.querySelectorAll('[role=tab]')].find((t) => /Cài đặt/.test(t.textContent)).click();
+    button('Kiểm tra kết nối').click();
+    await until(() => !root.querySelector('button[disabled]') || true, '');
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  await recheck('9.9.9');
+  await until(() => root.querySelector('.version-note'), 'báo lệch bản');
+  assert.match(root.querySelector('.version-note').textContent, /cũ hơn backend bản 9\.9\.9.*Cài bản mới/s);
+  await recheck('0.1.0');
+  await until(() => /Backend bản 0\.1\.0 cũ hơn panel/.test((root.querySelector('.version-note') || {}).textContent || ''), 'backend cũ hơn');
+  win.GM_info = { scriptHandler: 'SAM3 Assist Desktop' };
+  await recheck('0.1.0');
+  await until(() => /máy chia sẻ/.test((root.querySelector('.version-note') || {}).textContent || ''), 'app desktop: backend máy chia sẻ');
+  delete win.GM_info;
+  await recheck(null);
+  await until(() => !root.querySelector('.version-note'), 'cùng bản thì không báo');
 
   const real = errors.filter((e) => !/Not implemented: navigation/.test(e));   // hoàn tác tải lại trang: jsdom không làm được
   assert.deepStrictEqual(real, [], 'lỗi JS: ' + real.join('\n'));

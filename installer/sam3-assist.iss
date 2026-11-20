@@ -96,7 +96,8 @@ vi.CreateDesktopIcon=Tạo biểu tượng trên Desktop
 vi.AdditionalIcons=Biểu tượng:
 vi.OpeningDownloader=Đang mở trình tải PyTorch và trọng số SAM 3...
 vi.OpenApp=Mở %1
-vi.NoVcRedist=Máy chưa có Microsoft Visual C++ Redistributable (x64). PyTorch cần nó để chạy.%n%nHãy tải và cài (cần quyền admin) từ trang chính thức của Microsoft:%nhttps://aka.ms/vs/17/release/vc_redist.x64.exe%n%nCó thể cài trước hoặc sau khi cài app.
+vi.NoVcRedist=Chưa cài được Microsoft Visual C++ Redistributable (x64), thư viện PyTorch cần để chạy (có thể do bạn chọn Không ở hộp xin quyền admin).%n%nApp vẫn được cài. Khi mở app, trang Tổng quan có nút tải gói này; hoặc tải tại:%nhttps://aka.ms/vs/17/release/vc_redist.x64.exe
+vi.InstallingVcRedist=Đang cài Microsoft Visual C++ Redistributable (Windows sẽ xin quyền admin)...
 vi.NoWebView2=Máy chưa có Microsoft Edge WebView2 Runtime (Windows 11 thường có sẵn). App cần nó để mở CVAT.%n%nSau khi cài xong, nếu app báo lỗi WebView2, hãy tải bản "Evergreen Bootstrapper" tại:%nhttps://developer.microsoft.com/microsoft-edge/webview2/
 vi.DeleteModels=Xoá cả PyTorch và trọng số model đã tải (khoảng 9 GB)?%nGiữ lại thì lần cài sau không phải tải lại.
 vi.DeleteData=Xoá cả dữ liệu của bạn: profile, guideline, dữ liệu tự học, cài đặt và đăng nhập CVAT trong app?%nChọn Không nếu định cài lại sau.
@@ -104,7 +105,8 @@ en.CreateDesktopIcon=Create a desktop icon
 en.AdditionalIcons=Icons:
 en.OpeningDownloader=Opening the PyTorch and SAM 3 weights downloader...
 en.OpenApp=Open %1
-en.NoVcRedist=Microsoft Visual C++ Redistributable (x64) is not installed. PyTorch needs it to run.%n%nDownload and install it (admin rights needed) from Microsoft's official page:%nhttps://aka.ms/vs/17/release/vc_redist.x64.exe%n%nYou can install it before or after installing the app.
+en.NoVcRedist=Microsoft Visual C++ Redistributable (x64), which PyTorch needs, could not be installed (perhaps No was chosen in the admin prompt).%n%nThe app is still installed. Its Overview page has a button to download the package, or get it at:%nhttps://aka.ms/vs/17/release/vc_redist.x64.exe
+en.InstallingVcRedist=Installing Microsoft Visual C++ Redistributable (Windows will ask for admin rights)...
 en.NoWebView2=Microsoft Edge WebView2 Runtime is not installed (Windows 11 usually has it). The app needs it to open CVAT.%n%nAfter installing, if the app reports a WebView2 error, download the "Evergreen Bootstrapper" at:%nhttps://developer.microsoft.com/microsoft-edge/webview2/
 en.DeleteModels=Also delete the downloaded PyTorch and model weights (about 9 GB)?%nKeep them so the next install does not download them again.
 en.DeleteData=Also delete your data: profiles, guidelines, learning data, settings and the CVAT login in the app?%nChoose No if you plan to reinstall later.
@@ -124,6 +126,8 @@ Type: files; Name: "{userdesktop}\SAM3 CVAT Assist.lnk"
 Source: "{#BuildDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#BuildDir}\app\*"; DestDir: "{app}\app"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#BuildDir}\{#ExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; Gói cài chính thức của Microsoft (CI tải và kiểm chữ ký số). Chỉ giải nén khi máy thiếu, xem CurStepChanged.
+Source: "{#BuildDir}\vc_redist.x64.exe"; Flags: dontcopy
 
 [Icons]
 ; AppUserModelID trùng với app (desktop/app.py) để taskbar gom đúng một biểu tượng SAM3 Assist
@@ -139,6 +143,10 @@ Filename: "{app}\{#ExeName}"; Flags: nowait; Check: IsUpdate
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\app"
 Type: filesandordirs; Name: "{app}\runtime"
+; bản cũ script cập nhật giữ lại để quay về (desktop/safe_update.py)
+Type: filesandordirs; Name: "{app}\app.prev"
+Type: filesandordirs; Name: "{app}\runtime.prev"
+Type: files; Name: "{app}\launcher.prev"
 
 [Code]
 const
@@ -169,10 +177,31 @@ begin
   Result := True;
   if IsUpdate() then
     exit;                                     // cập nhật từ trong app: máy đã chạy được bản trước
-  if not HasVcRedist() then
-    SuppressibleMsgBox(CustomMessage('NoVcRedist'), mbInformation, MB_OK, IDOK);
   if not HasWebView2() then
     SuppressibleMsgBox(CustomMessage('NoWebView2'), mbInformation, MB_OK, IDOK);
+end;
+
+// Microsoft Visual C++ (x64) missing: install it before copying files. It installs machine-wide, so Windows asks for admin
+// rights; if the user says No the app is still installed and explains how to install it later (the app also detects this).
+procedure InstallVcRedist();
+var rc: Integer; exe: String;
+begin
+  if HasVcRedist() then
+    exit;
+  WizardForm.StatusLabel.Caption := CustomMessage('InstallingVcRedist');
+  ExtractTemporaryFile('vc_redist.x64.exe');
+  exe := ExpandConstant('{tmp}\vc_redist.x64.exe');
+  if not ShellExec('runas', exe, '/install /quiet /norestart', '', SW_SHOW, ewWaitUntilTerminated, rc) then
+    rc := -1;
+  Log(Format('vc_redist exit code %d', [rc]));     // 0 done, 3010 done but needs reboot, 1638 newer version present
+  if not HasVcRedist() then
+    SuppressibleMsgBox(CustomMessage('NoVcRedist'), mbInformation, MB_OK, IDOK);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssInstall) and not IsUpdate() then
+    InstallVcRedist();
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

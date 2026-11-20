@@ -5,6 +5,26 @@ sections in the "What's new" box when the interface language is English, and the
 
 ## 0.9.1 (2026-11-20)
 
+Details and test results are in `docs/CHECKLIST_0.9.1.md` (Vietnamese).
+
+- **The installer installs Microsoft Visual C++ by itself** when it is missing (Windows asks for admin rights once),
+  instead of only reporting an error.
+- **Quick check after installing:** the "Ready" step runs SAM 3 on a sample image and reports "Everything works" or the
+  error with how to fix it. It can be run again from the Support page.
+- **Safe updates:**
+  - before installing a new version, the app backs up profiles, guidelines, learning data and settings (keeps 3);
+  - if the new version does not start, the app goes back to the previous one and tells you;
+  - settings from every older version load; a broken settings file is kept instead of overwritten.
+- **About page:** version, the SAM 3 license (summary and full text) and every bundled software and model. Open it by
+  clicking the version number in the sidebar.
+- **Work stats on the Overview:** labels saved today, frames, estimated time saved, a 7-day chart, and CSV export for
+  team reports.
+- **Clear notice when the panel and backend versions differ:** says which one is older and how to update (Tampermonkey,
+  the app, or the shared machine).
+- **User guide for annotators** with screenshots: `docs/HUONG_DAN.md` (Vietnamese; from the app: About → User guide).
+  New privacy page `docs/PRIVACY.md`.
+- Fixed: the word "null" showed under the Job/Frame line in the panel.
+- Fixed: panel stats counted days in UTC (in Vietnam, work between midnight and 7 am went to the previous day).
 - **Renamed to SAM3 Label Assist** (formerly SAM3 CVAT Assist), because the tool will support other labeling platforms.
   - Updating from an older version keeps your data, saved Hugging Face token, CVAT login and start-with-Windows setting.
   - Desktop and Start Menu shortcuts use the new name; old shortcuts are removed.

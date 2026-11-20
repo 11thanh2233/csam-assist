@@ -2,6 +2,8 @@
 
 > Trước bản 0.9.1 tên là **SAM3 CVAT Assist**. Đổi tên vì tool sẽ hỗ trợ cả các nền tảng gán nhãn khác ngoài CVAT.
 
+**Người gán nhãn:** đọc [Hướng dẫn sử dụng](docs/HUONG_DAN.md) (có ảnh minh hoạ). Quyền riêng tư: [docs/PRIVACY.md](docs/PRIVACY.md).
+
 Công cụ gợi ý nhãn bằng SAM 3 (Segment Anything Model 3 của Meta) chạy ngay trên giao diện
 `cvat.edufun.ai`. Tool phủ một panel lên trang CVAT, đề xuất bounding box, polygon, polyline
 hoặc mask theo guideline; bạn duyệt từng đề xuất rồi mới ghi vào job. Không cần import/export file,

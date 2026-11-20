@@ -5,6 +5,24 @@ mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
 ## 0.9.1 (2026-11-20)
 
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.1.md`.
+
+- **Bộ cài tự cài Microsoft Visual C++** khi máy thiếu (Windows hỏi quyền admin một lần), thay vì chỉ báo lỗi.
+- **Kiểm tra nhanh sau khi cài:** bước "Sẵn sàng" tự chạy SAM 3 trên một ảnh mẫu và báo "Mọi thứ hoạt động" hoặc lỗi
+  kèm cách sửa. Chạy lại được ở trang Hỗ trợ.
+- **Cập nhật an toàn:**
+  - trước khi cài bản mới, app tự sao lưu profile, guideline, dữ liệu tự học và cài đặt (giữ 3 bản);
+  - bản mới không mở được thì tự quay về bản cũ và báo cho bạn;
+  - cài đặt của mọi bản cũ đều đọc được; file cài đặt hỏng được giữ lại, không bị ghi đè.
+- **Trang Giới thiệu:** phiên bản, giấy phép của SAM 3 (tóm tắt và toàn văn) và mọi phần mềm, model đi kèm. Mở bằng
+  cách bấm số phiên bản ở thanh bên.
+- **Thống kê công việc ở Tổng quan:** số nhãn đã ghi hôm nay, số frame, thời gian tiết kiệm ước tính, biểu đồ 7 ngày,
+  nút xuất CSV để báo cáo với nhóm.
+- **Báo rõ khi panel và backend lệch bản:** nói bên nào cũ hơn và cách cập nhật (Tampermonkey, app, hay máy chia sẻ).
+- **Hướng dẫn sử dụng cho người gán nhãn** có ảnh minh hoạ: `docs/HUONG_DAN.md` (mở từ app: Giới thiệu → Hướng dẫn
+  sử dụng). Thêm trang quyền riêng tư `docs/PRIVACY.md`.
+- Sửa: chữ "null" hiện dưới dòng Job/Frame trong panel.
+- Sửa: thống kê trong panel tính ngày theo giờ UTC (ở Việt Nam, việc làm lúc 0h-7h sáng bị tính sang hôm trước).
 - **Đổi tên thành SAM3 Label Assist** (trước là SAM3 CVAT Assist), vì tool sẽ hỗ trợ cả các nền tảng gán nhãn khác.
   - Cập nhật từ bản cũ giữ nguyên dữ liệu, token Hugging Face đã lưu, đăng nhập CVAT và chế độ tự chạy cùng Windows.
   - Lối tắt ở Desktop và Start Menu đổi sang tên mới, không để lại lối tắt tên cũ.

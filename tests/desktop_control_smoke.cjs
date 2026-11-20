@@ -69,6 +69,11 @@ async function main() {
     assert.match(doc.getElementById('hero').textContent, /SAM 3 trên NVIDIA GeForce RTX 2060/);
     assert.match(doc.getElementById('hero').textContent, /3,0 GB \/ 6,0 GB/);
     assert.match(doc.getElementById('pill').textContent, /Backend đang chạy/);
+    // 0.9.1: thống kê công việc ở Tổng quan (panel đếm), có biểu đồ 7 ngày
+    await until(() => /Nhãn đã ghi/.test(doc.getElementById('statsBody').textContent), 'thống kê hôm nay');
+    assert.match(doc.getElementById('statsBody').textContent, /126.*48.*48 phút.*90%/s);
+    assert.strictEqual(doc.querySelectorAll('#statsBody .week .wd').length, 7);
+    assert.match(doc.getElementById('weekLine').textContent, /7 ngày: 186 nhãn, khoảng 68 phút tiết kiệm/);
 
     // Trình cài: bước quét liệt kê từng thành phần, bước chọn chỉ chọn sẵn cái cần
     win.openWizard(1);
@@ -90,6 +95,10 @@ async function main() {
     assert.match(doc.querySelector('.step[data-step="6"]').textContent, /Sẵn sàng/);
     assert.ok(!doc.getElementById('doneDash').classList.contains('hidden'), 'mở từ app (không phải bộ cài): có nút về bảng điều khiển');
     assert.strictEqual(doc.getElementById('doneCvat').textContent, 'Mở CVAT');
+    // 0.9.1: bước Sẵn sàng tự chạy thử model trên ảnh mẫu
+    await until(() => /Mọi thứ hoạt động/.test(doc.getElementById('selftestW').textContent), 'kiểm tra nhanh ở bước Sẵn sàng');
+    assert.match(doc.getElementById('selftestW').textContent, /SAM 3 trên NVIDIA GeForce RTX 2060 · 0,4 giây/);
+    assert.ok((await call('status', [])).last_selftest.ok, 'lưu kết quả lần cuối');
     win.showDash();
     assert.ok(!doc.getElementById('dashnav').classList.contains('hidden') && doc.getElementById('stepbar').classList.contains('hidden'));
     // 0.9: thanh bên sáu trang, mỗi lúc chỉ hiện một trang, nhớ trang đang mở
@@ -129,6 +138,9 @@ async function main() {
 
     // 0.9: trang Hỗ trợ có khung xem nhật ký, lọc chỉ lỗi
     win.goPage('support');
+    assert.match(doc.getElementById('selftestD').textContent, /Mọi thứ hoạt động/, 'trang Hỗ trợ hiện kết quả kiểm tra lần cuối');
+    await win.runSelftest('selftestD', doc.getElementById('selftestBtn'));
+    assert.match(doc.getElementById('toasts').textContent, /Kiểm tra nhanh: mọi thứ hoạt động/);
     await until(() => doc.querySelectorAll('#logView div').length >= 3, 'nhật ký backend');
     win.toggleErrOnly();
     assert.strictEqual(doc.querySelectorAll('#logView div').length, 1, 'chỉ dòng lỗi');
@@ -139,6 +151,15 @@ async function main() {
     win.renderLog();
     assert.ok(doc.querySelector('#logView mark'), 'tô chữ đang lọc');
 
+    // 0.9.1: trang Giới thiệu (bấm số phiên bản ở thanh bên): giấy phép SAM 3 và phần mềm đi kèm
+    doc.getElementById('ver').click();
+    assert.strictEqual(win.eval('PAGE'), 'about');
+    await until(() => doc.querySelectorAll('#licTable tbody tr').length > 10, 'bảng giấy phép');
+    assert.match(doc.getElementById('licTable').textContent, /SAM 3 \(Meta\).*SAM License.*Tải khi cần/s);
+    assert.match(doc.getElementById('aboutVer').textContent, /Phiên bản \d+\.\d+\.\d+/);
+    await win.showSamLicense();
+    assert.match(doc.getElementById('newsBody').textContent, /SAM License/);
+    win.closeModal('newsModal');
     // 0.9: Ctrl+K mở bảng lệnh, gõ để lọc (không dấu cũng được), Enter chạy, Esc đóng
     doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
     assert.ok(!doc.getElementById('palette').classList.contains('hidden'), 'Ctrl+K mở bảng lệnh');
@@ -204,6 +225,11 @@ async function main() {
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
     doc.getElementById('recent').innerHTML = win.jobRow({ job: 7, task: 1, site: 'CVAT edufun', at: stamp }, 0);
     assert.match(doc.getElementById('recent').textContent, /CVAT edufun · (just now|1 min ago)$/m);
+    // trang đang mở được nạp lại dữ liệu sau khi đổi ngôn ngữ (Giới thiệu, thống kê)
+    win.goPage('about');
+    await until(() => /Label suggestions.*SAM License.*Downloaded/s.test(doc.getElementById('licTable').textContent), 'bảng giấy phép tiếng Anh');
+    win.goPage('home');
+    await until(() => /Labels saved/.test(doc.getElementById('statsBody').textContent), 'thống kê tiếng Anh');
     win.openPalette();
     assert.match(doc.getElementById('palList').textContent, /Go to Components/);
     win.closeModal('palette');

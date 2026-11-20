@@ -1,0 +1,183 @@
+{
+  "tool": {
+    "name": "SAM3 Label Assist",
+    "license": null,
+    "license_file": "LICENSE",
+    "repo": "https://github.com/11thanh2233/csam-assist"
+  },
+  "models": [
+    {
+      "name": "SAM 3 (Meta)",
+      "use": "Gợi ý nhãn, bấm điểm, theo dõi video",
+      "license": "SAM License",
+      "url": "https://huggingface.co/facebook/sam3",
+      "file": "SAM_LICENSE.txt",
+      "bundled": false,
+      "note": "Tải về sau khi bạn đồng ý giấy phép, không đóng gói trong bộ cài.",
+      "use_en": "Label suggestions, point prompts, video tracking",
+      "note_en": "Downloaded after you accept the license; not bundled in the installer."
+    },
+    {
+      "name": "ViTPose base (usyd-community)",
+      "use": "Skeleton người",
+      "license": "Apache-2.0",
+      "url": "https://huggingface.co/usyd-community/vitpose-base-simple",
+      "bundled": false,
+      "use_en": "Human skeleton"
+    },
+    {
+      "name": "MediaPipe Face Landmarker (Google)",
+      "use": "50 điểm mặt",
+      "license": "Apache-2.0",
+      "url": "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker",
+      "bundled": false,
+      "use_en": "50 face landmarks"
+    }
+  ],
+  "software": [
+    {
+      "name": "Python",
+      "use": "Môi trường chạy của app",
+      "license": "PSF-2.0",
+      "url": "https://www.python.org/",
+      "bundled": true,
+      "use_en": "The app's runtime"
+    },
+    {
+      "name": "PyTorch",
+      "use": "Chạy model trên GPU",
+      "license": "BSD-3-Clause",
+      "url": "https://pytorch.org/",
+      "bundled": false,
+      "use_en": "Runs models on the GPU"
+    },
+    {
+      "name": "Hugging Face Transformers",
+      "use": "Nạp SAM 3 và ViTPose",
+      "license": "Apache-2.0",
+      "url": "https://github.com/huggingface/transformers",
+      "bundled": true,
+      "use_en": "Loads SAM 3 and ViTPose"
+    },
+    {
+      "name": "huggingface_hub, safetensors",
+      "use": "Tải và đọc trọng số",
+      "license": "Apache-2.0",
+      "url": "https://github.com/huggingface",
+      "bundled": true,
+      "use_en": "Downloads and reads weights"
+    },
+    {
+      "name": "MediaPipe",
+      "use": "Điểm mặt",
+      "license": "Apache-2.0",
+      "url": "https://github.com/google-ai-edge/mediapipe",
+      "bundled": true,
+      "use_en": "Face landmarks"
+    },
+    {
+      "name": "OpenCV",
+      "use": "Xử lý ảnh",
+      "license": "Apache-2.0",
+      "url": "https://opencv.org/",
+      "bundled": true,
+      "use_en": "Image processing"
+    },
+    {
+      "name": "NumPy",
+      "use": "Tính toán mảng",
+      "license": "BSD-3-Clause",
+      "url": "https://numpy.org/",
+      "bundled": true,
+      "use_en": "Array computing"
+    },
+    {
+      "name": "SciPy",
+      "use": "Cắt ảnh cho ViTPose",
+      "license": "BSD-3-Clause",
+      "url": "https://scipy.org/",
+      "bundled": true,
+      "use_en": "Image cropping for ViTPose"
+    },
+    {
+      "name": "Pillow",
+      "use": "Đọc ảnh",
+      "license": "MIT-CMU",
+      "url": "https://python-pillow.org/",
+      "bundled": true,
+      "use_en": "Image decoding"
+    },
+    {
+      "name": "FastAPI, Starlette, Pydantic",
+      "use": "Backend",
+      "license": "MIT",
+      "url": "https://fastapi.tiangolo.com/",
+      "bundled": true,
+      "use_en": "Backend"
+    },
+    {
+      "name": "Uvicorn",
+      "use": "Máy chủ backend",
+      "license": "BSD-3-Clause",
+      "url": "https://www.uvicorn.org/",
+      "bundled": true,
+      "use_en": "Backend server"
+    },
+    {
+      "name": "PyYAML",
+      "use": "Đọc profile",
+      "license": "MIT",
+      "url": "https://pyyaml.org/",
+      "bundled": true,
+      "use_en": "Reads profiles"
+    },
+    {
+      "name": "pywebview",
+      "use": "Cửa sổ app",
+      "license": "BSD-3-Clause",
+      "url": "https://pywebview.flowrl.com/",
+      "bundled": true,
+      "use_en": "App window"
+    },
+    {
+      "name": "pystray",
+      "use": "Biểu tượng khay hệ thống",
+      "license": "LGPL-3.0",
+      "url": "https://github.com/moses-palmer/pystray",
+      "bundled": true,
+      "use_en": "System tray icon"
+    },
+    {
+      "name": "keyring",
+      "use": "Lưu token trong Windows Credential Manager",
+      "license": "MIT",
+      "url": "https://github.com/jaraco/keyring",
+      "bundled": true,
+      "use_en": "Stores the token in Windows Credential Manager"
+    },
+    {
+      "name": "Microsoft Visual C++ Redistributable",
+      "use": "Thư viện PyTorch cần (bộ cài tự cài khi máy thiếu)",
+      "license": "Microsoft Software License Terms",
+      "url": "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist",
+      "bundled": true,
+      "use_en": "Needed by PyTorch (the installer adds it when missing)"
+    },
+    {
+      "name": "Microsoft Edge WebView2",
+      "use": "Hiển thị giao diện (có sẵn trong Windows)",
+      "license": "Microsoft Software License Terms",
+      "url": "https://developer.microsoft.com/microsoft-edge/webview2/",
+      "bundled": false,
+      "use_en": "Renders the interface (built into Windows)"
+    },
+    {
+      "name": "Inno Setup",
+      "use": "Bộ cài",
+      "license": "Inno Setup License",
+      "url": "https://jrsoftware.org/isinfo.php",
+      "bundled": true,
+      "use_en": "Installer"
+    }
+  ]
+}

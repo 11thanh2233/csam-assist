@@ -272,3 +272,10 @@ def test_find_similar_with_negative_examples_and_existing(client, image_b64):
     # Chế độ một vật: bỏ qua hộp mẫu âm, chỉ lấy vật trong hộp
     single = client.post("/interactive", json=dict(body, mode="single", negatives=[[0, 0, 10, 10]])).json()["proposals"]
     assert len(single) == 1 and abs(single[0]["bbox"][0] - 500) < 5
+
+
+def test_selftest_runs_model_on_sample_image(client):
+    """0.9.1: kiểm tra nhanh sau khi cài chạy model thật một lượt trên ảnh mẫu và báo thời gian."""
+    r = client.post("/selftest").json()
+    assert r["ok"] is True and r["engine"] == "mock" and r["is_mock"] is True
+    assert isinstance(r["found"], int) and r["seconds"] >= 0

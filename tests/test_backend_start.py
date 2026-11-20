@@ -110,3 +110,22 @@ def test_diagnose_known_causes():
     assert diagnose("ModuleNotFoundError: No module named 'torch'", 1)["id"] == "broken_install"
     assert diagnose("", 0, start_error="TypeError: boom")["steps"][0]["action"] == "report"
     assert diagnose("nothing useful", 1) is None
+
+
+def test_selftest_starts_backend_and_runs_model(tmp_path):
+    """0.9.1: kiểm tra nhanh tự bật backend nếu chưa chạy, đợi nạp model rồi chạy thử."""
+    from desktop.backend_proc import BackendProcess
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    paths = types.SimpleNamespace(app=ROOT, logs=logs, packages=tmp_path / "pkgs", data=tmp_path / "data")
+    comps = types.SimpleNamespace(paths=paths, system=True, status=lambda: {"ready": True}, backend_env=lambda: {})
+    be = BackendProcess(comps, preferred_port=8895, python=sys.executable)
+    be.extra_env = {"SAM3_ENGINE": "mock", "SAM3_WARMUP": "0"}
+    try:
+        assert be.state == "stopped"
+        r = be.selftest(wait=90)
+        assert r["ok"] and r["stage"] == "model" and r["engine"] == "mock", r
+        assert be.state == "running"
+    finally:
+        be.stop()
