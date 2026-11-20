@@ -26,7 +26,7 @@ Ký hiệu: ✅ xong · 🟡 làm một phần (lý do ở cuối).
 | 11 | Hộp thoại panel trong CVAT thay confirm/prompt của trình duyệt: Esc, bấm ngoài, Enter, Ctrl+Enter để gửi | ✅ | ✅ smoke v3: Esc và bấm ngoài thì không ghi, Enter thì ghi · 4 smoke panel | L6 | ✅ |
 | 12 | Nút nào cũng có phản hồi: vòng xoay khi chạy, thông báo khi xong; xoá trang có Hoàn tác | ✅ | ✅ control smoke: Hoàn tác đưa trang quay lại | — | — |
 | 13 | Trang gán nhãn có ghi nền tảng (CVAT), cài đặt cũ tự thêm | ✅ | ✅ control smoke + test_desktop | — | — |
-| 14 | Chữ mới có bản tiếng Anh | ✅ | ✅ test_i18n + control smoke ở chế độ English + ảnh chụp | L5 | ✅ |
+| 14 | Chữ mới có bản tiếng Anh | ✅ | ✅ test_i18n + control smoke ở chế độ English + ảnh chụp | L5, L8 | ✅ |
 
 ## Rà phần cũ
 
@@ -51,6 +51,7 @@ Ký hiệu: ✅ xong · 🟡 làm một phần (lý do ở cuối).
 | L5 | Khối HTML lớn dịch được một nửa ("Update chỉ thay phần app…") | bảng điều khiển, English | ✅ |
 | L6 | Chú thích tiếng Việt trong CSS của panel bị coi là chữ chưa dịch | panel | ✅ đổi sang tiếng Anh |
 | L7 | Tự bật lại backend không đóng file nhật ký cũ | app desktop | ✅ |
+| L8 | English: "vừa xong" ở job gần đây chưa dịch (CI bắt được, máy test lệch múi giờ nên không thấy) | bảng điều khiển | ✅ thêm test không phụ thuộc múi giờ |
 
 ## Làm một phần
 

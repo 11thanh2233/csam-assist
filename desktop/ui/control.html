@@ -1195,7 +1195,7 @@ function siteRow(s, i, full) {
     (full ? `<button class="icon" onclick="removeSite(${i})" title="Xoá khỏi danh sách" aria-label="Xoá ${esc(s.name)} khỏi danh sách">${ic('trash', 's16')}</button>` : '') + '</div>';
 }
 function jobRow(j, i) {
-  return `<div class="lrow"><div class="tile">${j.job}</div><div class="t"><b>Job ${j.job} · task ${j.task}</b><span>${esc(j.site)} · ${esc(since(j.at))}</span></div>
+  return `<div class="lrow"><div class="tile">${j.job}</div><div class="t"><b>Job ${j.job} · task ${j.task}</b><span>${esc(j.site)} · ${esc(T(since(j.at)))}</span></div>
     <button class="${i === 0 ? 'primary ' : ''}btn-ic" onclick="openJob(${i}, this)">${i === 0 ? ic('play', 's16') + 'Mở tiếp' : 'Mở'}</button></div>`;
 }
 function renderSites() {

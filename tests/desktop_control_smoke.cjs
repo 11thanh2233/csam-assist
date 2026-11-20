@@ -199,6 +199,11 @@ async function main() {
     await until(() => /Recent jobs/.test(doc.body.textContent) && /Share this machine/.test(doc.body.textContent), 'giao diện English');
     assert.strictEqual(doc.querySelectorAll('#dashnav button').length, 6, 'đổi ngôn ngữ vẫn còn thanh bên');
     assert.strictEqual(doc.querySelectorAll('i[data-ic]').length, 0, 'đổi ngôn ngữ vẫn còn icon');
+    // giờ tương đối dịch được dù đứng chung đoạn với tên trang (không phụ thuộc múi giờ của máy chạy test)
+    const now = new Date(), pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    doc.getElementById('recent').innerHTML = win.jobRow({ job: 7, task: 1, site: 'CVAT edufun', at: stamp }, 0);
+    assert.match(doc.getElementById('recent').textContent, /CVAT edufun · (just now|1 min ago)$/m);
     win.openPalette();
     assert.match(doc.getElementById('palList').textContent, /Go to Components/);
     win.closeModal('palette');
