@@ -85,6 +85,13 @@ async function scenario(frameBytes) {
   };
   win.createImageBitmap = async () => ({ width: 1280, height: 720, close() {} });
   win.confirm = () => true;
+  // 0.9: panel hỏi bằng hộp thoại riêng (không còn window.confirm/prompt): test tự bấm nút chính
+  const __dialogs = [];
+  setInterval(() => {
+    const hostEl = win.document.getElementById('sam3-cvat-assist');
+    const back = hostEl && hostEl.shadowRoot && hostEl.shadowRoot.querySelector('.dlg-back');
+    if (back && !win.__manualDialog) { __dialogs.push(back.querySelector('p').textContent); back.querySelector('.dlg .primary').click(); }
+  }, 20).unref();
   win.prompt = (_q, def) => def;
   const gm = {};
   win.GM_getValue = (k, d) => (k in gm ? JSON.parse(gm[k]) : d);
@@ -185,8 +192,28 @@ async function scenario(frameBytes) {
   await until(() => gm.prefetch && JSON.parse(gm.prefetch).frames[5], 'chạy sẵn tiếp frame 5');
   assert.strictEqual(proposeCalls().length, 3, 'chỉ 3 lượt model: frame 3, chạy sẵn frame 4, chạy sẵn frame 5 (frame 4 không chạy lại)');
 
-  // 5. Hoàn tác nhiều bước: ghi thêm ở frame 4, rồi lùi 2 lần
+  // 0.9: hộp thoại xác nhận của panel: Esc huỷ, bấm ra ngoài huỷ, Enter đồng ý; huỷ thì không ghi gì
+  win.__manualDialog = true;
+  const dlg = () => root.querySelector('.dlg-back');
+  const frame4 = () => store.shapes.filter((s) => s.frame === 4).length;
   button('Ghi ').click();
+  await until(() => dlg(), 'hiện hộp thoại xác nhận trong panel');
+  assert.match(dlg().textContent, /Ghi \d+ nhãn vào frame 4/);
+  assert.strictEqual(root.activeElement, dlg().querySelector('.primary'), 'tiêu điểm ở nút Đồng ý');
+  dlg().querySelector('.dlg').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.ok(!dlg(), 'Esc đóng hộp thoại');
+  button('Ghi ').click();
+  await until(() => dlg(), 'hỏi lại');
+  dlg().dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true }));
+  assert.ok(!dlg(), 'bấm ra ngoài thì đóng');
+  await new Promise((r) => setTimeout(r, 200));
+  assert.strictEqual(frame4(), 0, 'huỷ thì không ghi');
+  button('Ghi ').click();
+  await until(() => dlg(), 'hỏi lần ba');
+  dlg().querySelector('.dlg').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  win.__manualDialog = false;
+
+  // 5. Hoàn tác nhiều bước: ghi thêm ở frame 4 (Enter ở trên là đồng ý), rồi lùi 2 lần
   await until(() => store.shapes.some((s) => s.frame === 4), 'ghi ở frame 4');
   await until(() => /Hoàn tác lần ghi gần nhất \(2\)/.test(root.textContent), 'có 2 lần ghi để hoàn tác');
   const n4 = store.shapes.length;

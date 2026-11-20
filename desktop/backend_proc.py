@@ -62,16 +62,67 @@ def describe_exit(code: Optional[int]) -> str:
 
 
 def hint(log: str) -> str:
-    """Gợi ý cách sửa cho các lỗi hay gặp trên Windows."""
-    low = log.lower()
-    if "winerror 126" in low or "c10.dll" in low or "msvcp140" in low:
-        return ("Có thể máy thiếu Microsoft Visual C++ Redistributable (x64): tải tại https://aka.ms/vs/17/release/vc_redist.x64.exe, "
-                "cài rồi bật lại backend. ")
+    """Gợi ý cách sửa cho các lỗi hay gặp trên Windows (một câu, dùng trong thông báo chữ)."""
+    p = diagnose(log, None)
+    return p["detail"] + " " if p else ""
+
+
+def diagnose(log: str, code: Optional[int], start_error: str = "") -> Optional[dict]:
+    """Đoán nguyên nhân backend không chạy, kèm các bước sửa có nút bấm sẵn.
+
+    Trả {"id", "title", "detail", "steps": [{"text", "action"}]} hoặc None nếu không đoán được.
+    action: vcredist | nvidia | retry | components | logs | report | none (bảng điều khiển gắn nút tương ứng)."""
+    low = (log or "").lower()
+    u = (code & 0xFFFFFFFF) if code is not None else None
+    retry = {"text": "Bật lại backend", "action": "retry"}
+    if start_error:
+        return {"id": "start_failed", "title": "Không chạy được tiến trình backend",
+                "detail": "Lỗi nằm trong app, không phải do máy bạn. Hãy gửi báo lỗi để người phát triển sửa.",
+                "steps": [{"text": "Gửi báo lỗi (tự gom nhật ký)", "action": "report"}, retry]}
+    if u == 0xC0000135 or "winerror 126" in low or "c10.dll" in low or "msvcp140" in low or "vcruntime140" in low:
+        return {"id": "vcredist", "title": "Máy thiếu thư viện Microsoft Visual C++",
+                "detail": "PyTorch cần Microsoft Visual C++ Redistributable (x64). Máy mới cài Windows hay thiếu gói này.",
+                "steps": [{"text": "Tải và cài Microsoft Visual C++ Redistributable (x64), khoảng 25 MB", "action": "vcredist"},
+                          {"text": "Cài xong thì bật lại backend", "action": "retry"}]}
     if "out of memory" in low or "outofmemory" in low:
-        return "GPU hết bộ nhớ: đóng bớt ứng dụng dùng GPU rồi bật lại backend. "
-    if "no kernel image" in low or "sm_" in low and "not compatible" in low:
-        return "Bản PyTorch không hỗ trợ card này: báo lỗi kèm tên card cho người phát triển. "
-    return ""
+        return {"id": "gpu_oom", "title": "GPU hết bộ nhớ",
+                "detail": "Một ứng dụng khác (game, trình duyệt, phần mềm dựng hình) đang dùng nhiều bộ nhớ GPU.",
+                "steps": [{"text": "Đóng bớt ứng dụng dùng GPU", "action": "none"}, retry]}
+    if "no kernel image" in low or ("sm_" in low and "not compatible" in low):
+        return {"id": "gpu_arch", "title": "Bản PyTorch không hỗ trợ card đồ hoạ này",
+                "detail": "Card đồ hoạ quá cũ hoặc quá mới so với bản PyTorch đã tải.",
+                "steps": [{"text": "Gửi báo lỗi kèm tên card", "action": "report"}]}
+    if "cuda driver version is insufficient" in low or "driver version" in low and "insufficient" in low:
+        return {"id": "driver_old", "title": "Driver NVIDIA quá cũ",
+                "detail": "Driver card đồ hoạ cũ hơn bản CUDA mà PyTorch cần.",
+                "steps": [{"text": "Cập nhật driver NVIDIA", "action": "nvidia"}, retry]}
+    if "modulenotfounderror" in low or "importerror" in low:
+        return {"id": "broken_install", "title": "Thiếu hoặc hỏng thư viện",
+                "detail": "Một gói Python của app bị thiếu hoặc tải chưa xong.",
+                "steps": [{"text": "Mở Thành phần, cài lại PyTorch", "action": "components"}, retry]}
+    if u in (0xC0000005, 0xC0000409, 0xC0000142):
+        return {"id": "native_crash", "title": "Thư viện của PyTorch hoặc driver bị lỗi",
+                "detail": "Backend dừng vì lỗi trong thư viện C (PyTorch, CUDA hoặc driver).",
+                "steps": [{"text": "Cập nhật driver NVIDIA", "action": "nvidia"}, retry,
+                          {"text": "Vẫn lỗi thì gửi báo lỗi", "action": "report"}]}
+    if u == 0xC0000022 or "access is denied" in low or "permissionerror" in low:
+        return {"id": "blocked", "title": "Backend bị chặn quyền",
+                "detail": "Phần mềm diệt virus hoặc chính sách của máy đang chặn backend.",
+                "steps": [{"text": "Cho phép thư mục cài app trong phần mềm diệt virus", "action": "none"}, retry]}
+    return None
+
+
+def read_tail(path: Path, n: int = 400) -> list[str]:
+    """n dòng cuối của file nhật ký (đọc từ cuối file, không nạp cả file lớn)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 400_000))
+            data = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    return data.splitlines()[-n:]
 
 
 class BackendProcess:
@@ -91,6 +142,12 @@ class BackendProcess:
         self.extra_env: dict = {}          # cài đặt của app cho backend (ví dụ SAM3_IDLE_UNLOAD_MIN)
         self.share_key = ""                # khác rỗng: chia sẻ backend cho máy khác trong LAN với key cố định này
         self.remote: Optional[dict] = None # {"base", "key"}: dùng backend ở máy khác, không chạy backend trên máy này
+        self.problem: Optional[dict] = None   # chẩn đoán khi backend lỗi (xem diagnose)
+        self.auto_restart = True              # backend đang chạy mà tắt bất thường: tự bật lại (tối đa 3 lần / 10 phút)
+        self._restarts: list[float] = []
+        self.started_at = 0.0
+        self._health_at = 0.0
+        self.on_change = None                 # gọi khi trạng thái đổi (app báo lên khay hệ thống)
 
     @staticmethod
     def _python() -> str:
@@ -133,12 +190,16 @@ class BackendProcess:
             if not st["ready"]:
                 missing = [st[k]["title"] for k in ("torch", "sam3") if not st[k]["installed"]]
                 self.state, self.message = "missing", "Chưa có " + " và ".join(missing) + ". Mở mục Thành phần để tải."
+                self.problem = {"id": "missing", "title": "Chưa tải đủ thành phần", "detail": self.message,
+                                "steps": [{"text": "Mở Thành phần để tải", "action": "components"}]}
                 return self.info()
             self.port = pick_port(self.preferred_port)
             self.key = self.share_key or secrets.token_urlsafe(32)
             log = self.log_path()
             if log.exists() and log.stat().st_size > 5_000_000:
                 log.replace(log.with_suffix(".log.1"))
+            if self._log_file:
+                self._log_file.close()
             self._log_file = open(log, "a", encoding="utf-8", errors="replace")
             self._log_file.write(tr(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} khởi động backend, cổng {self.port} =====\n", "en"))
             self._log_file.flush()
@@ -163,12 +224,16 @@ class BackendProcess:
                 self._log_file.flush()
                 self.proc = None
                 self.state, self.message = "error", f"Không chạy được backend: {type(exc).__name__}: {exc}"
+                self.problem = diagnose("", None, start_error=f"{type(exc).__name__}: {exc}")
                 return self.info()
             self.state, self.message, self.health = "starting", "Đang nạp model (lần đầu có thể mất 1-2 phút)...", {}
+            self.problem = None
+            self.started_at = time.time()
         threading.Thread(target=self._watch, daemon=True).start()
         return self.info()
 
     def _watch(self) -> None:
+        """Theo dõi tiến trình: đợi model nạp xong, rồi tiếp tục canh nếu nó tắt bất thường."""
         proc = self.proc
         deadline = time.time() + 900
         while proc is self.proc and proc is not None and proc.poll() is None and time.time() < deadline:
@@ -176,15 +241,46 @@ class BackendProcess:
             if h.get("ok"):
                 self.state, self.health = "running", h
                 self.message = f"Đang chạy: {h.get('engine')} trên {h.get('device')}"
+                self._changed()
                 break
             time.sleep(1.5)
-        if proc is not None and proc.poll() is not None and proc is self.proc:
-            why = describe_exit(proc.returncode)
-            self._note(f"Backend process exited with {tr(why, 'en')}")
-            self.state = "error"
-            low = why.lower()
-            extra = hint(self.tail(60)) or (hint("msvcp140") if "dll" in low else "")
-            self.message = f"Backend dừng khi đang khởi động, {why}. " + extra + self.tail(12)
+        was_running = self.state == "running"
+        while was_running and proc is self.proc and proc is not None and proc.poll() is None:
+            time.sleep(2)
+        if proc is None or proc is not self.proc or proc.poll() is None:
+            return                                  # người dùng đã tắt/bật lại: không phải tắt bất thường
+        why = describe_exit(proc.returncode)
+        self._note(f"Backend process exited with {tr(why, 'en')}")
+        log = self.tail(80)
+        self.problem = diagnose(log, proc.returncode) or {
+            "id": "unknown", "title": "Backend dừng bất ngờ" if was_running else "Backend dừng khi đang khởi động",
+            "detail": f"Tiến trình backend thoát với {why}.",
+            "steps": [{"text": "Bật lại backend", "action": "retry"}, {"text": "Xem nhật ký", "action": "logs"},
+                      {"text": "Gửi báo lỗi", "action": "report"}]}
+        self.problem["exit"] = why
+        self.state = "error"
+        self.message = (f"Backend đã dừng bất ngờ, {why}. " if was_running else f"Backend dừng khi đang khởi động, {why}. ") + \
+            hint(log) + self.tail(12)
+        self._changed()
+        # Đang chạy ổn rồi mới tắt (không phải lỗi khởi động lặp lại): tự bật lại, có giới hạn để không lặp vô hạn
+        now = time.time()
+        self._restarts = [t for t in self._restarts if now - t < 600]
+        if was_running and self.auto_restart and len(self._restarts) < 3 and self.problem.get("id") not in ("vcredist", "broken_install"):
+            self._restarts.append(now)
+            self._note(f"Auto-restart {len(self._restarts)}/3")
+            time.sleep(2)
+            if proc is self.proc:
+                with self._lock:
+                    self.proc = None
+                self.start()
+                self.message = "Backend vừa tắt bất ngờ, đang tự bật lại..."
+
+    def _changed(self) -> None:
+        if self.on_change:
+            try:
+                self.on_change(self.state)
+            except Exception:  # noqa: BLE001 - chỉ là thông báo
+                pass
 
     def _note(self, line: str) -> None:
         """Dòng của app (không phải của backend) trong backend.log."""
@@ -214,27 +310,28 @@ class BackendProcess:
                 self._log_file.close()
                 self._log_file = None
             self.state, self.message, self.health = "stopped", "Đã tắt.", {}
+            self.problem = None
 
     def restart(self) -> dict:
         self.stop()
         return self.start()
 
     def tail(self, n: int = 40) -> str:
-        try:
-            lines = self.log_path().read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return ""
-        return "\n".join(lines[-n:])
+        return "\n".join(read_tail(self.log_path(), n))
 
     def info(self) -> dict:
         if self.remote:
             return {"state": self.state, "message": self.message, "port": None, "url": self.remote["base"], "health": self.health,
                     "remote": True}
+        if self.state == "running" and self.proc is not None and self.proc.poll() is None and time.time() - self._health_at > 5:
+            self._health_at = time.time()             # số liệu GPU (VRAM, nhiệt độ) cho trang Tổng quan, tối đa 5 giây một lần
+            self.health = self.get_health() or self.health
         if self.state == "running" and self.proc is not None and self.proc.poll() is not None:
             why = describe_exit(self.proc.returncode)
             self.state, self.message = "error", f"Backend đã dừng bất ngờ, {why}. " + self.tail(12)
         return {"state": self.state, "message": self.message, "port": self.port, "url": self.base_url if self.port else "",
-                "health": self.health}
+                "health": self.health, "problem": self.problem, "auto_restart": self.auto_restart,
+                "uptime": int(time.time() - self.started_at) if self.state == "running" and getattr(self, "started_at", 0) else 0}
 
     def request(self, method: str, path: str, body: Optional[str], content_type: str = "application/json",
                 timeout: float = 300) -> tuple[int, str]:

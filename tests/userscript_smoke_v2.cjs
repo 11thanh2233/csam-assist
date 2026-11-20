@@ -103,6 +103,13 @@ function openPage(opts, frameBytes) {
   const store = fakeCvat(win, opts, frameBytes);
   win.createImageBitmap = async () => ({ width: 1280, height: 720, close() {} });
   win.confirm = () => true;
+  // 0.9: panel hỏi bằng hộp thoại riêng (không còn window.confirm/prompt): test tự bấm nút chính
+  const __dialogs = [];
+  setInterval(() => {
+    const hostEl = win.document.getElementById('sam3-cvat-assist');
+    const back = hostEl && hostEl.shadowRoot && hostEl.shadowRoot.querySelector('.dlg-back');
+    if (back) { __dialogs.push(back.querySelector('p').textContent); back.querySelector('.dlg .primary').click(); }
+  }, 20).unref();
   win.prompt = (_q, def) => def;
   const gm = {};
   win.GM_getValue = (k, d) => (k in gm ? JSON.parse(gm[k]) : d);

@@ -69,6 +69,7 @@ class DesktopApp:
         install_log_filter()                         # app.log luôn là tiếng Anh kỹ thuật
         self.comps = Components(self.paths)
         self.backend = BackendProcess(self.comps)
+        self.backend.on_change = self._backend_changed
         self.setup_mode, self.start_hidden = setup_mode, tray
         self.cvat_window = None
         self.tray_icon = None
@@ -181,6 +182,12 @@ class DesktopApp:
 
     def show_control(self) -> None:
         bring_to_front(self.control)
+
+    def _backend_changed(self, state: str) -> None:
+        """Backend tắt bất thường khi bảng điều khiển đang ẩn: báo qua khay hệ thống để người dùng biết."""
+        if state == "error" and not self.quitting:
+            p = self.backend.problem or {}
+            self.notify("Backend đã dừng", p.get("title") or "Mở bảng điều khiển để xem cách sửa.")
 
     def notify(self, title: str, text: str) -> None:
         """Thông báo Windows (qua biểu tượng ở khay hệ thống)."""

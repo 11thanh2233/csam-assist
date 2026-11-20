@@ -26,9 +26,12 @@ from .components import COMPONENTS, Components, Gpu, detect_gpu, human, seed_use
 from .paths import Paths
 
 DEFAULT_SITES = [
-    {"name": "CVAT edufun", "url": "https://cvat.edufun.ai"},
-    {"name": "CVAT trên máy này", "url": "http://localhost:8080"},
+    {"name": "CVAT edufun", "url": "https://cvat.edufun.ai", "platform": "cvat"},
+    {"name": "CVAT trên máy này", "url": "http://localhost:8080", "platform": "cvat"},
 ]
+# Nền tảng gán nhãn panel hỗ trợ. Mỗi nền tảng cần một bộ chuyển đổi riêng trong panel (đọc ảnh, ghi nhãn);
+# hiện mới có CVAT. Nền tảng khác sẽ thêm vào đây khi có bộ chuyển đổi.
+PLATFORMS = {"cvat": {"name": "CVAT", "supported": True}}
 SAM3_REPO = "facebook/sam3"
 
 
@@ -52,6 +55,10 @@ class Settings:
         self.data.setdefault("start_mode", "cvat")          # cvat: mở thẳng CVAT | control: mở bảng điều khiển
         self.data.setdefault("idle_unload_min", 15)         # nhả model khỏi VRAM sau N phút không dùng (0 = không nhả)
         self.data.setdefault("lang", "vi")                   # ngôn ngữ giao diện: vi | en (panel và bảng điều khiển dùng chung)
+        self.data.setdefault("theme", "system")             # giao diện: system (theo Windows) | light | dark
+        self.data.setdefault("auto_restart_backend", True)  # backend tắt bất thường: tự bật lại (tối đa 3 lần / 10 phút)
+        for site in self.data["sites"]:
+            site.setdefault("platform", "cvat")              # cài đặt từ bản trước 0.9: mọi trang đều là CVAT
         if "last_seen_version" not in self.data:
             # Cài mới: không có gì để báo. Có cài đặt mà chưa có mục này: đang cập nhật từ 0.6.0 (bản desktop đầu tiên).
             self.data["last_seen_version"] = "0.6.0" if self.existed else __version__
@@ -143,6 +150,7 @@ class ControlApi:
         self._settings = Settings(paths.settings)
         comps.extra_dirs = [Path(d) for d in self._settings.data["scan_dirs"]]
         backend.extra_env = {"SAM3_IDLE_UNLOAD_MIN": str(self._settings.data["idle_unload_min"])}
+        backend.auto_restart = bool(self._settings.data["auto_restart_backend"])
         self._installer = Installer(comps)
         self._updater = U.Updater(paths.downloads / "update")
         self._update_info: dict = self._settings.data.get("update_cache") or {}
@@ -178,6 +186,11 @@ class ControlApi:
             "data_dir": str(self._paths.data), "installing": self._installer.p["running"],
             "recent_jobs": self._settings.data["recent_jobs"], "start_mode": self._settings.data["start_mode"],
             "idle_unload_min": self._settings.data["idle_unload_min"], "sync_dir": self._settings.data.get("sync_dir", ""),
+            "autostart_backend": bool(self._settings.data.get("autostart_backend")),
+            "auto_restart_backend": bool(self._settings.data.get("auto_restart_backend")),
+            "auto_update_check": bool(self._settings.data.get("auto_update_check", True)),
+            "lang": self._lang(), "platforms": PLATFORMS, "theme": self._settings.data.get("theme", "system"),
+            "last_update_check": self._settings.data.get("last_update_check", 0),
         }
 
     # ------------------------------------------------------ quét thành phần ---
@@ -402,6 +415,15 @@ class ControlApi:
             return {"log": self._backend.tail(200)}
         return self._backend.info()
 
+    def read_log(self, which="backend", n=400):
+        """Dòng cuối của nhật ký cho trang Hỗ trợ (chỉ hai file nhật ký của app)."""
+        from .backend_proc import read_tail
+
+        path = {"backend": self._paths.logs / "backend.log", "app": self._paths.logs / "app.log"}.get(which)
+        if path is None:
+            return {"lines": [], "file": ""}
+        return {"lines": read_tail(path, max(20, min(2000, int(n)))), "file": str(path)}
+
     def add_site(self, name, url):
         origin = normalize_site(url)
         if not origin:
@@ -409,7 +431,7 @@ class ControlApi:
         warn = "" if origin.startswith("https://") or is_local(origin) else \
             "Trang dùng http (không mã hoá) trên mạng ngoài: mật khẩu CVAT có thể bị đọc trộm. Nên dùng https."
         sites = [s for s in self._settings.data["sites"] if normalize_site(s["url"]) != origin]
-        sites.append({"name": (name or "").strip()[:60] or origin, "url": origin})
+        sites.append({"name": (name or "").strip()[:60] or origin, "url": origin, "platform": "cvat"})
         self._settings.data["sites"] = sites
         self._settings.save()
         return {"ok": True, "message": warn, "sites": sites}
@@ -565,12 +587,17 @@ class ControlApi:
 
     def set_setting(self, key, value):
         """Các cài đặt đơn giản của app (chỉ những khoá biết trước)."""
-        allowed = {"start_mode": ("cvat", "control"), "idle_unload_min": None, "autostart_backend": None, "lang": ("vi", "en")}
+        allowed = {"start_mode": ("cvat", "control"), "idle_unload_min": None, "autostart_backend": None, "lang": ("vi", "en"),
+                   "auto_restart_backend": None, "theme": ("system", "light", "dark")}
         if key not in allowed:
             return False
         if key == "idle_unload_min":
             value = max(0, min(240, int(value)))
             self._backend.extra_env["SAM3_IDLE_UNLOAD_MIN"] = str(value)
+        elif key in ("autostart_backend", "auto_restart_backend"):
+            value = bool(value)
+            if key == "auto_restart_backend":
+                self._backend.auto_restart = value
         elif allowed[key] and value not in allowed[key]:
             return False
         self._settings.data[key] = value
@@ -593,7 +620,8 @@ class ControlApi:
         """Mở trang hướng dẫn trong trình duyệt của máy. Chỉ các trang cố định, trang không tự chọn được địa chỉ."""
         url = {"sam3": "https://huggingface.co/facebook/sam3", "tokens": "https://huggingface.co/settings/tokens",
                "signup": "https://huggingface.co/join", "webview2": "https://developer.microsoft.com/microsoft-edge/webview2/",
-               "nvidia": "https://www.nvidia.com/Download/index.aspx"}.get(which)
+               "nvidia": "https://www.nvidia.com/Download/index.aspx",
+               "vcredist": "https://aka.ms/vs/17/release/vc_redist.x64.exe"}.get(which)
         if url:
             import webbrowser
 

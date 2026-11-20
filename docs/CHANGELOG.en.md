@@ -3,6 +3,28 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.0 (2026-11-20)
+
+Details and test results are in `docs/CHECKLIST_0.9.0.md` (Vietnamese).
+
+- **Fixed: Start backend / Open CVAT did nothing** (since 0.8.0). The bug was in the app, not a missing part of your
+  computer. The installed app does not need `Set-ExecutionPolicy` or `run.ps1`.
+- **Redesigned control panel** following the approved mockup: six pages in a sidebar (Overview, Labeling sites,
+  Components, Team sharing, Support, Settings) and its own icon set.
+  - Overview: backend status, graphics card, VRAM, GPU temperature; quick open for labeling sites and recent jobs.
+  - When the backend fails, it says why (for example, missing Microsoft Visual C++) and lists the fix steps, each with
+    a button.
+  - Support: create an error report with a description, view logs inside the app (filter, errors only, copy).
+  - Settings: switches and segmented choices; new light/dark/follow-Windows theme.
+- **The backend restarts by itself if it stops unexpectedly** (up to 3 times in 10 minutes) and tells you through the
+  system tray. You can turn this off in Settings.
+- **Shortcuts:** Ctrl+K finds and runs any action, Alt+1…6 switches pages. The app remembers the open page.
+- **Dialogs are easier to close everywhere:**
+  - control panel: Esc, click outside or ✕;
+  - panel in CVAT: its own dialogs instead of the browser's (Esc, click outside, Enter to confirm).
+- **Every button gives feedback:** a spinner while working, a notice when done. Deleting a labeling site can be undone.
+- Labeling sites show their platform (CVAT for now), ready for other labeling platforms.
+
 ## 0.8.3 (2026-11-20)
 
 Details and test results are in `docs/CHECKLIST_0.8.3.md` (Vietnamese).

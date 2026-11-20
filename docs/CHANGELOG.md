@@ -3,6 +3,26 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.0 (2026-11-20)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.0.md`.
+
+- **Sửa lỗi bấm Bật backend / Mở CVAT không có phản ứng** (có từ 0.8.0). Lỗi nằm trong app, không phải do máy thiếu gì.
+  Bản cài không cần `Set-ExecutionPolicy` hay `run.ps1`.
+- **Bảng điều khiển làm lại theo bản mẫu:** sáu trang ở thanh bên (Tổng quan, Trang gán nhãn, Thành phần,
+  Dùng chung nhóm, Hỗ trợ, Cài đặt) và bộ icon riêng.
+  - Tổng quan: trạng thái backend, card, VRAM, nhiệt độ GPU; mở nhanh trang gán nhãn và job gần đây.
+  - Backend lỗi thì nói rõ nguyên nhân (ví dụ thiếu Microsoft Visual C++) và các bước sửa, mỗi bước một nút bấm.
+  - Hỗ trợ: tạo gói báo lỗi kèm mô tả, xem nhật ký ngay trong app (lọc chữ, chỉ xem dòng lỗi, chép).
+  - Cài đặt: công tắc và nút chọn; thêm giao diện sáng/tối/theo Windows.
+- **Backend tự bật lại khi tắt bất ngờ** (tối đa 3 lần trong 10 phút), báo qua khay hệ thống. Tắt được trong Cài đặt.
+- **Thao tác nhanh:** Ctrl+K tìm và chạy mọi thao tác, Alt+1…6 chuyển trang. App nhớ trang đang mở.
+- **Hộp thoại dễ đóng hơn ở mọi nơi:**
+  - bảng điều khiển: Esc, bấm ra ngoài hoặc ✕;
+  - panel trong CVAT: hộp thoại riêng thay hộp thoại của trình duyệt (Esc, bấm ra ngoài, Enter để đồng ý).
+- **Nút nào bấm cũng có phản hồi:** vòng xoay khi đang chạy, thông báo khi xong. Xoá trang gán nhãn có nút Hoàn tác.
+- Trang gán nhãn có ghi nền tảng (hiện là CVAT), chuẩn bị cho các nền tảng gán nhãn khác.
+
 ## 0.8.3 (2026-11-20)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.8.3.md`.

@@ -32,28 +32,45 @@ comps = Components(paths, manifest, allow_http=("127.0.0.1",), hf_base="http://1
 class FakeBackend:
     state, base_url = "running", "http://127.0.0.1:8765"
     port, preferred_port, remote, share_key = 8765, 8765, None, ""
+    HEALTH = {"ok": True, "engine": "sam3", "device": "cuda", "model_loaded": True, "idle_unload_min": 15,
+              "gpu": {"name": "NVIDIA GeForce RTX 2060", "used_mb": 3100, "total_mb": 6144, "temp_c": 54, "util_pct": 12}}
 
     def __init__(self):
         self.extra_env = {}
+        self.problem = None
+        self.auto_restart = True
 
     def restart(self):
-        return self.info()
+        return self.start()
 
     def info(self):
-        return {"state": self.state, "message": "Đang chạy: mock trên cpu", "url": self.base_url, "port": 8765, "health": {}}
+        msg = {"running": "Đang chạy: sam3 trên cuda", "stopped": "Đã tắt.", "error": "Backend dừng khi đang khởi động."}[self.state]
+        return {"state": self.state, "message": msg, "url": self.base_url, "port": 8765,
+                "health": self.HEALTH if self.state == "running" else {}, "problem": self.problem, "uptime": 120}
 
     def stop(self):
-        self.state = "stopped"
+        self.state, self.problem = "stopped", None
 
     def start(self):
-        self.state = "running"
+        self.state, self.problem = "running", None
+        return self.info()
+
+    def crash(self):
+        """Giả lập máy thiếu Visual C++ (0xC0000135): bảng điều khiển phải hiện cách sửa."""
+        from desktop.backend_proc import describe_exit, diagnose
+        self.state = "error"
+        self.problem = dict(diagnose("", 0xC0000135), exit=describe_exit(-1073741515))
         return self.info()
 
     def tail(self, n=40):
         return "log"
 
 
-api = ControlApi(paths, comps, FakeBackend(), open_site=lambda o: None, on_quit=lambda: None)
+fake_backend = FakeBackend()
+api = ControlApi(paths, comps, fake_backend, open_site=lambda o: None, on_quit=lambda: None)
+api._test_crash = fake_backend.crash
+(paths.logs / "backend.log").write_text("\n===== 2026-11-20 12:00:56 starting backend, port 8765 =====\nLoaded 6 profiles\n"
+                                        "[app] 12:00:58 Backend process exited with code -1073741515 (0xC0000135)\n", encoding="utf-8")
 api._record_visit("https://cvat.edufun.ai/tasks/5/jobs/12?frame=3")
 import desktop.support as _sup  # noqa: E402
 

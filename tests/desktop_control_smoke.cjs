@@ -49,17 +49,26 @@ async function main() {
     assert.ok(doc.getElementById('newsTitle').textContent.includes(version), 'tiêu đề có bản hiện tại');
     assert.match(doc.getElementById('newsBody').textContent, /Không tải lại thứ đã có/);
     assert.ok(doc.querySelectorAll('#newsBody li').length >= 4, 'danh sách thay đổi được hiện thành mục');
-    win.closeNews();
+    // 0.9: đóng bằng bấm ra ngoài khung (không phải kéo xuống nút Đã xem)
+    doc.getElementById('newsModal').dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true }));
+    assert.ok(doc.getElementById('newsModal').classList.contains('hidden'), 'bấm ngoài khung thì đóng');
     await sleep(300);
     assert.strictEqual((await call('whats_new', [])).show, false, 'đã xem thì không hiện lại');
 
     // Bảng điều khiển: PyTorch cần cập nhật (bản ghim 2.14.1, máy có 2.13.0), có bản app mới
     await until(() => !doc.getElementById('todoBanner').classList.contains('hidden'), 'báo cần cập nhật PyTorch');
     assert.match(doc.getElementById('todoBanner').textContent, /PyTorch 2\.14\.1, máy đang có 2\.13\.0/);
-    assert.match(doc.getElementById('comps').textContent, /cần cập nhật/);
-    await until(() => /Có bản mới 99\.0\.0/.test(doc.getElementById('updBox').textContent), 'thông tin bản mới');
-    assert.ok(doc.querySelector('#updBox .notes b'), 'ghi chú bản mới hiện dạng định dạng');
+    assert.match(doc.getElementById('comps').textContent, /Có bản mới/);
+    assert.strictEqual(doc.querySelectorAll('#comps .ccard').length, 4, 'mỗi thành phần một thẻ');
+    await until(() => /Có bản mới 99\.0\.0/.test(doc.getElementById('updDetail').textContent), 'thông tin bản mới');
+    assert.ok(doc.querySelector('#updDetail .notes b'), 'ghi chú bản mới hiện dạng định dạng');
     assert.ok(!doc.getElementById('updBadge').classList.contains('hidden'));
+    assert.ok(!doc.getElementById('dot-settings').classList.contains('hidden'), 'chấm báo ở mục Cài đặt khi có bản mới');
+    // 0.9: Tổng quan có khối trạng thái backend với số liệu GPU
+    assert.match(doc.getElementById('hero').textContent, /Backend đang chạy/);
+    assert.match(doc.getElementById('hero').textContent, /SAM 3 trên NVIDIA GeForce RTX 2060/);
+    assert.match(doc.getElementById('hero').textContent, /3,0 GB \/ 6,0 GB/);
+    assert.match(doc.getElementById('pill').textContent, /Backend đang chạy/);
 
     // Trình cài: bước quét liệt kê từng thành phần, bước chọn chỉ chọn sẵn cái cần
     win.openWizard(1);
@@ -83,10 +92,83 @@ async function main() {
     assert.strictEqual(doc.getElementById('doneCvat').textContent, 'Mở CVAT');
     win.showDash();
     assert.ok(!doc.getElementById('dashnav').classList.contains('hidden') && doc.getElementById('stepbar').classList.contains('hidden'));
-    assert.ok(doc.querySelectorAll('#dashnav a').length === 8 && [...doc.querySelectorAll('#dashnav a')].every((a) => doc.getElementById(a.getAttribute('href').slice(1))), 'mục lục trỏ đúng thẻ');
+    // 0.9: thanh bên sáu trang, mỗi lúc chỉ hiện một trang, nhớ trang đang mở
+    const navs = [...doc.querySelectorAll('#dashnav button')];
+    assert.strictEqual(navs.length, 6);
+    for (const b of navs) {
+      b.click();
+      const shown = [...doc.querySelectorAll('#dash .page')].filter((p) => !p.classList.contains('hidden'));
+      assert.deepStrictEqual(shown.map((p) => p.dataset.page), [b.dataset.page], 'chỉ hiện trang ' + b.dataset.page);
+      assert.strictEqual(b.getAttribute('aria-current'), 'page');
+    }
+    assert.strictEqual(win.localStorage.getItem('sam3.page'), 'settings', 'nhớ trang đang mở');
+    // Alt+2: chuyển trang bằng phím
+    doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: '2', altKey: true, bubbles: true }));
+    assert.strictEqual(win.eval('PAGE'), 'sites');
+    assert.match(doc.getElementById('sites').textContent, /CVAT edufun.*CVAT · https:\/\/cvat\.edufun\.ai/s, 'trang có nhãn nền tảng');
+    win.goPage('home');
+    assert.ok(doc.querySelectorAll('#dash svg.ico').length > 20, 'bộ icon đã vẽ');
+    assert.strictEqual(doc.querySelectorAll('i[data-ic]').length, 0, 'không còn chỗ icon chưa vẽ');
     // 0.8.0: job gần đây, dùng chung trong nhóm, hỗ trợ/sao lưu/đồng bộ
-    await until(() => !doc.getElementById('recentCard').classList.contains('hidden'), 'job gần đây');
-    assert.match(doc.getElementById('recent').textContent, /Job 12/);
+    await until(() => /Job 12/.test(doc.getElementById('recent').textContent), 'job gần đây');
+    assert.match(doc.getElementById('recent').textContent, /Mở tiếp/);
+
+    // 0.9: backend lỗi -> khối lỗi nói nguyên nhân, các bước sửa có nút, chấm đỏ ở Tổng quan
+    await call('_test_crash', []);
+    await win.refresh();
+    const prob = doc.getElementById('problemCard');
+    assert.ok(!prob.classList.contains('hidden') && doc.getElementById('hero').classList.contains('hidden'));
+    assert.match(prob.textContent, /Máy thiếu thư viện Microsoft Visual C\+\+/);
+    assert.match(prob.textContent, /E_BACKEND_EXIT · 0xC0000135 STATUS_DLL_NOT_FOUND/, 'mã lỗi gọn như bản mẫu');
+    assert.match(prob.textContent, /Tải từ Microsoft/);
+    assert.ok(!doc.getElementById('dot-home').classList.contains('hidden'));
+    assert.match(doc.getElementById('pill').className, /bad/);
+    [...prob.querySelectorAll('button')].find((b) => /Thử lại/.test(b.textContent)).click();
+    await until(() => doc.getElementById('problemCard').classList.contains('hidden'), 'thử lại thì hết lỗi');
+    await until(() => /Đang khởi động lại backend|Đang bật backend/.test(doc.getElementById('toasts').textContent), 'nút có phản hồi');
+
+    // 0.9: trang Hỗ trợ có khung xem nhật ký, lọc chỉ lỗi
+    win.goPage('support');
+    await until(() => doc.querySelectorAll('#logView div').length >= 3, 'nhật ký backend');
+    win.toggleErrOnly();
+    assert.strictEqual(doc.querySelectorAll('#logView div').length, 1, 'chỉ dòng lỗi');
+    assert.match(doc.getElementById('logView').textContent, /exited with/);
+    assert.match(doc.getElementById('errOnlyText').textContent, /Chỉ lỗi · 1/);
+    win.toggleErrOnly();
+    doc.getElementById('logFilter').value = 'profiles';
+    win.renderLog();
+    assert.ok(doc.querySelector('#logView mark'), 'tô chữ đang lọc');
+
+    // 0.9: Ctrl+K mở bảng lệnh, gõ để lọc (không dấu cũng được), Enter chạy, Esc đóng
+    doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    assert.ok(!doc.getElementById('palette').classList.contains('hidden'), 'Ctrl+K mở bảng lệnh');
+    assert.strictEqual(doc.activeElement, doc.getElementById('palInput'), 'gõ được ngay');
+    doc.getElementById('palInput').value = 'thanh phan';
+    win.renderPalette();
+    assert.match(doc.getElementById('palList').textContent, /Đi tới Thành phần/);
+    doc.getElementById('palInput').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert.ok(doc.getElementById('palette').classList.contains('hidden'));
+    assert.strictEqual(win.eval('PAGE'), 'comps');
+    win.openPalette();
+    doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.ok(doc.getElementById('palette').classList.contains('hidden'), 'Esc đóng bảng lệnh');
+
+    // 0.9: xoá trang làm ngay, có Hoàn tác; hỏi xác nhận bằng hộp thoại của app (Esc là huỷ)
+    win.goPage('sites');
+    await win.removeSite(0);
+    assert.strictEqual((await call('status', [])).sites.length, 0);
+    const undo = [...doc.querySelectorAll('#toasts button')].find((b) => b.textContent === 'Hoàn tác');
+    assert.ok(undo, 'có nút Hoàn tác');
+    undo.click();
+    await until(async () => true, '');
+    await sleep(300);
+    assert.strictEqual((await call('status', [])).sites.length, 1, 'hoàn tác thì trang quay lại');
+    const asking = win.removeComp('face');
+    assert.ok(!doc.getElementById('askModal').classList.contains('hidden'));
+    assert.strictEqual(doc.activeElement, doc.getElementById('askOk'), 'tiêu điểm ở nút chính: Enter là đồng ý');
+    doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.strictEqual(await asking, undefined);
+    assert.ok(doc.getElementById('askModal').classList.contains('hidden'), 'Esc huỷ hộp xác nhận');
     win.setLanShare(true);
     await until(() => /key: /.test(doc.getElementById('lanBox').textContent), 'thông tin chia sẻ LAN');
     assert.ok(doc.getElementById('lanShare').checked);
@@ -94,8 +176,16 @@ async function main() {
     await until(() => doc.getElementById('lanBox').textContent === '', 'tắt chia sẻ');
     win.doReport();
     await until(() => /bao-loi-.*\.zip/.test(doc.getElementById('supportMsg').textContent), 'tạo gói báo lỗi');
-    assert.strictEqual(doc.getElementById('startMode').value, 'cvat');
+    assert.strictEqual(doc.querySelector('#startSeg [aria-pressed="true"]').dataset.v, 'cvat');
     assert.strictEqual(doc.getElementById('idleMin').value, '15');
+    assert.ok(doc.getElementById('autoRestart').checked && doc.getElementById('autoBackend').checked);
+    await win.setSetting('auto_restart_backend', false);
+    assert.strictEqual((await call('status', [])).auto_restart_backend, false);
+    await win.setTheme('dark');
+    assert.strictEqual(doc.documentElement.dataset.theme, 'dark');
+    assert.strictEqual((await call('status', [])).theme, 'dark');
+    await win.setTheme('system');
+    assert.strictEqual(doc.documentElement.dataset.theme, undefined);
     // 0.8.1: đổi sang English ngay trong bảng điều khiển, không còn chữ tiếng Việt; đổi lại thì về tiếng Việt
     const VI = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
     const leftovers = () => {
@@ -106,7 +196,12 @@ async function main() {
       return texts.map((t) => ['Tiếng Việt', 'Ngôn ngữ'].reduce((x, w) => x.split(w).join(''), t)).filter((t) => VI.test(t));
     };
     await win.setLang('en');
-    await until(() => /Recent jobs/.test(doc.body.textContent) && /key: |Share/.test(doc.body.textContent), 'giao diện English');
+    await until(() => /Recent jobs/.test(doc.body.textContent) && /Share this machine/.test(doc.body.textContent), 'giao diện English');
+    assert.strictEqual(doc.querySelectorAll('#dashnav button').length, 6, 'đổi ngôn ngữ vẫn còn thanh bên');
+    assert.strictEqual(doc.querySelectorAll('i[data-ic]').length, 0, 'đổi ngôn ngữ vẫn còn icon');
+    win.openPalette();
+    assert.match(doc.getElementById('palList').textContent, /Go to Components/);
+    win.closeModal('palette');
     await sleep(600);
     assert.strictEqual(doc.documentElement.lang, 'en');
     assert.deepStrictEqual(leftovers(), [], 'bảng điều khiển English còn tiếng Việt');

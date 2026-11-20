@@ -106,6 +106,9 @@ Bản 0.8.0 thêm phím tắt (Alt+Enter: ghi và sang frame tiếp), chạy s�
 model riêng của dự án và nhiều tiện ích khác: xem [docs/CHANGELOG.md](docs/CHANGELOG.md) và
 [docs/CHECKLIST_0.8.0.md](docs/CHECKLIST_0.8.0.md).
 
+Bản 0.9.0 làm lại bảng điều khiển (sáu trang, báo lỗi backend kèm cách sửa, xem nhật ký trong app, Ctrl+K) và cho
+backend tự bật lại khi tắt bất ngờ: xem [docs/CHECKLIST_0.9.0.md](docs/CHECKLIST_0.9.0.md).
+
 Các bước dưới đây là cách cài thủ công (Linux, macOS, Colab, hoặc khi muốn dùng Tampermonkey).
 
 ### Bước 1 - Lấy repo và cài phần chung

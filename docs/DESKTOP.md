@@ -24,14 +24,23 @@ lúc đang cài cần trống khoảng 12 GB.
 
 ## Dùng
 
-Mở **SAM3 CVAT Assist** từ Desktop hoặc Start Menu. Bảng điều khiển có:
+Mở **SAM3 CVAT Assist** từ Desktop hoặc Start Menu. Bảng điều khiển (từ 0.9.0) có sáu trang ở thanh bên trái:
 
-- **Mở CVAT:** danh sách địa chỉ CVAT (có sẵn `cvat.edufun.ai` và `localhost:8080`, thêm được địa chỉ khác).
-  Bấm **Mở**: cửa sổ CVAT mở ra, bảng của tool tự hiện như khi dùng Tampermonkey. Đăng nhập CVAT ngay trong cửa sổ đó;
-  app nhớ đăng nhập.
-- **Backend:** tự bật khi mở app. Có nút Bật/Tắt/Khởi động lại và Nhật ký.
-- **Thành phần:** đã cài gì, bản nào; tải thêm hoặc gỡ từng phần.
-- **Cài đặt và dữ liệu:** tự chạy nền khi bật Windows, quên token, mở các thư mục dữ liệu.
+- **Tổng quan:** backend đang chạy hay không, trên card nào, VRAM, nhiệt độ GPU. Nút mở nhanh trang gán nhãn và
+  job gần đây (**Mở tiếp**). Backend lỗi thì hiện nguyên nhân và các bước sửa, mỗi bước một nút bấm.
+- **Trang gán nhãn:** danh sách địa chỉ CVAT (có sẵn `cvat.edufun.ai` và `localhost:8080`, thêm được địa chỉ khác).
+  Bấm **Mở**: cửa sổ CVAT mở ra, panel của tool tự hiện như khi dùng Tampermonkey. Đăng nhập CVAT ngay trong cửa sổ
+  đó; app nhớ đăng nhập. Hiện panel hỗ trợ CVAT; nền tảng khác sẽ thêm dần.
+- **Thành phần:** mỗi thành phần một thẻ: đã cài gì, bản nào; tải thêm, cập nhật hoặc gỡ từng phần.
+- **Dùng chung nhóm:** chia sẻ backend trong mạng nội bộ, hoặc dùng backend của máy khác.
+- **Hỗ trợ:** tạo gói báo lỗi, xem nhật ký (lọc theo chữ, chỉ xem dòng lỗi, chép), sao lưu và đồng bộ.
+- **Cài đặt:** ngôn ngữ, giao diện sáng/tối, tự chạy nền khi bật Windows, tự bật và tự bật lại backend, thư mục dữ liệu.
+
+Backend tự bật khi mở app. Nếu đang chạy mà tắt bất ngờ, app tự bật lại (tối đa 3 lần trong 10 phút) và báo qua khay
+hệ thống; tắt được trong Cài đặt.
+
+Thao tác nhanh: **Ctrl+K** mở ô tìm thao tác (mở CVAT, bật backend, gửi báo lỗi…), **Alt+1…6** chuyển trang.
+Mọi hộp thoại đóng được bằng **Esc**, bấm ra ngoài hoặc nút ✕. Xoá một trang gán nhãn có nút **Hoàn tác**.
 
 Đóng bảng điều khiển thì app vẫn chạy ở khay hệ thống (góc phải thanh taskbar). Thoát hẳn: chuột phải biểu tượng → **Thoát**.
 
@@ -95,7 +104,7 @@ trùng trình duyệt/Windows.
 
 ### Dùng chung trong nhóm
 
-- **Một máy GPU phục vụ cả nhóm.** Trên máy có GPU, mở bảng điều khiển → **Dùng chung trong nhóm** → bật
+- **Một máy GPU phục vụ cả nhóm.** Trên máy có GPU, mở bảng điều khiển → **Dùng chung nhóm** → bật
   **Chia sẻ backend của máy này**. App hiện địa chỉ (ví dụ `http://192.168.1.20:8765`) và một key.
   - Windows có thể hỏi về tường lửa: chọn *Private networks*.
   - Chỉ máy có key mới dùng được.
@@ -203,13 +212,13 @@ có xoá dữ liệu của bạn không. Mặc định là giữ.
 - **Logo và taskbar:** app có logo riêng (chữ S nét polyline). Taskbar hiện đúng icon và tên SAM3 CVAT Assist.
 - **Màn hình chờ:** hiện có logo trong vài giây lúc Python khởi động.
 - **Cửa sổ cài đặt và bảng điều khiển:** cùng một kiểu.
-  - Cột trái là các bước (lúc cài) hoặc mục lục (lúc dùng); thanh nút ở dưới.
-  - Sáng hoặc tối theo cài đặt của Windows.
+  - Cột trái là các bước (lúc cài) hoặc các trang (lúc dùng); thanh nút ở dưới.
+  - Sáng, tối hoặc theo Windows (chọn ở Cài đặt, từ 0.9.0).
 - **Đổi logo:** sửa `desktop/ui/logo.svg` và `logo-small.svg` (bản cỡ nhỏ), rồi chạy `python scripts/make_icons.py`.
 
 ## Ngôn ngữ
 
-Chọn ngôn ngữ ở bộ cài (lần đầu), ở góc trên bảng điều khiển, hoặc ở tab Cài đặt của panel. Một lựa chọn chung cho
+Chọn ngôn ngữ ở bộ cài (lần đầu), ở trang Cài đặt của bảng điều khiển, hoặc ở tab Cài đặt của panel. Một lựa chọn chung cho
 panel, bảng điều khiển, khay hệ thống, thông báo và "Có gì mới". Nhật ký luôn bằng tiếng Anh.
 
 ## Khi có lỗi
@@ -218,7 +227,9 @@ panel, bảng điều khiển, khay hệ thống, thông báo và "Có gì mới
 
 - **"WebView2" khi mở app:** máy thiếu Microsoft Edge WebView2 Runtime. Windows 11 có sẵn. Windows 10 tải bản
   *Evergreen Bootstrapper* tại <https://developer.microsoft.com/microsoft-edge/webview2/>.
-- **Backend lỗi:** bảng điều khiển → **Backend → Nhật ký**. Lỗi thiếu VRAM thì đóng bớt ứng dụng dùng GPU.
+- **Backend lỗi:** trang **Tổng quan** hiện nguyên nhân và cách sửa (ví dụ thiếu Microsoft Visual C++ thì có nút tải).
+  Xem nhật ký ở trang **Hỗ trợ**. Lỗi thiếu VRAM thì đóng bớt ứng dụng dùng GPU.
+- **Không cần `Set-ExecutionPolicy` hay `run.ps1`:** bản cài bật Python đi kèm trực tiếp, không qua PowerShell.
 - **Token "chưa được duyệt":** đợi email duyệt của Meta, rồi vào **Thành phần → Tải**.
 - Nhật ký đầy đủ: `AppData\Local\SAM3CvatAssist\logs\`.
 

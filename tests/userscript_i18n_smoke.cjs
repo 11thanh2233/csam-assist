@@ -95,8 +95,15 @@ async function scenario(frameBytes) {
       .then(async (r) => o.onload({ status: r.status, responseText: await r.text() })).catch(() => o.onerror());
   };
   win.GM_setValue('cfg', { backendUrl: BACKEND, apiKey: 'k3', reloadAfterApply: false, confirmApply: true, lang: 'en', tourDone: true });
-  const dialogs = [];
-  win.confirm = (m) => { dialogs.push(m); return true; };
+  win.confirm = () => true;
+  // 0.9: panel hỏi bằng hộp thoại riêng (không còn window.confirm/prompt): test tự bấm nút chính
+  const __dialogs = [];
+  setInterval(() => {
+    const hostEl = win.document.getElementById('sam3-cvat-assist');
+    const back = hostEl && hostEl.shadowRoot && hostEl.shadowRoot.querySelector('.dlg-back');
+    if (back) { __dialogs.push(back.querySelector('p').textContent); back.querySelector('.dlg .primary').click(); }
+  }, 20).unref();
+  const dialogs = __dialogs;
   win.eval(fs.readFileSync(path.join(ROOT, 'userscript', 'sam3-cvat-assist.user.js'), 'utf8'));
   const root = doc.getElementById('sam3-cvat-assist').shadowRoot;
   const button = (t) => [...root.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(t));
