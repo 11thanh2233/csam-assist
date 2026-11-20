@@ -1,15 +1,15 @@
-# Bản desktop cho Windows (`SAM3-CVAT-Assist-Setup-<bản>.exe`)
+# Bản desktop cho Windows (`SAM3-Label-Assist-Setup-<bản>.exe`)
 
 Cài bằng một file, mở bằng một biểu tượng. Không cần Python, PowerShell hay Tampermonkey.
 
 ## Cài đặt
 
-1. Tải `SAM3-CVAT-Assist-Setup-<bản>.exe` ở mục **Releases** của repo
+1. Tải `SAM3-Label-Assist-Setup-<bản>.exe` ở mục **Releases** của repo
    (bản thử mỗi lần cập nhật code: mục **Actions** → lần chạy mới nhất → **Artifacts**).
 2. Chạy file. Windows có thể hiện **"Windows protected your PC"** vì file chưa ký số. Bấm **More info → Run anyway**.
    Mỗi bản phát hành có ghi mã SHA-256 của bộ cài trong Release, dùng để kiểm file tải về đúng là bản đó:
-   `Get-FileHash .\SAM3-CVAT-Assist-Setup-0.6.0.exe` trong PowerShell.
-3. Bộ cài chép app vào `AppData\Local\Programs\SAM3 CVAT Assist` (không cần quyền admin), rồi mở **trình tải
+   `Get-FileHash .\SAM3-Label-Assist-Setup-0.6.0.exe` trong PowerShell.
+3. Bộ cài chép app vào `AppData\Local\Programs\SAM3 Label Assist` (không cần quyền admin), rồi mở **trình tải
    thành phần**:
    1. **Kiểm tra máy:** card NVIDIA, VRAM, driver. Không có card NVIDIA thì cài PyTorch bản CPU (nhỏ hơn, nhưng rất chậm).
    2. **Giấy phép SAM:** đọc và đồng ý.
@@ -24,7 +24,7 @@ lúc đang cài cần trống khoảng 12 GB.
 
 ## Dùng
 
-Mở **SAM3 CVAT Assist** từ Desktop hoặc Start Menu. Bảng điều khiển (từ 0.9.0) có sáu trang ở thanh bên trái:
+Mở **SAM3 Label Assist** từ Desktop hoặc Start Menu. Bảng điều khiển (từ 0.9.0) có sáu trang ở thanh bên trái:
 
 - **Tổng quan:** backend đang chạy hay không, trên card nào, VRAM, nhiệt độ GPU. Nút mở nhanh trang gán nhãn và
   job gần đây (**Mở tiếp**). Backend lỗi thì hiện nguyên nhân và các bước sửa, mỗi bước một nút bấm.
@@ -180,7 +180,7 @@ báo giảm dần khi có người tải). Hai cách có chứng chỉ:
 
 Khi cập nhật app: profile và guideline có sẵn được cập nhật, trừ file bạn đã sửa. PyTorch và trọng số không phải tải lại.
 
-Gỡ app: **Settings → Apps → SAM3 CVAT Assist → Uninstall**. Bộ gỡ hỏi riêng có xoá model đã tải (khoảng 9 GB) và
+Gỡ app: **Settings → Apps → SAM3 Label Assist → Uninstall**. Bộ gỡ hỏi riêng có xoá model đã tải (khoảng 9 GB) và
 có xoá dữ liệu của bạn không. Mặc định là giữ.
 
 ## An toàn
@@ -209,7 +209,7 @@ có xoá dữ liệu của bạn không. Mặc định là giữ.
 
 ## Giao diện (từ bản 0.8.3)
 
-- **Logo và taskbar:** app có logo riêng (chữ S nét polyline). Taskbar hiện đúng icon và tên SAM3 CVAT Assist.
+- **Logo và taskbar:** app có logo riêng (chữ S nét polyline). Taskbar hiện đúng icon và tên SAM3 Label Assist.
 - **Màn hình chờ:** hiện có logo trong vài giây lúc Python khởi động.
 - **Cửa sổ cài đặt và bảng điều khiển:** cùng một kiểu.
   - Cột trái là các bước (lúc cài) hoặc các trang (lúc dùng); thanh nút ở dưới.
@@ -229,6 +229,8 @@ panel, bảng điều khiển, khay hệ thống, thông báo và "Có gì mới
   *Evergreen Bootstrapper* tại <https://developer.microsoft.com/microsoft-edge/webview2/>.
 - **Backend lỗi:** trang **Tổng quan** hiện nguyên nhân và cách sửa (ví dụ thiếu Microsoft Visual C++ thì có nút tải).
   Xem nhật ký ở trang **Hỗ trợ**. Lỗi thiếu VRAM thì đóng bớt ứng dụng dùng GPU.
+- **Đổi tên ở 0.9.1 (SAM3 CVAT Assist → SAM3 Label Assist):** cập nhật từ bản cũ giữ nguyên dữ liệu, token đã lưu,
+  đăng nhập CVAT và chế độ tự chạy cùng Windows. Lối tắt tên cũ được thay bằng tên mới. App vẫn nằm ở thư mục cài cũ.
 - **Không cần `Set-ExecutionPolicy` hay `run.ps1`:** bản cài bật Python đi kèm trực tiếp, không qua PowerShell.
 - **Token "chưa được duyệt":** đợi email duyệt của Meta, rồi vào **Thành phần → Tải**.
 - Nhật ký đầy đủ: `AppData\Local\SAM3CvatAssist\logs\`.

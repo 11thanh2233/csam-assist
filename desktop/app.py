@@ -89,7 +89,7 @@ class DesktopApp:
         straight = (not self.setup_mode and not self.start_hidden and (self.comps.status()["ready"] or self.backend.remote)
                     and self.api._settings.data.get("start_mode", "cvat") == "cvat" and self.api._settings.data["sites"])
         self.control = webview.create_window(
-            "SAM3 CVAT Assist" + (tr(" - Cài đặt", self.api._lang()) if self.setup_mode else ""), html=html, js_api=self.api,
+            "SAM3 Label Assist" + (tr(" - Cài đặt", self.api._lang()) if self.setup_mode else ""), html=html, js_api=self.api,
             width=980, height=760, min_size=(760, 560), hidden=self.start_hidden or bool(straight))
         if straight:
             st = self.api._settings.data
@@ -214,7 +214,7 @@ class DesktopApp:
                                                               or (self.api._settings.data["sites"] or [{"url": ""}])[0]["url"])),
             pystray.MenuItem(tr("Thoát", lang), lambda: self.quit()),
         )
-        self.tray_icon = pystray.Icon("sam3-cvat-assist", image, "SAM3 CVAT Assist", menu)
+        self.tray_icon = pystray.Icon("sam3-cvat-assist", image, "SAM3 Label Assist", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def quit(self, close_windows: bool = True) -> None:
@@ -244,7 +244,7 @@ READY_EVENT = "Local\\SAM3Assist-Ready"
 
 
 def set_app_identity() -> None:
-    """Windows nhận cửa sổ là của SAM3 CVAT Assist (icon và tên riêng trên taskbar), không phải của pythonw.exe."""
+    """Windows nhận cửa sổ là của SAM3 Label Assist (icon và tên riêng trên taskbar), không phải của pythonw.exe."""
     if sys.platform != "win32":
         return
     try:
@@ -310,8 +310,8 @@ def main(argv=None) -> int:
             import ctypes
 
             lang = norm_lang(_saved_lang())
-            ctypes.windll.user32.MessageBoxW(None, tr("SAM3 CVAT Assist đang chạy. Bấm vào biểu tượng ở khay hệ thống để mở.", lang),
-                                             "SAM3 CVAT Assist", 0x40)
+            ctypes.windll.user32.MessageBoxW(None, tr("SAM3 Label Assist đang chạy. Bấm vào biểu tượng ở khay hệ thống để mở.", lang),
+                                             "SAM3 Label Assist", 0x40)
         _signal_ready()                           # đóng màn hình chờ của SAM3 Assist.exe
         return 0
     set_app_identity()

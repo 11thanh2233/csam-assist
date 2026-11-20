@@ -1,4 +1,4 @@
-# Kiểm thử rồi dựng bộ cài Windows (SAM3-CVAT-Assist-Setup-<bản>.exe).
+# Kiểm thử rồi dựng bộ cài Windows (SAM3-Label-Assist-Setup-<bản>.exe).
 #   - Mỗi lần push lên main: chạy test + dựng bộ cài, tải về ở mục Actions → Artifacts.
 #   - Push tag v<bản> (ví dụ v0.6.0): như trên và đăng bộ cài lên mục Releases.
 name: Windows installer
@@ -202,7 +202,7 @@ jobs:
         run: |
           $setup = (Get-ChildItem dist\*.exe)[0].FullName
           Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install.log" -Wait
-          $app = "$env:LOCALAPPDATA\Programs\SAM3 CVAT Assist"
+          $app = "$env:LOCALAPPDATA\Programs\SAM3 Label Assist"
           if (-not (Test-Path "$app\SAM3 Assist.exe")) { Get-Content install.log -Tail 40; throw "chưa cài được" }
           & "$app\runtime\python.exe" -I -X utf8 -c "import desktop.components as c, desktop.paths as p; m = c.load_manifest(p.Paths()); print('manifest', m['version'], m['torch']['cuda_index'])"
           if ($LASTEXITCODE -ne 0) { throw "app đã cài không chạy" }
@@ -227,7 +227,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SAM3-CVAT-Assist-Setup-${{ env.VERSION }}
+          name: SAM3-Label-Assist-Setup-${{ env.VERSION }}
           path: |
             dist/*.exe
             build/app/desktop/manifest.lock.json
@@ -280,5 +280,8 @@ jobs:
           $notes = ($section -join "`n") + "`n`nHướng dẫn cài: docs/DESKTOP.md`n`nSHA-256 của bộ cài: ``$hash``" +
                    "`n`n<!-- en -->`n" + ($sectionEn -join "`n") + "`n`nInstall guide: docs/DESKTOP.md`n`nInstaller SHA-256: ``$hash``"
           Set-Content -Path notes.md -Value $notes -Encoding utf8
-          gh release create $env:GITHUB_REF_NAME $exe build\app\desktop\manifest.lock.json build\build-info.json `
-            --title "SAM3 CVAT Assist $env:VERSION" --notes-file notes.md
+          # App 0.9.0 trở về trước chỉ nhận bộ cài tên cũ: kèm một bản cùng nội dung với tên đó để chúng tự cập nhật được
+          $legacy = Join-Path (Split-Path $exe) ((Split-Path $exe -Leaf) -replace '^SAM3-Label-Assist-', 'SAM3-CVAT-Assist-')
+          Copy-Item $exe $legacy -Force
+          gh release create $env:GITHUB_REF_NAME $exe $legacy build\app\desktop\manifest.lock.json build\build-info.json `
+            --title "SAM3 Label Assist $env:VERSION" --notes-file notes.md

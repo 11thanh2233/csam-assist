@@ -96,7 +96,7 @@ async def lifespan(_: FastAPI):
     watcher.stop.set()
 
 
-app = FastAPI(title="SAM3 CVAT Assist", version=__version__, lifespan=lifespan)
+app = FastAPI(title="SAM3 Label Assist", version=__version__, lifespan=lifespan)
 # Không bật CORS: userscript gọi backend qua GM_xmlhttpRequest (không bị CORS chặn) và trang duyệt guideline
 # được backend phục vụ cùng origin. Bật CORS "*" sẽ cho MỌI trang web đang mở trong trình duyệt gọi được backend
 # (đọc ảnh, ghi/xoá profile, ghi guideline) khi chưa đặt API key.
@@ -1191,9 +1191,9 @@ def favicon() -> Response:
 def index() -> str:
     engine = getattr(rt.engine, "name", "?")
     device = getattr(rt.engine, "device", "?")
-    return tr(f"""<!doctype html><html lang="vi"><meta charset="utf-8"><title>SAM3 CVAT Assist</title>
+    return tr(f"""<!doctype html><html lang="vi"><meta charset="utf-8"><title>SAM3 Label Assist</title>
 <body style="font-family:system-ui;max-width:640px;margin:48px auto;padding:0 16px;line-height:1.6">
-<h1>SAM3 CVAT Assist</h1>
+<h1>SAM3 Label Assist</h1>
 <p>Backend đang chạy. Engine: <b>{engine}</b>, thiết bị: <b>{device}</b>, phiên bản {__version__}.</p>
 <p><a href="/sam3-cvat-assist.user.js">Cài userscript vào Tampermonkey</a></p>
 <p>Sau khi cài, mở một job trên CVAT. Panel "SAM3 Assist" hiện ở góc phải màn hình.</p>

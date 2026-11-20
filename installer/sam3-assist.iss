@@ -1,4 +1,4 @@
-﻿; Bộ cài Windows cho SAM3 CVAT Assist (Inno Setup 6). Biên dịch trong GitHub Actions:
+﻿; Bộ cài Windows cho SAM3 Label Assist (Inno Setup 6). Biên dịch trong GitHub Actions:
 ;   ISCC /DAppVersion=0.6.0 /DBuildDir=..\build installer\sam3-assist.iss
 ; Cài cho riêng người dùng hiện tại (không cần quyền admin). Phần nặng (PyTorch, trọng số) được tải ở bước cuối.
 
@@ -8,7 +8,7 @@
 #ifndef BuildDir
   #define BuildDir "..\build"
 #endif
-#define AppName "SAM3 CVAT Assist"
+#define AppName "SAM3 Label Assist"
 #define ExeName "SAM3 Assist.exe"
 
 [Setup]
@@ -25,7 +25,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir=..\dist
-OutputBaseFilename=SAM3-CVAT-Assist-Setup-{#AppVersion}
+OutputBaseFilename=SAM3-Label-Assist-Setup-{#AppVersion}
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#ExeName}
 UninstallDisplayName={#AppName}
@@ -116,6 +116,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Cập nhật: xoá code và Python cũ để không còn file thừa. Dữ liệu của bạn (model, profile, tự học) nằm chỗ khác, không bị đụng tới.
 Type: filesandordirs; Name: "{app}\app"
 Type: filesandordirs; Name: "{app}\runtime"
+; 0.9.1 đổi tên SAM3 CVAT Assist -> SAM3 Label Assist: xoá lối tắt tên cũ để không có hai biểu tượng
+Type: files; Name: "{userprograms}\SAM3 CVAT Assist.lnk"
+Type: files; Name: "{userdesktop}\SAM3 CVAT Assist.lnk"
 
 [Files]
 Source: "{#BuildDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -177,7 +180,8 @@ var data: String;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
-    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'SAM3 CVAT Assist');
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'SAM3 Label Assist');
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'SAM3 CVAT Assist');   { tên trước 0.9.1 }
     data := ExpandConstant('{localappdata}\SAM3CvatAssist');
     if DirExists(data) then
     begin

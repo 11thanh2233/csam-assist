@@ -31,10 +31,10 @@ def _fatal(exc: BaseException) -> None:
     if sys.platform == "win32":
         import ctypes
 
-        msg = f"SAM3 CVAT Assist không khởi động được:\n\n{type(exc).__name__}: {exc}\n\nChi tiết: {where}"
+        msg = f"SAM3 Label Assist không khởi động được:\n\n{type(exc).__name__}: {exc}\n\nChi tiết: {where}"
         if "webview" in text.lower() and ("webview2" in text.lower() or "edgechromium" in text.lower()):
             msg += "\n\nCó thể máy thiếu Microsoft Edge WebView2 Runtime. Tải tại: https://developer.microsoft.com/microsoft-edge/webview2/"
-        ctypes.windll.user32.MessageBoxW(None, _t(msg), "SAM3 CVAT Assist", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, _t(msg), "SAM3 Label Assist", 0x10)
     else:
         print(text, file=sys.stderr)
 

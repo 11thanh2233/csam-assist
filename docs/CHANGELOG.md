@@ -3,6 +3,16 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.1 (2026-11-20)
+
+- **Đổi tên thành SAM3 Label Assist** (trước là SAM3 CVAT Assist), vì tool sẽ hỗ trợ cả các nền tảng gán nhãn khác.
+  - Cập nhật từ bản cũ giữ nguyên dữ liệu, token Hugging Face đã lưu, đăng nhập CVAT và chế độ tự chạy cùng Windows.
+  - Lối tắt ở Desktop và Start Menu đổi sang tên mới, không để lại lối tắt tên cũ.
+  - Bộ cài tên mới là `SAM3-Label-Assist-Setup-<bản>.exe`. Release vẫn kèm bản tên cũ để app 0.9.0 trở về trước tự cập
+    nhật được.
+  - Người dùng Tampermonkey: script vẫn giữ tên cũ trong Tampermonkey để không bị chạy hai panel cùng lúc.
+- Sửa: chữ "vừa xong" ở job gần đây chưa dịch khi dùng tiếng Anh.
+
 ## 0.9.0 (2026-11-20)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.0.md`.

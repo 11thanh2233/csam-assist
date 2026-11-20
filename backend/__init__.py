@@ -1,3 +1,3 @@
-"""SAM3 CVAT Assist - backend."""
+"""SAM3 Label Assist - backend."""
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"

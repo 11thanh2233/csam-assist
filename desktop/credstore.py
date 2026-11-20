@@ -1,7 +1,7 @@
 """Cất token Hugging Face trong Windows Credential Manager (chỉ khi bạn chọn "Nhớ token"). Không ghi ra file."""
 from __future__ import annotations
 
-SERVICE = "SAM3 CVAT Assist"
+SERVICE = "SAM3 CVAT Assist"   # tên cũ, giữ nguyên: đổi là mất token đã lưu trong Windows Credential Manager
 USER = "huggingface-token"
 
 

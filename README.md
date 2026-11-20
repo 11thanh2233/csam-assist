@@ -1,4 +1,6 @@
-# SAM3 CVAT Assist
+# SAM3 Label Assist
+
+> Trước bản 0.9.1 tên là **SAM3 CVAT Assist**. Đổi tên vì tool sẽ hỗ trợ cả các nền tảng gán nhãn khác ngoài CVAT.
 
 Công cụ gợi ý nhãn bằng SAM 3 (Segment Anything Model 3 của Meta) chạy ngay trên giao diện
 `cvat.edufun.ai`. Tool phủ một panel lên trang CVAT, đề xuất bounding box, polygon, polyline
@@ -97,8 +99,8 @@ Chưa có GPU vẫn thử được giao diện: backend có chế độ `mock` t
 
 ### Cách nhanh trên Windows: bộ cài `.exe` (từ bản 0.6.0)
 
-Tải `SAM3-CVAT-Assist-Setup-<bản>.exe` ở mục **Releases** của repo (từ 0.7.0 app tự báo và tự cập nhật bản mới), chạy, làm theo trình tải ở bước cuối
-(giấy phép SAM, token Hugging Face, chọn thành phần). Xong là mở **SAM3 CVAT Assist** từ Desktop: bảng điều khiển
+Tải `SAM3-Label-Assist-Setup-<bản>.exe` ở mục **Releases** của repo (từ 0.7.0 app tự báo và tự cập nhật bản mới), chạy, làm theo trình tải ở bước cuối
+(giấy phép SAM, token Hugging Face, chọn thành phần). Xong là mở **SAM3 Label Assist** từ Desktop: bảng điều khiển
 mở CVAT trong cửa sổ riêng, bảng của tool tự hiện. Không cần Python, PowerShell hay Tampermonkey. Chi tiết, dung
 lượng, cách gỡ và các biện pháp an toàn: [docs/DESKTOP.md](docs/DESKTOP.md).
 
@@ -221,7 +223,7 @@ và đang mở một job.
 
 **Thêm một CVAT khác** (ví dụ `https://cvat.truong-abc.edu.vn`), chọn một trong hai cách:
 
-- **Không mất khi cài lại script (nên dùng):** Tampermonkey > bấm vào script **SAM3 CVAT Assist** > tab
+- **Không mất khi cài lại script (nên dùng):** Tampermonkey > bấm vào script **SAM3 Label Assist** > tab
   **Settings** > mục **Includes/Excludes** > ô **User matches** > thêm `https://cvat.truong-abc.edu.vn/*`
   > **Save**.
 - **Sửa trong code:** mở script trong Tampermonkey. Ở đầu file có sẵn các dòng mẫu:

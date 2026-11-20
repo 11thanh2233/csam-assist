@@ -650,7 +650,8 @@ class ControlApi:
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_NAME = "SAM3 CVAT Assist"
+RUN_NAME = "SAM3 Label Assist"
+LEGACY_RUN_NAMES = ("SAM3 CVAT Assist",)    # tên trước 0.9.1: bản cũ đã bật tự chạy thì vẫn nhận ra, và được dọn khi bật/tắt lại
 
 
 def _launcher() -> str:
@@ -664,10 +665,15 @@ def autostart_enabled() -> bool:
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-            winreg.QueryValueEx(k, RUN_NAME)
-            return True
+            for name in (RUN_NAME, *LEGACY_RUN_NAMES):
+                try:
+                    winreg.QueryValueEx(k, name)
+                    return True
+                except OSError:
+                    pass
     except OSError:
-        return False
+        pass
+    return False
 
 
 def set_autostart(on: bool) -> None:
@@ -676,13 +682,13 @@ def set_autostart(on: bool) -> None:
     import winreg
 
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
-        if on:
-            winreg.SetValueEx(k, RUN_NAME, 0, winreg.REG_SZ, f'"{_launcher()}" --tray')
-        else:
+        for name in ((RUN_NAME, *LEGACY_RUN_NAMES) if not on else LEGACY_RUN_NAMES):
             try:
-                winreg.DeleteValue(k, RUN_NAME)
+                winreg.DeleteValue(k, name)
             except OSError:
                 pass
+        if on:
+            winreg.SetValueEx(k, RUN_NAME, 0, winreg.REG_SZ, f'"{_launcher()}" --tray')
 
 
 def _translated(fn):

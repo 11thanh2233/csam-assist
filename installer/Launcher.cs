@@ -22,7 +22,7 @@ static class Launcher
         string py = Path.Combine(dir, "runtime", "pythonw.exe");
         if (!File.Exists(py))
         {
-            MessageBox.Show("Không thấy Python của app (" + py + "). Hãy cài lại SAM3 CVAT Assist.", "SAM3 CVAT Assist",
+            MessageBox.Show("Không thấy Python của app (" + py + "). Hãy cài lại SAM3 Label Assist.", "SAM3 Label Assist",
                             MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
@@ -69,7 +69,7 @@ static class Launcher
             {
                 FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.CenterScreen,
                 Size = new Size(480, 300), BackColor = navy, ShowInTaskbar = false, TopMost = true,
-                Text = "SAM3 CVAT Assist",
+                Text = "SAM3 Label Assist",
             };
             string png = Path.Combine(dir, "app", "desktop", "ui", "icon.png");
             if (File.Exists(png))
@@ -80,7 +80,7 @@ static class Launcher
                 });
             form.Controls.Add(new Label
             {
-                Text = "SAM3 CVAT Assist", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 15f),
+                Text = "SAM3 Label Assist", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 15f),
                 TextAlign = ContentAlignment.MiddleCenter, Size = new Size(480, 36), Location = new Point(0, 146),
             });
             form.Controls.Add(new Label

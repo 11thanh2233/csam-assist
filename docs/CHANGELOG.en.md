@@ -3,6 +3,16 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.1 (2026-11-20)
+
+- **Renamed to SAM3 Label Assist** (formerly SAM3 CVAT Assist), because the tool will support other labeling platforms.
+  - Updating from an older version keeps your data, saved Hugging Face token, CVAT login and start-with-Windows setting.
+  - Desktop and Start Menu shortcuts use the new name; old shortcuts are removed.
+  - The installer is now `SAM3-Label-Assist-Setup-<version>.exe`. Releases also include a copy with the old name so
+    apps up to 0.9.0 can still update themselves.
+  - Tampermonkey users: the script keeps its old name in Tampermonkey so two panels never run at once.
+- Fixed: "just now" in recent jobs was not translated in English.
+
 ## 0.9.0 (2026-11-20)
 
 Details and test results are in `docs/CHECKLIST_0.9.0.md` (Vietnamese).

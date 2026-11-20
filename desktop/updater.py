@@ -21,7 +21,8 @@ from . import downloader as D
 
 REPO = "11thanh2233/csam-assist"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
-ASSET_RE = re.compile(r"^SAM3-CVAT-Assist-Setup-(\d+\.\d+\.\d+)\.exe$")
+# Từ 0.9.1 bộ cài tên SAM3-Label-Assist-Setup-<bản>.exe. Release vẫn kèm bản tên cũ để app 0.9.0 trở về trước tự cập nhật được.
+ASSET_RE = re.compile(r"^SAM3-(?:Label|CVAT)-Assist-Setup-(\d+\.\d+\.\d+)\.exe$")
 SHA_RE = re.compile(r"SHA-?256[^`\n]*`([0-9a-fA-F]{64})`")
 
 
@@ -41,7 +42,8 @@ def check(current: str, api: str = API, allow_http: tuple[str, ...] = (), prefix
     if rel.get("draft") or rel.get("prerelease") or parse_version(version) <= parse_version(current):
         return out
     out["available"] = True
-    asset = next((a for a in rel.get("assets") or [] if ASSET_RE.match(a.get("name", ""))
+    assets = sorted(rel.get("assets") or [], key=lambda a: "-Label-" not in a.get("name", ""))   # ưu tiên tên mới
+    asset = next((a for a in assets if ASSET_RE.match(a.get("name", ""))
                   and ASSET_RE.match(a["name"]).group(1) == version), None)
     if asset is None:
         out["reason"] = "Bản này chưa có file bộ cài trên GitHub."
@@ -81,7 +83,7 @@ class Updater:
 
     def _run(self, info: dict) -> None:
         try:
-            for old in self.folder.glob("SAM3-CVAT-Assist-Setup-*.exe"):     # bộ cài cũ: xoá cho đỡ chật
+            for old in self.folder.glob("SAM3-*-Assist-Setup-*.exe"):     # bộ cài cũ: xoá cho đỡ chật
                 if old.name != info["name"]:
                     old.unlink(missing_ok=True)
             dest = D.download(info["url"], self.folder / info["name"], sha256=info["sha256"], size=info.get("size"),

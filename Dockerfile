@@ -1,4 +1,4 @@
-# Backend SAM3 CVAT Assist trong một container.
+# Backend SAM3 Label Assist trong một container.
 #   docker compose up --build            (GPU NVIDIA, xem docker-compose.yml)
 #   docker build --build-arg VARIANT=mock -t sam3-assist:mock .   (không model, chỉ để thử giao diện)
 FROM python:3.12-slim

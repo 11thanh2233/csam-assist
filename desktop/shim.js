@@ -77,7 +77,7 @@
     var opt = typeof o === 'string' ? { text: o, title: title || 'SAM3 Assist' } : (o || {});
     whenReady(function (a) { a.notify(opt.title || 'SAM3 Assist', opt.text || ''); });
   };
-  window.GM_info = { script: { name: 'SAM3 CVAT Assist', version: boot.version }, scriptHandler: 'SAM3 Assist Desktop' };
+  window.GM_info = { script: { name: 'SAM3 Label Assist', version: boot.version }, scriptHandler: 'SAM3 Assist Desktop' };
   // Nút "SAM3" ở góc trái: thêm lệnh mở bảng điều khiển của app (cập nhật, thành phần, job gần đây).
   var menuName = boot.lang === 'en' ? 'App control panel' : 'Bảng điều khiển của app';
   setTimeout(function () { window.GM_registerMenuCommand(menuName, function () { whenReady(function (a) { a.open_control(); }); }); }, 0);

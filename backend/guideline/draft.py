@@ -400,7 +400,7 @@ def render_markdown(run: dict, lib: Library) -> tuple[str, list[dict]]:
 
     w.text(f"# Annotation Guideline (bản nháp) — {title}")
     w.text()
-    w.text(f"> Bản nháp do SAM3 CVAT Assist soạn từ {s['images']} ảnh mẫu. Số liệu và ca khó là đo trên ảnh; "
+    w.text(f"> Bản nháp do SAM3 Label Assist soạn từ {s['images']} ảnh mẫu. Số liệu và ca khó là đo trên ảnh; "
            "các luật ghi *(đề xuất, chưa chốt)* là gợi ý của tool và cần người phụ trách quyết định. "
            "Bản này chưa phải guideline chính thức cho tới khi được duyệt.")
     w.text()

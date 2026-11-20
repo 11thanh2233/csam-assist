@@ -443,8 +443,8 @@ def test_updater_checks_release_and_hash(tmp_path):
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     FakeGitHub.payload = b"MZ" + b"\0" * 1000
     sha = hashlib.sha256(FakeGitHub.payload).hexdigest()
-    asset = {"name": "SAM3-CVAT-Assist-Setup-0.7.1.exe", "size": len(FakeGitHub.payload),
-             "browser_download_url": f"{base}/dl/SAM3-CVAT-Assist-Setup-0.7.1.exe"}
+    asset = {"name": "SAM3-Label-Assist-Setup-0.7.1.exe", "size": len(FakeGitHub.payload),
+             "browser_download_url": f"{base}/dl/SAM3-Label-Assist-Setup-0.7.1.exe"}
     kw = dict(api=f"{base}/api/latest", allow_http=("127.0.0.1",), prefix=f"{base}/dl/")
     FakeGitHub.release = {"tag_name": "v0.7.1", "body": "## 0.7.1\n- sửa lỗi", "assets": [dict(asset, digest=f"sha256:{sha}")]}
     info = U.check("0.7.0", **kw)
@@ -462,7 +462,7 @@ def test_updater_checks_release_and_hash(tmp_path):
     up.thread.join(10)
     assert Path(up.p["ready"]).read_bytes() == FakeGitHub.payload and not up.p["error"]
     FakeGitHub.payload = b"not an exe"
-    bad = dict(info, sha256=hashlib.sha256(b"not an exe").hexdigest(), size=10, name="SAM3-CVAT-Assist-Setup-0.7.2.exe")
+    bad = dict(info, sha256=hashlib.sha256(b"not an exe").hexdigest(), size=10, name="SAM3-Label-Assist-Setup-0.7.2.exe")
     up.start(bad)
     up.thread.join(10)
     assert "không phải bộ cài" in up.p["error"] and not (tmp_path / "upd" / bad["name"]).exists()
@@ -650,3 +650,44 @@ def test_recent_jobs_settings_and_bridge_notify(tmp_path):
     url["v"] = "https://evil.example/"
     with pytest.raises(PermissionError):
         br.notify("x", "y")
+
+
+def test_updater_rename_keeps_old_and_new_installer_names(tmp_path):
+    """0.9.1 đổi tên SAM3 CVAT Assist -> SAM3 Label Assist: nhận cả bộ cài tên cũ, có cả hai thì lấy tên mới."""
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    kw = dict(api=f"{base}/api/latest", allow_http=("127.0.0.1",), prefix=f"{base}/dl/")
+    sha = "a" * 64
+
+    def asset(name):
+        return {"name": name, "size": 10, "browser_download_url": f"{base}/dl/{name}", "digest": f"sha256:{sha}"}
+
+    old, new = asset("SAM3-CVAT-Assist-Setup-0.9.1.exe"), asset("SAM3-Label-Assist-Setup-0.9.1.exe")
+    FakeGitHub.release = {"tag_name": "v0.9.1", "body": "", "assets": [old]}
+    assert U.check("0.9.0", **kw)["name"] == old["name"], "release chỉ có tên cũ vẫn tự cập nhật"
+    FakeGitHub.release = {"tag_name": "v0.9.1", "body": "", "assets": [old, new]}
+    assert U.check("0.9.0", **kw)["name"] == new["name"], "có cả hai tên thì lấy tên mới"
+    FakeGitHub.release = {"tag_name": "v0.9.1", "body": "", "assets": [asset("Other-Setup-0.9.1.exe")]}
+    assert not U.check("0.9.0", **kw)["auto"]
+    srv.shutdown()
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_rename_keeps_internal_identifiers():
+    """Đổi tên hiển thị nhưng giữ định danh bên trong: token đã lưu, thư mục dữ liệu, taskbar, bộ cài cùng AppId."""
+    from desktop import credstore, paths
+    from desktop.app import APP_ID, MUTEX_NAME
+    from desktop.control import LEGACY_RUN_NAMES, RUN_NAME
+
+    assert credstore.SERVICE == "SAM3 CVAT Assist"
+    assert APP_ID == "SAM3CvatAssist.App" and MUTEX_NAME == "SAM3CvatAssistDesktopMutex"
+    assert RUN_NAME == "SAM3 Label Assist" and "SAM3 CVAT Assist" in LEGACY_RUN_NAMES
+    assert "SAM3CvatAssist" in Path(paths.__file__).read_text(encoding="utf-8")
+    iss = (ROOT / "installer" / "sam3-assist.iss").read_text(encoding="utf-8")
+    assert "AppId={{8F3C2E51-6B1A-4C9E-9C47-5A3D2B7E1F10}" in iss and '#define AppName "SAM3 Label Assist"' in iss
+    assert "SAM3 CVAT Assist.lnk" in iss and "'SAM3 CVAT Assist'" in iss, "dọn lối tắt và mục tự chạy tên cũ"
+    us = (ROOT / "userscript" / "sam3-cvat-assist.user.js").read_text(encoding="utf-8")
+    assert "// @name         SAM3 CVAT Assist" in us, "Tampermonkey nhận script theo @name: giữ để không thành hai panel"

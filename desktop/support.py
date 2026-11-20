@@ -66,7 +66,7 @@ def report_bundle(paths: Paths, extra: Optional[dict] = None, out_dir: Optional[
         if paths.state.exists():
             z.writestr("components.json", paths.state.read_text(encoding="utf-8"))
         # Gói báo lỗi viết bằng tiếng Anh kỹ thuật (như file nhật ký) để ai hỗ trợ cũng đọc được
-        z.writestr("README.txt", tr("Gói báo lỗi của SAM3 CVAT Assist: nhật ký, thông tin máy, danh sách thành phần.\n"
+        z.writestr("README.txt", tr("Gói báo lỗi của SAM3 Label Assist: nhật ký, thông tin máy, danh sách thành phần.\n"
                                     "Không chứa token Hugging Face, API key, cookie đăng nhập CVAT hay ảnh.\n", "en"))
     return out
 
@@ -108,7 +108,7 @@ def restore(paths: Paths, src: Path, store=None) -> dict:
     with zipfile.ZipFile(src) as z:
         names = z.namelist()
         if "backup.json" not in names:
-            raise ValueError("File này không phải bản sao lưu của SAM3 CVAT Assist.")
+            raise ValueError("File này không phải bản sao lưu của SAM3 Label Assist.")
         safety = backup(paths, paths.data / f"truoc-khi-khoi-phuc-{time.strftime('%Y%m%d-%H%M%S')}.zip")
         n = 0
         for name in names:
