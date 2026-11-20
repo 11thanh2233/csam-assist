@@ -3,6 +3,11 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.8.2 (2026-11-20)
+
+- **Installer language picker fixed:** version 0.8.1 showed "English" twice; it now shows "Tiếng Việt" and
+  "English". Vietnamese Windows preselects Tiếng Việt.
+
 ## 0.8.1 (2026-11-20)
 
 Details of every item, how it was tested and the bugs fixed are in `docs/CHECKLIST_0.8.1.md` (Vietnamese).

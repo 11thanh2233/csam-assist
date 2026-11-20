@@ -144,7 +144,7 @@ def test_changelog_has_an_english_twin_and_release_notes_split_by_language():
     en = [e["version"] for e in changelog.parse((ROOT / "docs" / "CHANGELOG.en.md").read_text(encoding="utf-8"))]
     assert vi == en, "CHANGELOG.en.md phải có đúng các bản như CHANGELOG.md"
     for e in changelog.parse((ROOT / "docs" / "CHANGELOG.en.md").read_text(encoding="utf-8")):
-        assert not VI.search(e["body"]), e["version"]
+        assert not VI.search(e["body"].replace("Tiếng Việt", "")), e["version"]     # trừ tên ngôn ngữ
     notes = "- Sửa lỗi\n\nSHA-256 của bộ cài: `ab`\n\n<!-- en -->\n- Bug fix"
     assert changelog.pick_lang(notes, "en") == "- Bug fix"
     assert changelog.pick_lang(notes, "vi").startswith("- Sửa lỗi")
@@ -154,6 +154,9 @@ def test_changelog_has_an_english_twin_and_release_notes_split_by_language():
 def test_installer_offers_both_languages_and_passes_choice_to_app():
     iss = (ROOT / "installer" / "sam3-assist.iss").read_text(encoding="utf-8")
     assert 'Name: "vi"' in iss and 'Name: "en"' in iss and "--lang={language}" in iss
+    # ô chọn ngôn ngữ hiện hai tên khác nhau (bản 0.8.1 hiện "English" hai lần)
+    assert "vi.LanguageName=Tiếng Việt" in iss and "en.LanguageName=English" in iss
+    assert iss.index("\n[LangOptions]") < iss.index("\n[Messages]")
     msgs = iss.split("[Messages]")[1].split("[CustomMessages]")[0]
     for line in msgs.splitlines():
         if "=" in line and not line.startswith(";"):

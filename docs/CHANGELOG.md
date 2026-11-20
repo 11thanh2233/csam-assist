@@ -3,6 +3,11 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.8.2 (2026-11-20)
+
+- **Sửa ô chọn ngôn ngữ của bộ cài:** bản 0.8.1 hiện "English" hai lần, giờ hiện "Tiếng Việt" và "English".
+  Windows tiếng Việt tự chọn sẵn Tiếng Việt.
+
 ## 0.8.1 (2026-11-20)
 
 Chi tiết từng mục, cách test và lỗi đã sửa ở `docs/CHECKLIST_0.8.1.md`.

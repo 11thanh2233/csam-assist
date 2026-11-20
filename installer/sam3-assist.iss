@@ -41,6 +41,14 @@ CloseApplications=yes
 Name: "vi"; MessagesFile: "compiler:Default.isl"
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
+[LangOptions]
+; Tên hiện trong ô chọn ngôn ngữ. Cả hai ngôn ngữ dùng chung Default.isl nên phải đặt riêng, không thì cùng hiện "English".
+; LanguageID giúp Windows tiếng Việt tự chọn sẵn Tiếng Việt.
+vi.LanguageName=Tiếng Việt
+vi.LanguageID=$042A
+en.LanguageName=English
+en.LanguageID=$0409
+
 [Messages]
 vi.SetupAppTitle=Cài đặt
 vi.SetupWindowTitle=Cài đặt %1
@@ -72,7 +80,9 @@ vi.ExitSetupMessage=Chưa cài xong. Thoát bây giờ thì app chưa được c
 vi.SetupAppRunningError=[name] đang chạy. Hãy thoát app (chuột phải biểu tượng ở khay hệ thống → Thoát) rồi bấm OK.
 vi.UninstallAppRunningError=[name] đang chạy. Hãy thoát app rồi bấm OK.
 vi.SelectLanguageTitle=Chọn ngôn ngữ / Select language
-vi.SelectLanguageLabel=Chọn ngôn ngữ cho bộ cài và app:
+vi.SelectLanguageLabel=Chọn ngôn ngữ cho bộ cài và app / Select the language for setup and the app:
+en.SelectLanguageTitle=Chọn ngôn ngữ / Select language
+en.SelectLanguageLabel=Chọn ngôn ngữ cho bộ cài và app / Select the language for setup and the app:
 en.WelcomeLabel2=Setup will copy [name/ver] to your computer.%n%nAt the last step the app asks for your Hugging Face token, then downloads PyTorch and the SAM 3 weights (about 6 GB). An Internet connection and about 12 GB of free space are needed.%n%nClose other applications before continuing.
 en.SelectDirLabel3=The app's code is installed into the folder below. Models and data are kept separately in AppData\Local\SAM3CvatAssist.
 en.SetupAppRunningError=[name] is running. Quit the app (right-click the tray icon → Quit), then press OK.

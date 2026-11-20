@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SAM3 CVAT Assist
 // @namespace    sam3-cvat-assist
-// @version      0.8.1
+// @version      0.8.2
 // @description  Gợi ý nhãn bằng SAM3 ngay trên giao diện CVAT: xem trước, duyệt, rồi ghi vào job. Không cần import/export file.
 // ---- Trang CVAT mà tool chạy trên đó -------------------------------------------------------
 // CVAT của khoá học:
@@ -45,7 +45,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.8.1';
+  const VERSION = '0.8.2';
   const DEFAULTS = {
     backendUrl: 'http://127.0.0.1:8765',
     apiKey: '',
