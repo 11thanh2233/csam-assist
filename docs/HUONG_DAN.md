@@ -55,6 +55,23 @@ Mở **SAM3 Label Assist** từ Desktop hoặc menu Start.
 2. Lần đầu thì đăng nhập CVAT ngay trong cửa sổ đó. App nhớ đăng nhập cho lần sau.
 3. Job bạn đã mở hiện ở mục **Tiếp tục làm**: bấm **Mở tiếp** để quay lại đúng job.
 
+**CVAT chạy trên máy bạn (địa chỉ `localhost`):** CVAT local cần Docker Desktop, mà Docker Desktop chạy trên WSL2. Bấm
+**Mở** khi CVAT chưa chạy thì app hiện hộp **CVAT trên máy này chưa chạy**, kiểm tra từng bước:
+
+1. WSL2 đã cài;
+2. Docker Desktop đã cài;
+3. Docker đang chạy;
+4. các container của CVAT đã có;
+5. CVAT trả lời.
+
+Bấm **Khởi động CVAT**: app mở Docker Desktop, bật các container CVAT, đợi CVAT sẵn sàng rồi tự mở trang. Lần đầu sau
+khi bật máy có thể mất vài phút.
+
+- Thiếu WSL2, Docker Desktop hay CVAT: bấm nút **Cách cài…** cạnh bước đó để mở hướng dẫn chính thức. App không tự cài
+  những thứ này vì cần quyền admin và khởi động lại máy.
+- Chưa từng chạy CVAT (chưa có container): bấm **Chọn thư mục CVAT**, chọn thư mục bạn đã tải CVAT về (có file
+  `docker-compose.yml`). App sẽ chạy `docker compose up -d` trong đó; lần đầu phải tải vài GB.
+
 Mở một job trong CVAT, panel **SAM3** tự hiện ở góc phải.
 
 ![Panel SAM3 nằm bên phải trang CVAT](images/guide/panel-tren-cvat.png)
@@ -146,7 +163,7 @@ Thanh bên trái có 6 trang:
 - **Thành phần:** PyTorch, SAM 3… đã cài bản nào, tải hoặc cập nhật.
 - **Dùng chung nhóm:** một máy có GPU chia sẻ backend cho các máy khác trong mạng nội bộ.
 - **Hỗ trợ:** kiểm tra nhanh, gửi báo lỗi, xem nhật ký, sao lưu.
-- **Cài đặt:** ngôn ngữ, giao diện sáng hoặc tối, tự chạy cùng Windows, cập nhật.
+- **Cài đặt:** ngôn ngữ, giao diện sáng hoặc tối, tự chạy cùng Windows, cập nhật, AI soạn guideline.
 
 ![Trang Tổng quan](images/guide/tong-quan.png)
 
@@ -188,6 +205,16 @@ App tự bật backend khi mở. Nếu backend tắt bất ngờ, app tự bật
 **Ảnh của tôi có bị gửi đi đâu không?**
 Không. SAM 3 chạy trên máy bạn, hoặc máy chia sẻ trong nhóm nếu bạn chọn. Chỉ tính năng tạo guideline bằng AI mới gửi
 ảnh ra ngoài, và chỉ khi bạn đồng ý. Chi tiết ở [PRIVACY.md](PRIVACY.md).
+
+**Panel báo "Chưa bật AI soạn guideline" là lỗi à?**
+Không. Soạn guideline nháp vẫn chạy được không cần AI: tool dùng số liệu quét từ ảnh, guideline mẫu và bài học đã có, còn
+định nghĩa class mới thì bạn tự viết. Muốn AI viết giúp:
+
+1. mở app → **Cài đặt** → **AI soạn guideline**;
+2. chọn **Claude** rồi dán API key của Anthropic, hoặc chọn **Máy chủ OpenAI** nếu bạn chạy Ollama / LM Studio trên máy;
+3. bấm **Kiểm tra**, rồi **Lưu** và **Bật lại backend**.
+
+Key được cất trong Windows Credential Manager. Ảnh mẫu chỉ gửi tới AI khi bạn tick đồng ý trong panel.
 
 **Thời gian tiết kiệm tính thế nào?**
 Ước tính so với tự vẽ tay từng nhãn: khoảng 7 giây cho một hộp, 25 giây cho một polygon. Đây là con số tham khảo,

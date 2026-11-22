@@ -17,7 +17,8 @@ SAM3 Label Assist không thu thập dữ liệu sử dụng, không có telemetr
 
 ## Lưu trên máy bạn
 
-- Token Hugging Face: lưu trong Windows Credential Manager, không lưu dạng chữ thường trong file.
+- Token Hugging Face và API key của AI soạn guideline: lưu trong Windows Credential Manager, không lưu dạng chữ thường
+  trong file.
 - Cài đặt, profile, guideline, dữ liệu tự học, nhật ký: thư mục `%LOCALAPPDATA%\SAM3CvatAssist`.
 - Gỡ app có hỏi bạn muốn xoá các dữ liệu này hay giữ lại.
 
@@ -49,7 +50,8 @@ learning data stay on your computer unless you turn on one of the features below
 
 **Stored on your computer:**
 
-- The Hugging Face token is kept in Windows Credential Manager, not as plain text.
+- The Hugging Face token and the AI guideline drafting API key are kept in Windows Credential Manager, not as plain
+  text.
 - Settings, profiles, guidelines, learning data and logs are in `%LOCALAPPDATA%\SAM3CvatAssist`.
 - The uninstaller asks whether to delete them.
 

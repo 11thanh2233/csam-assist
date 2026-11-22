@@ -21,6 +21,7 @@ from . import downloader as D
 from .backend_proc import BackendProcess
 from .bridge import is_local, normalize_site
 from . import changelog
+from . import cvat_local
 from . import updater as U
 from .components import COMPONENTS, Components, Gpu, detect_gpu, human, seed_user_files
 from .paths import Paths
@@ -42,7 +43,8 @@ log = logging.getLogger("sam3-desktop")
 # và giữ nguyên mục lạ (file của bản mới hơn sau khi quay về bản cũ). Xem docs/COMPAT.md.
 SETTINGS_SCHEMA = 1
 SETTINGS_TYPES = {"sites": list, "recent_jobs": list, "scan_dirs": list, "autostart_backend": bool, "auto_update_check": bool,
-                  "auto_restart_backend": bool, "idle_unload_min": (int, float), "start_mode": str, "lang": str, "theme": str}
+                  "auto_restart_backend": bool, "idle_unload_min": (int, float), "start_mode": str, "lang": str, "theme": str,
+                  "llm": dict, "cvat_dir": str}
 
 
 class Settings:
@@ -80,6 +82,9 @@ class Settings:
         self.data.setdefault("lang", "vi")                   # ngôn ngữ giao diện: vi | en (panel và bảng điều khiển dùng chung)
         self.data.setdefault("theme", "system")             # giao diện: system (theo Windows) | light | dark
         self.data.setdefault("auto_restart_backend", True)  # backend tắt bất thường: tự bật lại (tối đa 3 lần / 10 phút)
+        # LLM soạn guideline (tuỳ chọn): none | anthropic | openai. API key ở Windows Credential Manager, không ở file này.
+        self.data.setdefault("llm", {"provider": "none", "model": "", "base_url": ""})
+        self.data.setdefault("cvat_dir", "")                # thư mục CVAT (có docker-compose.yml) cho CVAT chạy trên máy này
         self.data["sites"] = [s for s in self.data["sites"] if isinstance(s, dict) and s.get("url")]
         for site in self.data["sites"]:
             site.setdefault("platform", "cvat")              # cài đặt từ bản trước 0.9: mọi trang đều là CVAT
@@ -166,6 +171,55 @@ class Installer:
                 self.p["items"][k] = state
 
 
+
+def _win_clipboard_api(ctypes):
+    """user32 / kernel32 riêng cho clipboard, khai báo đủ kiểu tham số.
+
+    0.9.2 dùng ctypes.windll dùng chung và thiếu kiểu cho GlobalUnlock: trên Windows 64-bit, handle lớn hơn 32 bit
+    bị đổi sang int 32 bit → "ctypes.ArgumentError: OverflowError: int too long to convert". Bản riêng (WinDLL) cũng
+    không đụng tới khai báo mà pywebview dùng.
+    """
+    from ctypes import wintypes as w
+
+    u32, k32 = ctypes.WinDLL("user32", use_last_error=True), ctypes.WinDLL("kernel32", use_last_error=True)
+    sigs = [
+        (u32.OpenClipboard, [w.HWND], w.BOOL), (u32.EmptyClipboard, [], w.BOOL), (u32.CloseClipboard, [], w.BOOL),
+        (u32.SetClipboardData, [w.UINT, w.HANDLE], w.HANDLE),
+        (k32.GlobalAlloc, [w.UINT, ctypes.c_size_t], w.HGLOBAL), (k32.GlobalLock, [w.HGLOBAL], w.LPVOID),
+        (k32.GlobalUnlock, [w.HGLOBAL], w.BOOL), (k32.GlobalFree, [w.HGLOBAL], w.HGLOBAL),
+    ]
+    for fn, args, res in sigs:
+        fn.argtypes, fn.restype = args, res
+    return u32, k32
+
+
+def _win_set_clipboard(ctypes, text: str) -> bool:
+    u32, k32 = _win_clipboard_api(ctypes)
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    for _ in range(10):                                   # clipboard có thể đang bị app khác giữ: thử lại vài lần
+        if u32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        return False
+    try:
+        u32.EmptyClipboard()
+        h = k32.GlobalAlloc(0x0002, len(data))            # GMEM_MOVEABLE
+        if not h:
+            return False
+        ptr = k32.GlobalLock(h)
+        if not ptr:
+            k32.GlobalFree(h)
+            return False
+        ctypes.memmove(ptr, data, len(data))
+        k32.GlobalUnlock(h)
+        if not u32.SetClipboardData(13, h):              # CF_UNICODETEXT; thành công thì Windows giữ vùng nhớ
+            k32.GlobalFree(h)
+            return False
+        return True
+    finally:
+        u32.CloseClipboard()
+
 class ControlApi:
     """Gắn vào cửa sổ bảng điều khiển (pywebview js_api). Chỉ hàm không bắt đầu bằng '_' được gọi từ trang."""
 
@@ -176,6 +230,7 @@ class ControlApi:
         comps.extra_dirs = [Path(d) for d in self._settings.data["scan_dirs"]]
         backend.extra_env = {"SAM3_IDLE_UNLOAD_MIN": str(self._settings.data["idle_unload_min"])}
         backend.auto_restart = bool(self._settings.data["auto_restart_backend"])
+        backend.extra_env.update(self._llm_env())
         self._installer = Installer(comps)
         self._updater = U.Updater(paths.downloads / "update")
         self._update_info: dict = self._settings.data.get("update_cache") or {}
@@ -187,6 +242,8 @@ class ControlApi:
         if st.get("remote_backend"):
             backend.remote = dict(st["remote_backend"])
         self._open_site, self._on_quit = open_site, on_quit
+        self._cvat_starter = cvat_local.Starter()
+        self.cvat_local_pending = ""        # app mở thẳng CVAT local nhưng CVAT chưa chạy: bảng điều khiển mở hộp kiểm tra
         self._setup_mode = setup_mode
         self._gpu: Optional[Gpu] = None
         self._token = ""
@@ -210,6 +267,7 @@ class ControlApi:
             "keyring": credstore.available(), "autostart_windows": autostart_enabled(),
             "data_dir": str(self._paths.data), "installing": self._installer.p["running"],
             "recent_jobs": self._settings.data["recent_jobs"], "start_mode": self._settings.data["start_mode"],
+            "cvat_local_pending": self.cvat_local_pending,
             "idle_unload_min": self._settings.data["idle_unload_min"], "sync_dir": self._settings.data.get("sync_dir", ""),
             "autostart_backend": bool(self._settings.data.get("autostart_backend")),
             "auto_restart_backend": bool(self._settings.data.get("auto_restart_backend")),
@@ -513,29 +571,110 @@ class ControlApi:
         if sys.platform != "win32":
             return False
         import ctypes
-        from ctypes import wintypes
 
-        u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
-        k32.GlobalAlloc.restype = wintypes.HGLOBAL
-        k32.GlobalLock.restype = wintypes.LPVOID
-        k32.GlobalLock.argtypes = [wintypes.HGLOBAL]
-        u32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-        data = text.encode("utf-16-le") + b"\x00\x00"
-        for _ in range(10):                               # clipboard có thể đang bị app khác giữ: thử lại vài lần
-            if u32.OpenClipboard(None):
-                break
-            time.sleep(0.05)
-        else:
-            return False
+        return _win_set_clipboard(ctypes, text)
+
+    # ------------------------------------------------------ CVAT trên máy này ---
+    def cvat_local_check(self, url):
+        """Máy đã sẵn sàng chạy CVAT local chưa: WSL2, Docker, container CVAT, CVAT trả lời."""
+        self.cvat_local_pending = ""
+        res = cvat_local.check(url, cvat_dir=self._settings.data.get("cvat_dir", ""))
+        res["cvat_dir"] = self._settings.data.get("cvat_dir", "")
+        res["starting"] = bool(self._cvat_starter.progress.get("running"))
+        return res
+
+    def cvat_local_start(self, url):
+        if not cvat_local.is_this_machine(url):
+            return {"ok": False, "message": "Chỉ khởi động được CVAT chạy trên chính máy này."}
+        started = self._cvat_starter.start(url, self._settings.data.get("cvat_dir", ""))
+        return {"ok": True, "already": not started}
+
+    def cvat_local_progress(self):
+        return dict(self._cvat_starter.progress)
+
+    def cvat_local_cancel(self):
+        self._cvat_starter.cancel.set()
+        return True
+
+    def cvat_local_pick_dir(self):
+        """Chọn thư mục CVAT đã clone về (có docker-compose.yml) để app chạy docker compose up -d."""
+        folder = self._pick_folder() if self._pick_folder else None
+        if not folder:
+            return {"ok": False, "message": ""}
+        if not cvat_local._has_compose(folder):
+            return {"ok": False, "message": "Thư mục này không có docker-compose.yml của CVAT."}
+        self._settings.data["cvat_dir"] = str(folder)
+        self._settings.save()
+        return {"ok": True, "cvat_dir": str(folder)}
+
+    # ----------------------------------------------------- LLM soạn guideline ---
+    LLM_DEFAULT_MODEL = {"anthropic": "claude-sonnet-5-5", "openai": ""}
+
+    LLM_ENV_KEYS = ("GUIDELINE_LLM", "ANTHROPIC_API_KEY", "GUIDELINE_OPENAI_BASE_URL", "GUIDELINE_OPENAI_API_KEY", "GUIDELINE_LLM_MODEL")
+
+    def _llm_env(self) -> dict:
+        """Biến môi trường cho backend (backend/guideline/llm.py đọc).
+        Chưa cấu hình trong app: không đặt gì, backend vẫn đọc biến môi trường của Windows như bản cũ."""
+        cfg = self._settings.data.get("llm") or {}
+        prov = cfg.get("provider", "none")
+        env: dict = {}
+        key = credstore.get(credstore.LLM_USER) if prov in ("anthropic", "openai") else ""
+        if prov == "anthropic" and key:
+            env = dict.fromkeys(self.LLM_ENV_KEYS, "")
+            env.update(GUIDELINE_LLM="anthropic", ANTHROPIC_API_KEY=key, GUIDELINE_LLM_MODEL=cfg.get("model") or self.LLM_DEFAULT_MODEL["anthropic"])
+        elif prov == "openai" and cfg.get("base_url") and cfg.get("model"):
+            env = dict.fromkeys(self.LLM_ENV_KEYS, "")
+            env.update(GUIDELINE_LLM="openai", GUIDELINE_OPENAI_BASE_URL=cfg["base_url"], GUIDELINE_OPENAI_API_KEY=key,
+                       GUIDELINE_LLM_MODEL=cfg["model"])
+        return env
+
+    def llm_settings(self):
+        cfg = dict(self._settings.data.get("llm") or {})
+        cfg["has_key"] = bool(credstore.get(credstore.LLM_USER))
+        cfg["keyring"] = credstore.available()
+        cfg["active"] = bool(self._llm_env())
+        return cfg
+
+    def set_llm(self, provider, model="", base_url="", api_key=None):
+        """Lưu cấu hình. api_key: None = giữ key cũ, "" = xoá key. Áp dụng khi bật lại backend."""
+        if provider not in ("none", "anthropic", "openai"):
+            return {"ok": False, "message": "Nhà cung cấp không hợp lệ."}
+        base_url = (base_url or "").strip()
+        if provider == "openai":
+            if not re.match(r"^https?://", base_url):
+                return {"ok": False, "message": "Địa chỉ máy chủ phải bắt đầu bằng http:// hoặc https://"}
+            if not (model or "").strip():
+                return {"ok": False, "message": "Cần tên model (ví dụ qwen2.5-vl:7b)."}
+        if api_key is not None:
+            if api_key.strip():
+                if not credstore.available():
+                    return {"ok": False, "message": "Máy này không lưu được key vào Windows Credential Manager."}
+                credstore.set(api_key.strip(), credstore.LLM_USER)
+            else:
+                credstore.delete(credstore.LLM_USER)
+        if provider == "anthropic" and not credstore.get(credstore.LLM_USER):
+            return {"ok": False, "message": "Cần API key của Anthropic (bắt đầu bằng sk-ant-)."}
+        self._settings.data["llm"] = {"provider": provider, "model": (model or "").strip(), "base_url": base_url}
+        self._settings.save()
+        for k in self.LLM_ENV_KEYS:
+            self._backend.extra_env.pop(k, None)
+        self._backend.extra_env.update(self._llm_env())
+        return {"ok": True, "message": "Đã lưu. Bật lại backend để áp dụng.", "restart": self._backend.state == "running"}
+
+    def test_llm(self):
+        """Gửi một câu ngắn (không có ảnh) để chắc key và địa chỉ đúng."""
+        env = self._llm_env()
+        if not env:
+            return {"ok": False, "message": "Chưa cấu hình LLM."}
+        from backend.guideline import llm as L
+
         try:
-            u32.EmptyClipboard()
-            h = k32.GlobalAlloc(0x0002, len(data))        # GMEM_MOVEABLE
-            ptr = k32.GlobalLock(h)
-            ctypes.memmove(ptr, data, len(data))
-            k32.GlobalUnlock(h)
-            return bool(u32.SetClipboardData(13, h))      # CF_UNICODETEXT
-        finally:
-            u32.CloseClipboard()
+            model = (L.AnthropicLLM(env["ANTHROPIC_API_KEY"], env["GUIDELINE_LLM_MODEL"], timeout=30) if env["GUIDELINE_LLM"] == "anthropic"
+                     else L.OpenAICompatLLM(env["GUIDELINE_OPENAI_BASE_URL"], env["GUIDELINE_LLM_MODEL"], env["GUIDELINE_OPENAI_API_KEY"], timeout=60))
+            reply = model.complete("Reply with the single word OK.", "ping", max_tokens=10)
+        except Exception as exc:  # noqa: BLE001 - báo lại nguyên nhân cho người dùng
+            return {"ok": False, "message": f"Không gọi được LLM: {exc}"}
+        return {"ok": True, "message": f"LLM trả lời được ({env['GUIDELINE_LLM_MODEL']}): {reply.strip()[:40]}"}
 
     def read_log(self, which="backend", n=400):
         """Dòng cuối của nhật ký cho trang Hỗ trợ (chỉ hai file nhật ký của app)."""
@@ -564,10 +703,12 @@ class ControlApi:
         self._settings.save()
         return self._settings.data["sites"]
 
-    def open_site(self, url):
+    def open_site(self, url, skip_local_check=False):
         origin = normalize_site(url)
         if origin not in self._settings.origins():
             return {"ok": False, "message": "Địa chỉ chưa có trong danh sách."}
+        if not skip_local_check and cvat_local.is_this_machine(origin) and not cvat_local.http_ok(origin, 2):
+            return {"ok": False, "local_down": True, "url": origin, "message": "CVAT trên máy này chưa chạy."}
         if self._backend.state in ("stopped", "error", "missing") and (self._comps.status()["ready"] or getattr(self._backend, 'remote', None)):
             self._backend.start()
         self._open_site(origin)
@@ -702,6 +843,8 @@ class ControlApi:
     def open_job(self, url):
         if normalize_site(url) not in self._settings.origins() or not re.search(r"/tasks/\d+/jobs/\d+", url or ""):
             return {"ok": False, "message": "Địa chỉ job không thuộc danh sách CVAT."}
+        if cvat_local.is_this_machine(url) and not cvat_local.http_ok(url, 2):
+            return {"ok": False, "local_down": True, "url": url, "message": "CVAT trên máy này chưa chạy."}
         if self._backend.state in ("stopped", "error") and self._comps.status()["ready"]:
             self._backend.start()
         self._open_site(url)
@@ -746,7 +889,9 @@ class ControlApi:
                "vcredist": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
                "repo": f"https://github.com/{U.REPO}", "releases": f"https://github.com/{U.REPO}/releases",
                "guide": f"https://github.com/{U.REPO}/blob/main/docs/HUONG_DAN.md",
-               "privacy": f"https://github.com/{U.REPO}/blob/main/docs/PRIVACY.md"}.get(which)
+               "privacy": f"https://github.com/{U.REPO}/blob/main/docs/PRIVACY.md",
+               "wsl": cvat_local.GUIDES["wsl"], "docker": cvat_local.GUIDES["docker"], "cvat_install": cvat_local.GUIDES["cvat"],
+               "anthropic_keys": "https://console.anthropic.com/settings/keys"}.get(which)
         if url:
             import webbrowser
 

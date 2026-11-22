@@ -32,31 +32,24 @@ def single_instance() -> bool:
         return True
     import ctypes
 
-    kernel32 = ctypes.windll.kernel32
+    from ctypes import wintypes as w
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes, kernel32.CreateMutexW.restype = [w.LPVOID, w.BOOL, w.LPCWSTR], w.HANDLE
     single_instance.handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    return kernel32.GetLastError() != 183          # ERROR_ALREADY_EXISTS
+    return ctypes.get_last_error() != 183          # ERROR_ALREADY_EXISTS
 
 
 def set_clipboard(text: str) -> None:
+    """Panel trong cửa sổ CVAT chép qua đây. Dùng chung hàm đã khai báo đủ kiểu với nút chép của bảng điều khiển
+    (bản cũ thiếu kiểu tham số nên trên Windows 64-bit báo OverflowError: int too long to convert)."""
     if sys.platform != "win32":
         return
     import ctypes
-    from ctypes import wintypes
 
-    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
-    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
-    kernel32.GlobalLock.restype = wintypes.LPVOID
-    data = text.encode("utf-16-le") + b"\0\0"
-    if not user32.OpenClipboard(None):
-        return
-    try:
-        user32.EmptyClipboard()
-        h = kernel32.GlobalAlloc(0x0042, len(data))
-        ctypes.memmove(kernel32.GlobalLock(h), data, len(data))
-        kernel32.GlobalUnlock(h)
-        user32.SetClipboardData(13, h)              # CF_UNICODETEXT
-    finally:
-        user32.CloseClipboard()
+    from .control import _win_set_clipboard
+
+    _win_set_clipboard(ctypes, str(text or ""))
 
 
 class DesktopApp:
@@ -91,13 +84,22 @@ class DesktopApp:
         # Gọn một cửa sổ: đã cài đủ thì mở thẳng CVAT, bảng điều khiển nằm ở khay hệ thống và nút "SAM3" trong trang.
         straight = (not self.setup_mode and not self.start_hidden and (self.comps.status()["ready"] or self.backend.remote)
                     and self.api._settings.data.get("start_mode", "cvat") == "cvat" and self.api._settings.data["sites"])
+        first = ""
+        if straight:
+            from . import cvat_local
+
+            st = self.api._settings.data
+            first = st.get("last_url") or st["sites"][0]["url"]
+            if cvat_local.is_this_machine(first) and not cvat_local.http_ok(first, 2):
+                # CVAT trên máy này chưa chạy: mở bảng điều khiển với hộp kiểm tra Docker / WSL2 thay vì trang lỗi kết nối
+                straight = False
+                self.api.cvat_local_pending = cvat_local.origin_of(first)
         self.control = webview.create_window(
             "SAM3 Label Assist" + (tr(" - Cài đặt", self.api._lang()) if self.setup_mode else ""), html=html, js_api=self.api,
             width=980, height=760, min_size=(760, 560), hidden=self.start_hidden or bool(straight),
             text_select=True)                        # pywebview mặc định chặn bôi đen: cần để chép nhật ký, key, lỗi
         if straight:
-            st = self.api._settings.data
-            self.open_cvat(st.get("last_url") or st["sites"][0]["url"])
+            self.open_cvat(first)
         self.control.events.closing += self._on_control_closing
         if not self.setup_mode:
             self._start_tray()
@@ -196,6 +198,21 @@ class DesktopApp:
     def show_control(self) -> None:
         bring_to_front(self.control)
 
+    def _tray_open_cvat(self) -> None:
+        from . import cvat_local
+
+        url = self.api._settings.data.get("last_url") or (self.api._settings.data["sites"] or [{"url": ""}])[0]["url"]
+        if url and cvat_local.is_this_machine(url) and not cvat_local.http_ok(url, 2):
+            # CVAT trên máy này chưa chạy: hiện hộp kiểm tra / khởi động trong bảng điều khiển
+            self.api.cvat_local_pending = cvat_local.origin_of(url)
+            self.show_control()
+            try:
+                self.control.evaluate_js("typeof checkPendingLocal === 'function' && checkPendingLocal()")
+            except Exception:  # noqa: BLE001
+                log.exception("Cannot show the local CVAT check")
+            return
+        self.open_cvat(url)
+
     def _backend_changed(self, state: str) -> None:
         """Backend tắt bất thường khi bảng điều khiển đang ẩn: báo qua khay hệ thống để người dùng biết."""
         if state == "error" and not self.quitting:
@@ -223,8 +240,7 @@ class DesktopApp:
         lang = self.api._lang()
         menu = pystray.Menu(
             pystray.MenuItem(tr("Mở bảng điều khiển", lang), lambda: self.show_control(), default=True),
-            pystray.MenuItem(tr("Mở CVAT", lang), lambda: self.open_cvat(self.api._settings.data.get("last_url")
-                                                              or (self.api._settings.data["sites"] or [{"url": ""}])[0]["url"])),
+            pystray.MenuItem(tr("Mở CVAT", lang), lambda: self._tray_open_cvat()),
             pystray.MenuItem(tr("Thoát", lang), lambda: self.quit()),
         )
         self.tray_icon = pystray.Icon("sam3-cvat-assist", image, "SAM3 Label Assist", menu)
@@ -275,7 +291,11 @@ def _signal_ready() -> None:
     try:
         import ctypes
 
-        k = ctypes.windll.kernel32
+        from ctypes import wintypes as w
+
+        k = ctypes.WinDLL("kernel32")
+        k.OpenEventW.argtypes, k.OpenEventW.restype = [w.DWORD, w.BOOL, w.LPCWSTR], w.HANDLE
+        k.SetEvent.argtypes = k.CloseHandle.argtypes = [w.HANDLE]
         handle = k.OpenEventW(0x0002, False, READY_EVENT)       # EVENT_MODIFY_STATE
         if handle:
             k.SetEvent(handle)

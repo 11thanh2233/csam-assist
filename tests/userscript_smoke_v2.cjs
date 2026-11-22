@@ -268,7 +268,7 @@ async function guidelineScenario(frameBytes) {
   win.open = (url) => { opened.push(url); return null; };
   await until(() => button('Gợi ý nhãn') && !button('Gợi ý nhãn').disabled, 'panel sẵn sàng: ' + status());
   button('Guideline').click();
-  assert.match(root.querySelector('.body').textContent, /Backend chưa cấu hình LLM/);
+  assert.match(root.querySelector('.body').textContent, /Chưa bật AI soạn guideline.*Cài đặt → AI soạn guideline/s);
   const sample = root.querySelector('input[type="number"]');
   sample.value = '10';
   sample.dispatchEvent(new win.Event('change'));

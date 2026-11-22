@@ -3,6 +3,26 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.3 (2026-11-22)
+
+Details and test results are in `docs/CHECKLIST_0.9.3.md` (Vietnamese).
+
+- **AI guideline drafting can be turned on in the app** (before, only environment variables enabled it, so the panel
+  always said "The backend has no LLM configured"):
+  - **Settings → AI guideline drafting**: choose Claude (Anthropic) or an OpenAI-compatible server (Ollama, LM Studio…);
+  - the API key is stored in Windows Credential Manager, never written to a file or included in error reports;
+  - the **Test** button sends a short message (no images) to confirm the key and address;
+  - the panel points to this setting while AI is off. Sample images are still only sent when you tick consent.
+- **CVAT on this computer (localhost):** pressing **Open** while CVAT is not running no longer opens a connection error
+  page. Instead the app:
+  - checks each step: WSL2, Docker Desktop installed, Docker running, CVAT containers, CVAT responding;
+  - offers **Start CVAT**: opens Docker Desktop, starts the CVAT containers (or `docker compose up -d` in the CVAT folder
+    you choose), waits until CVAT is ready, then opens the site;
+  - links to the official install guides when WSL2, Docker or CVAT is missing;
+  - also applies when the app opens CVAT at startup, to **Continue** on a recent job and to **Open CVAT** in the tray.
+- **Fixed:** copying text (copy log button, copying from the panel) failed with `ctypes.ArgumentError: OverflowError:
+  int too long to convert` on 64-bit Windows.
+
 ## 0.9.2 (2026-11-20)
 
 Details and test results are in `docs/CHECKLIST_0.9.2.md` (Vietnamese).

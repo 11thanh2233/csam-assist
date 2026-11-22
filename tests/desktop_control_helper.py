@@ -79,9 +79,45 @@ paths.store.mkdir(parents=True, exist_ok=True)
                          "jobs": {"30": {"applied": 126, "rejected": 9, "shown": 140}}},
     (_today - _dt.timedelta(days=2)).isoformat(): {"applied": 60, "rejected": 2, "shown": 70, "frames": ["31:1"], "saved": 1200, "jobs": {}},
 }}), encoding="utf-8")
+# 0.9.3: Windows Credential Manager và máy có Docker / CVAT local giả lập
+import desktop.credstore as _cs  # noqa: E402
+import desktop.cvat_local as _cl  # noqa: E402
+
+_KEYS = {}
+_cs.available = lambda: True
+_cs.get = lambda user=_cs.USER: _KEYS.get(user, "")
+_cs.set = lambda token, user=_cs.USER: _KEYS.__setitem__(user, token)
+_cs.delete = lambda user=_cs.USER: _KEYS.pop(user, None)
+MACHINE = {"engine": False, "cvat": False}
+
+
+def _run(args, timeout=30, cwd=None):
+    if args[0] == "wsl":
+        return 0, "  NAME STATE VERSION\n* Ubuntu Running 2\n  docker-desktop Stopped 2\n"
+    if not MACHINE["engine"]:
+        return 1, "Docker Desktop is not running"
+    if args[1] == "info":
+        return 0, "27.3.1"
+    if args[1] == "ps":
+        st = "running" if MACHINE["cvat"] else "exited"
+        return 0, "".join(f"{n}\t{st}\tcvat\t\n" for n in ("cvat_server", "cvat_db", "cvat_ui", "traefik"))
+    if args[1] == "start":
+        MACHINE["cvat"] = True
+        return 0, ""
+    return 1, ""
+
+
+_cl.default_run = _run
+_cl.http_ok = lambda url, timeout=3: MACHINE["engine"] and MACHINE["cvat"]
+_cl.docker_exe = lambda env=None: "C:/Docker/docker.exe"
+_cl.docker_desktop_exe = lambda env=None: "C:/Docker/Docker Desktop.exe"
 fake_backend = FakeBackend()
 api = ControlApi(paths, comps, fake_backend, open_site=lambda o: None, on_quit=lambda: None)
 api._test_crash = fake_backend.crash
+api._cvat_starter = _cl.Starter(run=_run, http=_cl.http_ok, popen=lambda args, **kw: MACHINE.__setitem__("engine", True),
+                                sleep=lambda s: __import__("time").sleep(0.05))
+api._test_keys = lambda: _KEYS
+api._test_backend_env = lambda: fake_backend.extra_env
 COPIED = []
 api.copy_text = lambda text: COPIED.append(text) or True      # clipboard Windows: test chỉ ghi lại nội dung
 api._test_copied = lambda: COPIED

@@ -3,6 +3,25 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.3 (2026-11-22)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.3.md`.
+
+- **AI soạn guideline bật được ngay trong app** (trước chỉ bật được bằng biến môi trường, nên panel luôn báo "Backend
+  chưa cấu hình LLM"):
+  - **Cài đặt → AI soạn guideline**: chọn Claude (Anthropic) hoặc máy chủ tương thích OpenAI (Ollama, LM Studio…);
+  - API key lưu trong Windows Credential Manager, không ghi ra file và không có trong gói báo lỗi;
+  - nút **Kiểm tra** gửi một câu ngắn (không có ảnh) để chắc key và địa chỉ đúng;
+  - panel chỉ đường tới mục này khi AI chưa bật. Ảnh mẫu vẫn chỉ gửi đi khi bạn tick đồng ý.
+- **CVAT trên máy này (localhost):** bấm **Mở** mà CVAT chưa chạy thì app không còn mở trang lỗi kết nối, mà:
+  - kiểm tra từng bước: WSL2, Docker Desktop đã cài, Docker đang chạy, container của CVAT, CVAT trả lời;
+  - nút **Khởi động CVAT**: mở Docker Desktop, bật các container CVAT (hoặc `docker compose up -d` trong thư mục CVAT
+    bạn chọn), đợi CVAT sẵn sàng rồi mở trang;
+  - thiếu WSL2, Docker hay CVAT thì có nút mở hướng dẫn cài chính thức;
+  - áp dụng cả khi app mở thẳng CVAT lúc khởi động, nút **Mở tiếp** job và mục **Mở CVAT** ở khay hệ thống.
+- **Sửa:** chép chữ (nút chép nhật ký, chép từ panel) báo lỗi `ctypes.ArgumentError: OverflowError: int too long to
+  convert` trên Windows 64-bit.
+
 ## 0.9.2 (2026-11-20)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.2.md`.

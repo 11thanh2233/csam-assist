@@ -215,6 +215,37 @@ async function main() {
     assert.strictEqual((await call('status', [])).theme, 'dark');
     await win.setTheme('system');
     assert.strictEqual(doc.documentElement.dataset.theme, undefined);
+    // 0.9.3: AI soạn guideline cấu hình ngay trong app; key vào Windows Credential Manager, backend nhận qua biến môi trường
+    win.goPage('settings');
+    await until(() => (doc.querySelector('#llmSeg [aria-pressed="true"]') || {}).dataset?.v === 'none', 'mục AI soạn guideline');
+    assert.match(doc.getElementById('llmState').textContent, /Đang tắt/);
+    win.pickLlm('anthropic');
+    assert.ok(doc.getElementById('llmKey') && doc.getElementById('llmModel'), 'ô API key và model');
+    doc.getElementById('llmKey').value = 'sk-ant-smoke';
+    await win.saveLlm(null);
+    await until(() => /Đang bật/.test(doc.getElementById('llmState').textContent), 'đã bật AI');
+    assert.strictEqual((await call('_test_keys', []))['guideline-llm-api-key'], 'sk-ant-smoke');
+    assert.strictEqual((await call('_test_backend_env', [])).GUIDELINE_LLM, 'anthropic');
+    assert.ok([...doc.querySelectorAll('#toasts button')].some((b) => b.textContent === 'Bật lại backend'), 'nhắc bật lại backend');
+    assert.ok(!doc.getElementById('llmKey').value && /Đã lưu/.test(doc.getElementById('llmKey').placeholder), 'không hiện lại key');
+    win.pickLlm('none');
+    await until(() => /Đang tắt/.test(doc.getElementById('llmState').textContent), 'tắt AI');
+    assert.strictEqual((await call('_test_backend_env', [])).GUIDELINE_LLM, undefined);
+    // 0.9.3: mở CVAT ở localhost khi Docker chưa chạy: kiểm tra từng bước rồi khởi động giúp
+    await call('add_site', ['CVAT máy này', 'localhost:8080']);
+    await win.refresh();
+    const li = win.eval("S.sites.findIndex((s) => s.url.includes('localhost'))");
+    await win.openSite(li);
+    await until(() => !doc.getElementById('localModal').classList.contains('hidden'), 'hộp CVAT local');
+    await until(() => doc.querySelectorAll('#localChecks .check').length === 5, 'năm bước kiểm tra');
+    assert.match(doc.getElementById('localChecks').textContent, /WSL2.*Ubuntu.*Docker Desktop đã cài.*Docker đang chạy.*App sẽ mở Docker Desktop/s);
+    assert.ok(!doc.getElementById('localStart').disabled, 'khởi động được');
+    win.localStart(doc.getElementById('localStart'));
+    await until(() => doc.getElementById('localModal').classList.contains('hidden'), 'CVAT sẵn sàng thì đóng hộp và mở trang', 20000);
+    assert.match(doc.getElementById('toasts').textContent, /CVAT đã sẵn sàng/);
+    assert.ok((await call('cvat_local_progress', [])).log.some((l) => /Đang mở Docker Desktop/.test(l)));
+    await call('remove_site', ['http://localhost:8080']);
+    await win.refresh();
     // 0.8.1: đổi sang English ngay trong bảng điều khiển, không còn chữ tiếng Việt; đổi lại thì về tiếng Việt
     const VI = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
     const leftovers = () => {

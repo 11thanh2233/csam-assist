@@ -1,8 +1,10 @@
-"""Cất token Hugging Face trong Windows Credential Manager (chỉ khi bạn chọn "Nhớ token"). Không ghi ra file."""
+"""Cất token Hugging Face (khi bạn chọn "Nhớ token") và API key của LLM soạn guideline trong Windows Credential Manager.
+Không ghi ra file."""
 from __future__ import annotations
 
 SERVICE = "SAM3 CVAT Assist"   # tên cũ, giữ nguyên: đổi là mất token đã lưu trong Windows Credential Manager
 USER = "huggingface-token"
+LLM_USER = "guideline-llm-api-key"   # 0.9.3: key của Claude / máy chủ OpenAI dùng để soạn guideline
 
 
 def _kr():
@@ -21,24 +23,24 @@ def available() -> bool:
     return _kr() is not None
 
 
-def get() -> str:
+def get(user: str = USER) -> str:
     kr = _kr()
     try:
-        return (kr.get_password(SERVICE, USER) or "") if kr else ""
+        return (kr.get_password(SERVICE, user) or "") if kr else ""
     except Exception:  # noqa: BLE001
         return ""
 
 
-def set(token: str) -> None:  # noqa: A001 - tên ngắn gọn trong module riêng
+def set(token: str, user: str = USER) -> None:  # noqa: A001 - tên ngắn gọn trong module riêng
     kr = _kr()
     if kr:
-        kr.set_password(SERVICE, USER, token)
+        kr.set_password(SERVICE, user, token)
 
 
-def delete() -> None:
+def delete(user: str = USER) -> None:
     kr = _kr()
     if kr:
         try:
-            kr.delete_password(SERVICE, USER)
+            kr.delete_password(SERVICE, user)
         except Exception:  # noqa: BLE001
             pass
