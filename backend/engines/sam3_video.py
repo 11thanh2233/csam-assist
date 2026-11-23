@@ -20,6 +20,58 @@ from typing import Any, Optional
 import numpy as np
 
 log = logging.getLogger("sam3-assist")
+KERNELS_NOTICE = "kernels library is not installed"
+
+
+class _NoKernelsNotice(logging.Filter):
+    """transformers nhắc cài gói `kernels` (lọc trùng, lấp lỗ, xoá đốm cho mask). Gói đó không có bản cho Windows;
+    tool tự làm ba việc này bằng OpenCV (clean_video_objects), nên bỏ dòng nhắc khỏi nhật ký."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return KERNELS_NOTICE not in record.getMessage()
+
+
+def quiet_kernels_notice() -> None:
+    import warnings
+
+    warnings.filterwarnings("ignore", message=f".*{KERNELS_NOTICE}.*")
+    f = _NoKernelsNotice()
+    for name in ("transformers", ""):
+        lg = logging.getLogger(name)
+        lg.addFilter(f)
+        for handler in lg.handlers:
+            handler.addFilter(f)
+
+
+def clean_video_objects(objects: list[dict], masks: Optional[list] = None, iou_dup: float = 0.8, hole_px: int = 0) -> list[dict]:
+    """Thay cho bước hậu xử lý cần gói `kernels` (0.9.4): lấp lỗ, xoá đốm nhỏ trong mask, tính lại hộp từ mask sạch,
+    rồi bỏ vật trùng (cùng prompt, hộp trùng >= iou_dup, giữ vật điểm cao hơn)."""
+    import cv2
+
+    from .. import geometry as G
+
+    out = []
+    for i, obj in enumerate(objects):
+        mask = masks[i] if masks is not None and i < len(masks) else None
+        if mask is not None:
+            m = np.asarray(mask).astype(bool)
+            if m.ndim == 3:
+                m = m[0]
+            if m.any():
+                m = G.clean_mask(m)                           # xoá đốm
+                filled = m.astype(np.uint8)
+                contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(filled, contours, -1, 1, thickness=-1)   # lấp lỗ bên trong
+                box = G.mask_bbox(filled.astype(bool))
+                if box is not None:
+                    obj = dict(obj, box=[float(v) for v in box])
+        out.append(obj)
+    kept: list[dict] = []
+    for obj in sorted(out, key=lambda o: -o["score"]):
+        if any(k["prompt"] == obj["prompt"] and G.box_iou(k["box"], obj["box"]) >= iou_dup for k in kept):
+            continue
+        kept.append(obj)
+    return kept
 
 
 class VideoTrackerError(RuntimeError):
@@ -47,6 +99,7 @@ class Sam3VideoTracker:
             self.dtype = torch.float16 if self.device == "cuda" else torch.float32   # GPU dòng RTX 20 không có bfloat16
         else:
             self.dtype = getattr(torch, self.dtype_name)
+        quiet_kernels_notice()
         self.processor = Sam3VideoProcessor.from_pretrained(self.model_id)
         self.model = Sam3VideoModel.from_pretrained(self.model_id, torch_dtype=self.dtype).to(self.device).eval()
         return self
@@ -81,8 +134,12 @@ class Sam3VideoTracker:
         ids = post["object_ids"].tolist() if hasattr(post["object_ids"], "tolist") else list(post["object_ids"])
         boxes = post["boxes"].float().cpu().numpy() if hasattr(post["boxes"], "cpu") else np.asarray(post["boxes"], float)
         scores = post["scores"].float().cpu().numpy() if hasattr(post["scores"], "cpu") else np.asarray(post["scores"], float)
-        return [{"obj_id": int(oid), "prompt": prompt_of.get(int(oid)), "box": [float(v) for v in boxes[i]], "score": float(scores[i])}
-                for i, oid in enumerate(ids)]
+        masks = post.get("masks")
+        if masks is not None and hasattr(masks, "cpu"):
+            masks = masks.cpu().numpy()
+        objects = [{"obj_id": int(oid), "prompt": prompt_of.get(int(oid)), "box": [float(v) for v in boxes[i]], "score": float(scores[i])}
+                   for i, oid in enumerate(ids)]
+        return clean_video_objects(objects, list(masks) if masks is not None and len(masks) == len(objects) else None)
 
     def end(self, sid: Optional[str] = None) -> None:
         with self.lock:

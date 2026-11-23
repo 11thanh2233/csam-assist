@@ -101,6 +101,16 @@ vi.InstallingVcRedist=Đang cài Microsoft Visual C++ Redistributable (Windows s
 vi.NoWebView2=Máy chưa có Microsoft Edge WebView2 Runtime (Windows 11 thường có sẵn). App cần nó để mở CVAT.%n%nSau khi cài xong, nếu app báo lỗi WebView2, hãy tải bản "Evergreen Bootstrapper" tại:%nhttps://developer.microsoft.com/microsoft-edge/webview2/
 vi.DeleteModels=Xoá cả PyTorch và trọng số model đã tải (khoảng 9 GB)?%nGiữ lại thì lần cài sau không phải tải lại.
 vi.DeleteData=Xoá cả dữ liệu của bạn: profile, guideline, dữ liệu tự học, cài đặt và đăng nhập CVAT trong app?%nChọn Không nếu định cài lại sau.
+vi.InstallingWebView2=Đang cài Microsoft Edge WebView2 Runtime (app cần để mở cửa sổ và CVAT)...
+vi.TaskWebView2=Cài Microsoft Edge WebView2 Runtime (máy chưa có, app cần nó)
+vi.TaskWsl=Cài WSL2 để chạy CVAT trên chính máy này (Windows xin quyền admin, cần khởi động lại máy). Bỏ qua nếu dùng CVAT trên web
+vi.ExtraGroup=Phần mềm phụ:
+vi.WslStarted=Đã chạy lệnh cài WSL2. Khởi động lại máy khi Windows báo xong. Docker Desktop cài riêng (app có nút mở trang tải ở trang Hỗ trợ).
+en.InstallingWebView2=Installing Microsoft Edge WebView2 Runtime (the app needs it for its window and CVAT)...
+en.TaskWebView2=Install Microsoft Edge WebView2 Runtime (missing, the app needs it)
+en.TaskWsl=Install WSL2 to run CVAT on this computer (Windows asks for admin rights, restart needed). Skip if you use CVAT on the web
+en.ExtraGroup=Extra software:
+en.WslStarted=The WSL2 install command was started. Restart the computer when Windows says it is done. Install Docker Desktop separately (the app's Support page has a button for its download page).
 en.CreateDesktopIcon=Create a desktop icon
 en.AdditionalIcons=Icons:
 en.OpeningDownloader=Opening the PyTorch and SAM 3 weights downloader...
@@ -113,6 +123,9 @@ en.DeleteData=Also delete your data: profiles, guidelines, learning data, settin
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+; 0.9.4: phần mềm phụ. Chỉ hiện khi máy thiếu; WebView2 chọn sẵn, WSL2 để bạn tự chọn.
+Name: "webview2"; Description: "{cm:TaskWebView2}"; GroupDescription: "{cm:ExtraGroup}"; Check: NeedWebView2
+Name: "wsl"; Description: "{cm:TaskWsl}"; GroupDescription: "{cm:ExtraGroup}"; Flags: unchecked; Check: CanOfferWsl
 
 [InstallDelete]
 ; Cập nhật: xoá code và Python cũ để không còn file thừa. Dữ liệu của bạn (model, profile, tự học) nằm chỗ khác, không bị đụng tới.
@@ -128,6 +141,8 @@ Source: "{#BuildDir}\app\*"; DestDir: "{app}\app"; Flags: recursesubdirs createa
 Source: "{#BuildDir}\{#ExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; Gói cài chính thức của Microsoft (CI tải và kiểm chữ ký số). Chỉ giải nén khi máy thiếu, xem CurStepChanged.
 Source: "{#BuildDir}\vc_redist.x64.exe"; Flags: dontcopy
+; 0.9.4: bộ cài nhỏ chính thức của WebView2 (Evergreen Bootstrapper, CI kiểm chữ ký). Chỉ chạy khi máy thiếu.
+Source: "{#BuildDir}\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy
 
 [Icons]
 ; AppUserModelID trùng với app (desktop/app.py) để taskbar gom đúng một biểu tượng SAM3 Assist
@@ -174,11 +189,46 @@ end;
 
 function InitializeSetup(): Boolean;
 begin
-  Result := True;
-  if IsUpdate() then
-    exit;                                     // cập nhật từ trong app: máy đã chạy được bản trước
+  Result := True;                             // cập nhật từ trong app: máy đã chạy được bản trước
+end;
+
+// Task checks: offer WebView2 only when missing, WSL2 only on Windows 10 2004+ without wsl.exe.
+function NeedWebView2(): Boolean;
+begin
+  Result := (not IsUpdate()) and (not HasWebView2());
+end;
+
+function CanOfferWsl(): Boolean;
+var v: TWindowsVersion;
+begin
+  GetWindowsVersionEx(v);
+  Result := (not IsUpdate()) and (v.Build >= 19041) and (not FileExists(ExpandConstant('{sys}\wsl.exe')));
+end;
+
+// WebView2 missing: run Microsoft's bootstrapper silently (per-user without admin, per-machine when elevated).
+// It needs the Internet; if it fails the user gets the old message with the download page.
+procedure InstallWebView2();
+var rc: Integer; exe: String;
+begin
+  if HasWebView2() then
+    exit;
+  WizardForm.StatusLabel.Caption := CustomMessage('InstallingWebView2');
+  ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
+  exe := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
+  if not Exec(exe, '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, rc) then
+    rc := -1;
+  Log(Format('webview2 bootstrapper exit code %d', [rc]));
   if not HasWebView2() then
     SuppressibleMsgBox(CustomMessage('NoWebView2'), mbInformation, MB_OK, IDOK);
+end;
+
+// Optional WSL2 (only for running CVAT locally). Needs admin and a restart; Docker Desktop is left to the user.
+procedure InstallWsl();
+var rc: Integer;
+begin
+  if ShellExec('runas', ExpandConstant('{sys}\wsl.exe'), '--install --no-distribution', '', SW_SHOW, ewWaitUntilTerminated, rc) then
+    SuppressibleMsgBox(CustomMessage('WslStarted'), mbInformation, MB_OK, IDOK);
+  Log(Format('wsl --install exit code %d', [rc]));
 end;
 
 // Microsoft Visual C++ (x64) missing: install it before copying files. It installs machine-wide, so Windows asks for admin
@@ -201,7 +251,13 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssInstall) and not IsUpdate() then
+  begin
     InstallVcRedist();
+    if WizardIsTaskSelected('webview2') then
+      InstallWebView2();
+  end;
+  if (CurStep = ssPostInstall) and (not IsUpdate()) and WizardIsTaskSelected('wsl') then
+    InstallWsl();
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

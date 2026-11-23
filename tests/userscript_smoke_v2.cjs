@@ -51,7 +51,7 @@ function fakeCvat(win, opts, frameBytes) {
     const body = o.body ? JSON.parse(o.body) : undefined;
     store.calls.push({ method, path: u.pathname + u.search, body });
     if (!['application/vnd.cvat+json', '*/*'].includes(o.headers.Accept)) return json({ detail: 'Could not satisfy the request Accept header.' }, 406);
-    if (u.pathname === job) return json({ id: opts.jobId, task_id: 9, start_frame: 0, stop_frame: opts.stop, mode: opts.mode });
+    if (u.pathname === job) return json({ id: opts.jobId, task_id: 9, project_id: opts.projectId || null, start_frame: 0, stop_frame: opts.stop, mode: opts.mode, dimension: opts.dimension || '2d' });
     if (u.pathname === '/api/labels') return json({ count: opts.labels.length, next: null, results: opts.labels });
     if (u.pathname === '/api/tasks/9' && method === 'PATCH') {
       // Giống CVAT: label không có id là label mới của task.
@@ -62,22 +62,26 @@ function fakeCvat(win, opts, frameBytes) {
     if (u.pathname === `${job}/data/meta`) return json(Object.assign({ start_frame: 0, stop_frame: opts.stop, frame_filter: '', deleted_frames: [], included_frames: null }, opts.meta || {}));
     if (u.pathname === `${job}/data`) {
       store.frames = (store.frames || 0) + 1;
+      if (opts.cloud) return { ok: true, status: 200, blob: async () => new win.Blob([opts.cloud], { type: 'application/octet-stream' }) };
       return { ok: true, status: 200, blob: async () => new win.Blob([frameBytes], { type: 'image/jpeg' }) };
     }
-    if (u.pathname === `${job}/annotations` && method === 'GET') return json({ version: 1, tags: [], shapes: store.shapes, tracks: store.tracks });
+    if (u.pathname === `${job}/annotations` && method === 'GET') return json({ version: 1, tags: store.tags || [], shapes: store.shapes, tracks: store.tracks });
     if (u.pathname === `${job}/annotations` && method === 'PATCH') {
       const action = u.searchParams.get('action');
       if (action === 'create') {
         const shapes = body.shapes.map((s) => ({ ...s, id: store.nextId++ }));
         const tracks = body.tracks.map((t) => ({ ...t, id: store.nextId++ }));
+        const tags = (body.tags || []).map((t) => ({ ...t, id: store.nextId++ }));
         store.shapes.push(...shapes);
         store.tracks.push(...tracks);
-        return json({ version: 2, tags: [], shapes, tracks });
+        store.tags = (store.tags || []).concat(tags);
+        return json({ version: 2, tags, shapes, tracks });
       }
       if (action === 'delete') {
-        const ids = new Set([...body.shapes, ...body.tracks].map((s) => s.id));
+        const ids = new Set([...body.shapes, ...body.tracks, ...(body.tags || [])].map((s) => s.id));
         store.shapes = store.shapes.filter((s) => !ids.has(s.id));
         store.tracks = store.tracks.filter((s) => !ids.has(s.id));
+        store.tags = (store.tags || []).filter((s) => !ids.has(s.id));
         return json({ version: 3, tags: [], shapes: body.shapes, tracks: body.tracks });
       }
     }
@@ -160,7 +164,7 @@ async function skeletonScenario(frameBytes) {
   await until(() => root.querySelectorAll('li.item').length >= 8, 'đề xuất skeleton: ' + status());
   const items = [...root.querySelectorAll('li.item')].map((li) => li.textContent);
   assert.match(items[0], /\/17 điểm · 1 occluded/, 'person đứng đầu, đúng thứ tự label của task: ' + items[0]);
-  assert.match(items[0], /Kiểm tra attribute/);
+  assert.match(items[0], /Thuộc tính\?/, '0.9.4: cờ là chip ngắn');
   assert.match(root.querySelector('ul').textContent, /12\/12 điểm/);
   const circles = win.document.querySelectorAll('svg circle').length;
   assert.strictEqual(circles, 16 + 50, 'vẽ 16 điểm người (1 điểm outside không vẽ) và 50 điểm mặt, có ' + circles);
@@ -255,6 +259,17 @@ async function trackingScenario(frameBytes) {
   await until(() => !button('Hoàn tác').disabled, 'panel rảnh');
   button('Hoàn tác').click();
   await until(() => store.tracks.length === 0, 'hoàn tác track: ' + status());
+
+  // 0.9.4: chỉ theo dõi người đã chọn; người chọn mà model không thấy thì báo
+  const at5 = tr.shapes.reduce((best, s) => (Math.abs(s.frame - 5) < Math.abs(best.frame - 5) ? s : best));
+  win.GM_setValue('targets', { 30: [{ name: 'P1', frame: 5, box: at5.points, label_id: 93 }, { name: 'P2', frame: 5, box: [5, 5, 30, 40], label_id: 93 }] });
+  button('Gợi ý').click();
+  button('Cả job').click();
+  assert.match(root.querySelector('.body').textContent, /P1 · frame 5/);
+  await until(() => button('Theo dõi 2 người') && !button('Theo dõi 2 người').disabled, 'nút theo dõi người đã chọn: ' + status());
+  button('Theo dõi 2 người').click();
+  await until(() => /P1 · #1 person/.test(root.querySelector('.body').textContent), 'chỉ còn P1: ' + status());
+  assert.match(root.querySelector('.body').textContent, /Không tìm thấy P2 ở frame 5/);
   page.dom.window.close();
   return page.errors;
 }
@@ -269,6 +284,8 @@ async function guidelineScenario(frameBytes) {
   await until(() => button('Gợi ý nhãn') && !button('Gợi ý nhãn').disabled, 'panel sẵn sàng: ' + status());
   button('Guideline').click();
   assert.match(root.querySelector('.body').textContent, /Chưa bật AI soạn guideline.*Cài đặt → AI soạn guideline/s);
+  assert.match(root.querySelector('.body').textContent, /Tool tự chọn \d+ ảnh mẫu \(job có 20 frame\)/, '0.9.4: số ảnh mẫu tự tính');
+  button('Tự chọn số').click();
   const sample = root.querySelector('input[type="number"]');
   sample.value = '10';
   sample.dispatchEvent(new win.Event('change'));
@@ -283,15 +300,22 @@ async function guidelineScenario(frameBytes) {
 
   // Chốt một câu hỏi -> bản nháp cập nhật
   const scope = [...root.querySelectorAll('li.item')].find((li) => /task không có label này/.test(li.textContent));
-  const select = scope.querySelector('select');
-  select.value = 'add';
-  select.dispatchEvent(new win.Event('change'));
+  assert.match(root.querySelector('.qprog').textContent, /Đã chốt 0 · Bỏ qua 0/);
+  [...scope.querySelectorAll('.qopt')].find((b) => /Thêm thành class mới/.test(b.textContent)).click();
   await until(() => /Đã cập nhật bản nháp/.test(status()), 'trả lời câu hỏi: ' + status());
+  assert.match(root.querySelector('.qprog').textContent, /Đã chốt 1/);
+  const doneQ = root.querySelector('li.q.done');
+  assert.ok(doneQ && /Thêm thành class mới/.test(doneQ.textContent), 'câu đã chốt thu gọn một dòng, hiện lựa chọn');
+  const todo = root.querySelector('li.q.todo');
+  if (todo) {
+    [...todo.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Bỏ qua').click();
+    assert.match(root.querySelector('.qprog').textContent, /Bỏ qua 1/);
+  }
   const openBefore = Number(body().match(/còn (\d+)\//)[1]);
   assert.ok(openBefore >= 1);
 
   // Label theo guideline: class vừa chốt "thêm" chưa có trong task -> thêm vào task, không đụng label cũ
-  const added = scope.textContent.match(/^'([^']+)'/)[1];
+  const added = scope.textContent.match(/'([^']+)'/)[1];
   assert.match(body(), new RegExp(`Task còn thiếu: ${added} \\(rectangle`));
   await until(() => button('Thêm 1 label') && !button('Thêm 1 label').disabled, 'nút thêm label');
   button('Thêm 1 label').click();
@@ -509,8 +533,11 @@ async function importScenario(frameBytes) {
   assert.ok(store.calls.length && store.calls.every((c) => c.path.startsWith('/api/')), 'gọi API của chính CVAT local');
   button('Guideline').click();
   const headings = [...root.querySelectorAll('.sec-h > span, h2')].map((x) => x.textContent);
-  assert.match(headings[0], /Nạp guideline có sẵn/);
-  const input = root.querySelector('input[type="file"]');
+  assert.match(headings[0], /Profile cho project/);
+  assert.match(headings[1], /Nạp guideline/);
+  const impHead = [...root.querySelectorAll('.sec-h')].find((b) => /Nạp guideline/.test(b.textContent));
+  if (impHead.getAttribute('aria-expanded') !== 'true') impHead.click();
+  const input = impHead.parentElement.querySelector('input[type="file"]');
   Object.defineProperty(input, 'files', { value: [new win.File([NEW_GUIDELINE], 'Kho_Guideline_V1.md', { type: 'text/markdown' })] });
   input.dispatchEvent(new win.Event('change'));
   await until(() => /Xem trước: Annotation Guideline: Hàng hoá trong kho/.test(root.querySelector('.body').textContent), 'xem trước: ' + status());
@@ -548,7 +575,9 @@ async function importScenario(frameBytes) {
   const taxonomy = JSON.stringify([{ name: 'box', type: 'rectangle', attributes: [] }, { name: 'pallet', type: 'rectangle', attributes: [] },
     { name: 'walkway', type: 'polygon', attributes: [] }]);
   const pick = (files) => {
-    const input2 = root.querySelector('input[type="file"]');
+    const head2 = [...root.querySelectorAll('.sec-h')].find((b) => /Nạp guideline/.test(b.textContent));
+    if (head2.getAttribute('aria-expanded') !== 'true') head2.click();
+    const input2 = head2.parentElement.querySelector('input[type="file"]');
     Object.defineProperty(input2, 'files', { value: files, configurable: true });
     input2.dispatchEvent(new win.Event('change'));
   };
@@ -575,6 +604,74 @@ async function importScenario(frameBytes) {
 const PROFILES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'sam3-assist-profiles-'));
 fs.cpSync(path.join(ROOT, 'profiles'), PROFILES_DIR, { recursive: true });
 
+// 0.9.4: job gộp box + skeleton mặt 13 điểm + tag ảnh, chưa có profile nào khớp: tạo profile cho project từ label của task
+async function projectProfileScenario(frameBytes) {
+  const F13 = ['left_eye_outer', 'left_eye_inner', 'left_eye_upper', 'left_eye_lower', 'right_eye_outer', 'right_eye_inner',
+    'right_eye_upper', 'right_eye_lower', 'nose_tip', 'mouth_left', 'mouth_right', 'lip_upper', 'lip_lower'];
+  const sel = (id, name, values) => ({ id, name, mutable: true, input_type: 'select', default_value: values[0], values });
+  const labels = [
+    { id: 501, name: 'face', type: 'rectangle', color: '#33aa55', attributes: [sel(61, 'eye_left', ['open', 'closed', 'unknown'])], parent_id: null, has_parent: false },
+    { id: 502, name: 'face13', type: 'skeleton', color: '#aa3355', attributes: [], parent_id: null, has_parent: false },
+    ...F13.map((n, i) => ({ id: 600 + i, name: n, type: 'points', color: '#fff', attributes: [], parent_id: 502, has_parent: true })),
+    { id: 503, name: 'frame_meta', type: 'tag', color: '#888', attributes: [sel(62, 'modality', ['rgb', 'ir']), sel(63, 'weather', ['clear', 'rain'])], parent_id: null, has_parent: false },
+  ];
+  const page = openPage({ jobId: 71, frame: 0, stop: 3, mode: 'annotation', labels, projectId: 88 }, frameBytes);
+  const { root, store, button, status } = page;
+  await until(() => button('Gợi ý nhãn') && !button('Gợi ý nhãn').disabled, 'panel sẵn sàng: ' + status());
+  button('Guideline').click();
+  button('Tạo profile cho project').click();
+  await until(() => root.querySelectorAll('.prow').length === 3, 'xem trước profile: ' + status());
+  const text = root.querySelector('.body').textContent;
+  assert.match(text, /13\/13 điểm tool đặt được/);
+  assert.match(text, /Tag ảnh: tool đoán 1\/2 thuộc tính/);
+  button('Lưu cho project').click();
+  await until(() => /Đã lưu profile proj_p88/.test(status()), 'lưu profile: ' + status());
+  button('Gợi ý').click();
+  assert.match(root.querySelector('.meta').textContent, /Project/);
+  button('Gợi ý nhãn').click();
+  await until(() => /Tag của ảnh/.test(root.querySelector('.body').textContent), 'tag ảnh: ' + status());
+  await until(() => [...root.querySelectorAll('li.item')].some((li) => /13\/13|\/13 điểm/.test(li.textContent)), 'skeleton face13: ' + status());
+  assert.ok(root.querySelector('.tagf.need'), 'weather: bạn chọn (tô vàng)');
+  button('Chỉ ghi').click();
+  const patch = await until(() => store.calls.find((c) => c.method === 'PATCH' && c.path.includes('create')), 'ghi: ' + status());
+  assert.strictEqual(patch.body.tags.length, 1);
+  assert.deepStrictEqual(patch.body.tags[0].attributes.map((a) => a.spec_id).sort(), [62, 63]);
+  assert.strictEqual(patch.body.tags[0].source, undefined, 'mặc định không ghi source');
+  assert.ok(patch.body.shapes.some((s) => s.label_id === 502 && s.elements.length === 13));
+  await until(() => /tag/.test(status()), 'đã ghi tag: ' + status());
+  await fetch(BACKEND + '/profiles/proj_p88', { method: 'DELETE', headers: { 'X-API-Key': 'smoke-key' } });
+  page.dom.window.close();
+  return page.errors;
+}
+
+// 0.9.4: job CVAT 3D: cuboid từ point cloud, ghi shape và track kiểu cuboid
+async function lidarScenario(frameBytes) {
+  const cloud = execFileSync('python3', ['-c', 'import sys; sys.path[:0] = ["tests", "."]; from test_v094 import _scene, _pcd; sys.stdout.buffer.write(_pcd(_scene()))'], { cwd: ROOT });
+  const labels = [
+    { id: 801, name: 'Car', type: 'cuboid', color: '#33aa55', attributes: [], parent_id: null, has_parent: false },
+    { id: 802, name: 'Pedestrian', type: 'cuboid', color: '#aa3355', attributes: [], parent_id: null, has_parent: false },
+  ];
+  const page = openPage({ jobId: 81, frame: 0, stop: 3, mode: 'interpolation', labels, dimension: '3d', cloud }, frameBytes);
+  const { root, store, button, status } = page;
+  await until(() => button('Gợi ý cuboid cho frame này') && !button('Gợi ý cuboid cho frame này').disabled, 'panel 3D sẵn sàng: ' + status());
+  button('Gợi ý cuboid cho frame này').click();
+  await until(() => root.querySelectorAll('li.item').length === 2, 'cuboid đề xuất: ' + status());
+  assert.match(root.querySelector('ul').textContent, /4\.\d × 1\.\d × 1\.\d m/);
+  button('Ghi 2 cuboid').click();
+  const patch = await until(() => store.calls.find((c) => c.method === 'PATCH' && c.path.includes('create')), 'ghi cuboid: ' + status());
+  assert.ok(patch.body.shapes.every((s) => s.type === 'cuboid' && s.points.length === 16));
+  assert.deepStrictEqual(patch.body.shapes.map((s) => s.label_id).sort(), [801, 802]);
+  button('Cả job').click();
+  button('Dựng track cho 4 frame').click();
+  await until(() => /2 track cuboid/.test(status()), 'track cuboid: ' + status());
+  button('Ghi 2 track').click();
+  const patch2 = await until(() => store.calls.filter((c) => c.method === 'PATCH' && c.path.includes('create'))[1], 'ghi track cuboid: ' + status());
+  assert.strictEqual(patch2.body.tracks.length, 2);
+  assert.ok(patch2.body.tracks.every((t) => t.shapes.every((s) => s.type === 'cuboid' && s.points.length === 16)));
+  page.dom.window.close();
+  return page.errors;
+}
+
 async function main() {
   const jpg = path.join(os.tmpdir(), `sam3-assist-smoke2-${process.pid}.jpg`);
   execFileSync('python3', ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
@@ -594,7 +691,7 @@ async function main() {
     }
     const errors = [...(await skeletonScenario(frameBytes)), ...(await trackingScenario(frameBytes)), ...(await guidelineScenario(frameBytes)),
       ...(await importScenario(frameBytes)), ...(await newLabelBatchScenario(frameBytes)),
-      ...(await learnScenario(frameBytes)), ...(await videoScenario(frameBytes))];
+      ...(await learnScenario(frameBytes)), ...(await videoScenario(frameBytes)), ...(await projectProfileScenario(frameBytes)), ...(await lidarScenario(frameBytes))];
     const real = errors.filter((e) => !/Not implemented: navigation/.test(e));
     assert.deepStrictEqual(real, [], 'lỗi console: ' + real.join(' | '));
     console.log('SMOKE TEST V2: PASS');

@@ -29,7 +29,9 @@ COMPONENTS = {
     "sam3": {"title": "Trọng số SAM 3", "required": True},
     "vitpose": {"title": "Skeleton người (ViTPose)", "required": False},
     "face": {"title": "Skeleton mặt (MediaPipe)", "required": False},
+    "detector": {"title": "Trọng số khởi đầu cho model riêng", "required": False},
 }
+FILE_MODELS = ("face", "detector")          # thành phần là một file tải theo địa chỉ + mã băm trong manifest
 TORCH_EXTRACT = 2.1          # bản cài PyTorch chiếm khoảng 2 lần file tải về
 MIN_DRIVER = 528.0           # driver NVIDIA tối thiểu cho PyTorch CUDA 12 trên Windows
 
@@ -128,8 +130,8 @@ class Components:
             return False
         if key == "torch":
             return (self.paths.packages / "torch" / "__init__.py").exists()
-        if key == "face":
-            return self.paths.face.exists()
+        if key in FILE_MODELS:
+            return self._file_path(key).exists()
         folder = self.paths.sam3 if key == "sam3" else self.paths.vitpose
         return all((folder / f).exists() for f in st.get("files", [])) and bool(st.get("files"))
 
@@ -170,7 +172,8 @@ class Components:
         out = {}
         for key in keys:
             try:
-                out[key] = getattr(self, f"_plan_{'hf' if key in ('sam3', 'vitpose') else key}")(key, gpu, token, check_hash)
+                kind = "hf" if key in ("sam3", "vitpose") else ("file" if key in FILE_MODELS else key)
+                out[key] = getattr(self, f"_plan_{kind}")(key, gpu, token, check_hash)
             except Exception as exc:  # noqa: BLE001 - không kiểm được thì báo, không chặn
                 out[key] = {"action": "install" if not self.installed(key) else "none", "download": 0, "reuse": 0,
                             "reason": f"Chưa kiểm được: {exc}", "required": not self.installed(key)}
@@ -196,19 +199,26 @@ class Components:
     def _face_sources(self) -> list[Path]:
         return [d / "models" for d in self.tool_dirs()] + [self.paths.models]
 
-    def _plan_face(self, key, gpu, token, check_hash) -> dict:
-        f = self.manifest["models"]["face"]
-        st = self.state().get("face") or {}
-        if self.installed("face") and st.get("sha256") == f["sha256"]:
+    def _file_path(self, key: str) -> Path:
+        return self.paths.face if key == "face" else self.paths.detector
+
+    def _plan_file(self, key, gpu, token, check_hash) -> dict:
+        f = (self.manifest.get("models") or {}).get(key)
+        if not f:
+            return {"action": "none", "download": 0, "reuse": 0, "required": False, "reason": "bản cài này chưa có thành phần này"}
+        st = self.state().get(key) or {}
+        if self.installed(key) and st.get("sha256") == f["sha256"]:
             return {"action": "none", "download": 0, "reuse": 0, "required": False, "reason": "đúng bản"}
-        item = {"path": self.paths.face.name, "sha256": f["sha256"], "size": f.get("size")}
+        item = {"path": self._file_path(key).name, "sha256": f["sha256"], "size": f.get("size")}
         src = R.find_match(item, self._face_sources(), [], check_hash)
-        action = "update" if self.installed("face") else "install"
+        action = "update" if self.installed(key) else "install"
         if src:
             return {"action": action, "download": 0, "reuse": f.get("size") or 0, "required": action == "update",
                     "reason": f"dùng lại file có sẵn: {src}", "reuse_from": [str(src.parent)]}
         return {"action": action, "download": f.get("size") or 4_000_000, "reuse": 0, "required": action == "update",
-                "reason": "model khuôn mặt bản mới" if action == "update" else ""}
+                "reason": ("model khuôn mặt bản mới" if key == "face" else "bản mới") if action == "update" else ""}
+
+    _plan_face = _plan_file
 
     def _hf_folder(self, key: str) -> Path:
         return self.paths.sam3 if key == "sam3" else self.paths.vitpose
@@ -267,8 +277,8 @@ class Components:
         progress = progress or (lambda **_: None)
         if key == "torch":
             return self._install_torch(gpu, progress, cancel)
-        if key == "face":
-            return self._install_face(progress, cancel)
+        if key in FILE_MODELS:
+            return self._install_file(key, progress, cancel)
         return self._install_hf(key, token, progress, cancel)
 
     def _install_torch(self, gpu: Gpu, progress, cancel) -> dict:
@@ -304,21 +314,28 @@ class Components:
         self._save("torch", info)
         return info
 
-    def _install_face(self, progress, cancel) -> dict:
-        f = self.manifest["models"]["face"]
-        item = {"path": self.paths.face.name, "sha256": f["sha256"], "size": f.get("size")}
+    def _install_file(self, key: str, progress, cancel) -> dict:
+        f = (self.manifest.get("models") or {}).get(key)
+        if not f:
+            raise D.DownloadError(f"Bản cài này chưa có thành phần {COMPONENTS[key]['title']}: cập nhật app lên bản mới.")
+        dest = self._file_path(key)
+        what = "model khuôn mặt" if key == "face" else "trọng số khởi đầu"
+        item = {"path": dest.name, "sha256": f["sha256"], "size": f.get("size")}
         src = R.find_match(item, [d / "models" for d in self.tool_dirs()], [])
-        if src and src != self.paths.face.resolve():
-            progress(file=src.name, done=0, total=None, step=f"Dùng lại model khuôn mặt có sẵn: {src}")
-            R.place(src, self.paths.face)
+        if src and src != dest.resolve():
+            progress(file=src.name, done=0, total=None, step=f"Dùng lại {what} có sẵn: {src}")
+            R.place(src, dest)
             info = {"sha256": f["sha256"], "reused_from": str(src)}
-            self._save("face", info)
+            self._save(key, info)
             return info
-        D.download(f["url"], self.paths.face, sha256=f["sha256"], size=f.get("size"), cancel=cancel, allow_http=self.allow_http,
-                   progress=lambda done, total: progress(file=self.paths.face.name, done=done, total=total, step="Tải model khuôn mặt"))
+        D.download(f["url"], dest, sha256=f["sha256"], size=f.get("size"), cancel=cancel, allow_http=self.allow_http,
+                   progress=lambda done, total: progress(file=dest.name, done=done, total=total, step=f"Tải {what}"))
         info = {"sha256": f["sha256"]}
-        self._save("face", info)
+        self._save(key, info)
         return info
+
+    def _install_face(self, progress, cancel) -> dict:
+        return self._install_file("face", progress, cancel)
 
     def _install_hf(self, key: str, token: str, progress, cancel) -> dict:
         m = self.manifest["models"][key]
@@ -369,8 +386,8 @@ class Components:
         if key == "torch":
             shutil.rmtree(self.paths.packages, ignore_errors=True)
             self.paths.packages.mkdir(parents=True, exist_ok=True)
-        elif key == "face":
-            self.paths.face.unlink(missing_ok=True)
+        elif key in FILE_MODELS:
+            self._file_path(key).unlink(missing_ok=True)
         else:
             final = self.paths.sam3 if key == "sam3" else self.paths.vitpose
             shutil.rmtree(final, ignore_errors=True)
@@ -387,6 +404,7 @@ class Components:
             "SAM3_HF_MODEL": str(p.sam3),
             "SAM3_POSE_MODEL": str(p.vitpose),
             "SAM3_FACE_MODEL": str(p.face),
+            "SAM3_DETECTOR_BASE": str(p.detector),
             "SAM3_PROFILES_DIR": str(p.profiles),
             "SAM3_LIBRARY_DIR": str(p.library),
             "SAM3_NO_AUTO_DOWNLOAD": "1",

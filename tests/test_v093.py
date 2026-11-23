@@ -89,7 +89,7 @@ def test_no_shared_windll_without_signatures():
     app = (ROOT / "desktop" / "app.py").read_text(encoding="utf-8")
     control = (ROOT / "desktop" / "control.py").read_text(encoding="utf-8")
     assert "GlobalLock" not in app and "windll.kernel32.Global" not in control
-    assert "_win_set_clipboard(ctypes" in app, "panel trong cửa sổ CVAT chép qua cùng hàm đã sửa"
+    assert "win_copy(" in app, "panel trong cửa sổ CVAT chép qua cùng hàm đã sửa"
 
 
 # ------------------------------------------------------- AI soạn guideline ---

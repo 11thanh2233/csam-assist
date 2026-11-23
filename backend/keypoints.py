@@ -24,6 +24,17 @@ HEAD, ARMS, LEGS = [(1, 2), (3, 4)], [(5, 6), (7, 8), (9, 10)], [(11, 12), (13, 
 
 
 def _proposal(cfg: dict, elements: list[dict], score: float, flags: list[dict], box: list[float]) -> dict:
+    adjust = cfg.get("point_adjust") or {}
+    if adjust:
+        # 0.9.4: điểm bạn hay kéo lệch về cùng một hướng (tab Tự học): dịch theo cỡ skeleton
+        pts = [(e["x"], e["y"]) for e in elements if not e["outside"]]
+        if pts:
+            xs, ys = zip(*pts)
+            w, h = max(max(xs) - min(xs), 1.0), max(max(ys) - min(ys), 1.0)
+            for e in elements:
+                d = adjust.get(str(e["label_id"]))
+                if d and not e["outside"]:
+                    e["x"], e["y"] = round(e["x"] + d[0] * w, 2), round(e["y"] + d[1] * h, 2)
     shown = [(e["x"], e["y"]) for e in elements if not e["outside"]]
     if shown:
         xs, ys = zip(*shown)

@@ -45,11 +45,9 @@ def set_clipboard(text: str) -> None:
     (bản cũ thiếu kiểu tham số nên trên Windows 64-bit báo OverflowError: int too long to convert)."""
     if sys.platform != "win32":
         return
-    import ctypes
+    from .control import win_copy
 
-    from .control import _win_set_clipboard
-
-    _win_set_clipboard(ctypes, str(text or ""))
+    win_copy(str(text or ""))
 
 
 class DesktopApp:

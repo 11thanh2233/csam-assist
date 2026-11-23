@@ -96,6 +96,10 @@ class Learner:
                 "box_adjust": [float(v) for v in e.get("box_adjust") or []][:4] or None,
                 # ngưỡng đang dùng lúc đề xuất: đề xuất dưới ngưỡng này chưa bao giờ được người dùng nhìn thấy
                 "threshold": float(e["threshold"]) if e.get("threshold") is not None else None,
+                # 0.9.4: thuộc tính tool tự điền ({tên: giá trị}) và vị trí từng điểm skeleton ({id điểm: [x, y]}) lúc ghi
+                "auto_attributes": {str(k): str(v) for k, v in (e.get("auto_attributes") or {}).items()} or None,
+                "points": {str(k): [float(v[0]), float(v[1])] for k, v in (e.get("points") or {}).items() if len(v or []) >= 2} or None,
+                "track_shapes": int(e["track_shapes"]) if e.get("track_shapes") is not None else None,
             })
         if keep:
             with self.lock, (self.root / "events.jsonl").open("a", encoding="utf-8") as f:
@@ -113,20 +117,38 @@ class Learner:
         untouched = [i for i in ids if result.get(i) in (None, "kept")]
         return {"job_id": job_id, "ids": ids, "untouched": untouched, "reviewed_at": data.get("at")}
 
-    def review(self, job_id: int, shapes: list[dict], tracks: Optional[list[dict]] = None) -> dict:
-        """So các shape tool đã ghi cho job với annotation hiện tại; ghi kết quả rồi học lại."""
+    def review(self, job_id: int, shapes: list[dict], tracks: Optional[list[dict]] = None,
+               attr_names: Optional[dict] = None) -> dict:
+        """So các shape (và track, 0.9.4) tool đã ghi cho job với annotation hiện tại; ghi kết quả rồi học lại.
+
+        attr_names: {spec_id: tên attribute} để so giá trị thuộc tính tool tự điền với giá trị bạn để lại.
+        """
         events = self._events(job_id)
         if not events:
             return {"job_id": job_id, "reviewed": 0, "summary": {}, "learned": self.summary()}
         by_id = {s.get("id"): s for s in shapes if s.get("id") is not None}
+        track_ids = {t.get("id"): t for t in tracks or [] if t.get("id") is not None}
+        attr_names = {str(k): v for k, v in (attr_names or {}).items()}
         applied = [e for e in events if e["kind"] == "applied" and e.get("cvat_id") is not None]
         tool_ids = {e["cvat_id"] for e in applied}
         outcomes = []
         for e in applied:
-            now = by_id.get(e["cvat_id"])
             out = {"profile_id": e["profile_id"], "label_name": e["label_name"], "score": e["score"], "frame": e["frame"],
                    "type": e["type"], "cvat_id": e["cvat_id"], "box_adjust": e.get("box_adjust"),
                    "threshold": e.get("threshold")}
+            if e.get("type") == "track":
+                # Track: bị xoá = sai; số keyframe thay đổi = bạn đã sửa track (thêm, bớt keyframe, đổi occluded/outside)
+                tr = track_ids.get(e["cvat_id"])
+                if tr is None:
+                    out["result"] = "deleted"
+                elif tr.get("label_id") != e.get("label_id"):
+                    out["result"], out["new_label_id"] = "relabeled", tr.get("label_id")
+                else:
+                    changed = len(tr.get("shapes") or []) != (e.get("track_shapes") or 0)
+                    out["result"] = "edited" if changed else "kept"
+                outcomes.append(out)
+                continue
+            now = by_id.get(e["cvat_id"])
             if now is None:
                 out["result"] = "deleted"
             elif now.get("label_id") != e.get("label_id"):
@@ -141,6 +163,21 @@ class Learner:
                                     (after[2] - before[2]) / w, (after[3] - before[3]) / h]
                 else:
                     out["result"], out["delta"] = "kept", [0.0, 0.0, 0.0, 0.0]
+                # Thuộc tính tool tự điền: bạn để nguyên hay đổi
+                if e.get("auto_attributes") and attr_names:
+                    have = {norm(attr_names.get(str(a.get("spec_id")), "")): str(a.get("value")) for a in now.get("attributes") or []}
+                    out["attr_changed"] = {k: have.get(norm(k)) not in (None, v) for k, v in e["auto_attributes"].items() if norm(k) in have}
+                # Skeleton: độ lệch từng điểm (theo cỡ hộp skeleton) giữa lúc tool ghi và lúc bạn sửa xong
+                if e.get("points") and now.get("type") == "skeleton" and len(before) == 4:
+                    w, h = max(before[2] - before[0], 1.0), max(before[3] - before[1], 1.0)
+                    moved = {}
+                    for el in now.get("elements") or []:
+                        p0 = e["points"].get(str(el.get("label_id")))
+                        p1 = el.get("points") or []
+                        if p0 and len(p1) >= 2 and not el.get("outside"):
+                            moved[str(el["label_id"])] = [(p1[0] - p0[0]) / w, (p1[1] - p0[1]) / h]
+                    if moved:
+                        out["point_delta"] = moved
             outcomes.append(out)
         for e in events:
             if e["kind"] == "rejected":
@@ -259,6 +296,32 @@ class Learner:
                     entry["box_adjust"] = [round(v, 4) for v in mean]
                     entry["box_reason"] = (f"từ {len(boxes)} hộp đúng ({edited} hộp bạn kéo lại): cạnh trái/trên/phải/dưới chỉnh "
                                            + ", ".join(f"{v * 100:+.1f}%" for v in mean) + " theo kích thước hộp")
+            # 0.9.4: điểm skeleton bạn hay kéo về cùng một hướng -> tool tự dịch điểm đó lần sau
+            per_point: dict[str, list[list[float]]] = {}
+            for o in items:
+                for pid, d in (o.get("point_delta") or {}).items():
+                    per_point.setdefault(pid, []).append(d)
+            adjust = {}
+            for pid, ds in per_point.items():
+                if len(ds) >= MIN_BOX_SAMPLES:
+                    mx, my = statistics.fmean(d[0] for d in ds), statistics.fmean(d[1] for d in ds)
+                    if max(abs(mx), abs(my)) >= 0.01:
+                        adjust[pid] = [round(mx, 4), round(my, 4)]
+            if adjust:
+                entry["point_adjust"] = adjust
+                entry["point_reason"] = f"từ {max(len(v) for v in per_point.values())} skeleton bạn đã sửa: dịch {len(adjust)} điểm hay bị kéo lệch"
+            # 0.9.4: thuộc tính tool tự điền mà bạn thường đổi -> tắt tự điền thuộc tính đó
+            per_attr: dict[str, list[bool]] = {}
+            for o in items:
+                for a, changed in (o.get("attr_changed") or {}).items():
+                    per_attr.setdefault(a, []).append(bool(changed))
+            off = sorted(a for a, v in per_attr.items() if len(v) >= MIN_BOX_SAMPLES and sum(v) / len(v) >= 0.5)
+            if off:
+                entry["attr_off"] = off
+                entry["attr_reason"] = "bạn đổi giá trị tool tự điền từ một nửa số lần trở lên: " + ", ".join(off)
+            tracks_n = [o for o in items if o.get("type") == "track"]
+            if tracks_n:
+                entry["tracks"] = {r: sum(1 for o in tracks_n if o["result"] == r) for r in ("kept", "edited", "deleted", "relabeled")}
             confusions: dict[str, int] = {}
             for o in items:
                 if o["result"] == "relabeled":
@@ -298,7 +361,8 @@ class Learner:
 
     def for_profile(self, profile_id: str) -> dict[str, dict]:
         return {norm(e["label"]): e for e in self.model.get("labels", {}).values()
-                if e["profile_id"] == profile_id and e.get("enabled", True) and (e.get("threshold") or e.get("box_adjust"))}
+                if e["profile_id"] == profile_id and e.get("enabled", True)
+                and (e.get("threshold") or e.get("box_adjust") or e.get("point_adjust") or e.get("attr_off"))}
 
     def set_enabled(self, profile_id: str, label: str, enabled: bool) -> None:
         key = _key(profile_id, label)
@@ -349,5 +413,13 @@ def apply_learned(cfgs: list[dict], learned: dict[str, dict], overrides: dict) -
         if entry.get("box_adjust") and cfg.get("shape") == "rectangle":
             cfg["box_adjust"] = entry["box_adjust"]
             info["box_adjust"], info["box_reason"] = entry["box_adjust"], entry.get("box_reason", "")
+        if entry.get("point_adjust") and cfg.get("shape") == "skeleton":
+            cfg["point_adjust"] = entry["point_adjust"]
+            info["point_reason"] = entry.get("point_reason", "")
+        if entry.get("attr_off"):
+            cfg["attr_off"] = list(entry["attr_off"])
+            for a in entry["attr_off"]:
+                (cfg.get("attr_rules") or {}).pop(a, None)
+            info["attr_reason"] = entry.get("attr_reason", "")
         if len(info) > 3:
             cfg["learned"] = info

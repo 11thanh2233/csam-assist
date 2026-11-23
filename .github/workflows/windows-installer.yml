@@ -183,6 +183,14 @@ jobs:
           if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw "vc_redist.x64.exe không có chữ ký hợp lệ của Microsoft: $($sig.Status) $($sig.SignerCertificate.Subject)" }
           Write-Host "vc_redist: $((Get-Item build\vc_redist.x64.exe).VersionInfo.ProductVersion), ký bởi Microsoft"
 
+      - name: Tải Microsoft Edge WebView2 Bootstrapper (để bộ cài tự cài khi máy thiếu)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile build\MicrosoftEdgeWebview2Setup.exe
+          $sig = Get-AuthenticodeSignature build\MicrosoftEdgeWebview2Setup.exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw "MicrosoftEdgeWebview2Setup.exe không có chữ ký hợp lệ của Microsoft: $($sig.Status) $($sig.SignerCertificate.Subject)" }
+          Write-Host "webview2 bootstrapper: $((Get-Item build\MicrosoftEdgeWebview2Setup.exe).VersionInfo.ProductVersion), ký bởi Microsoft"
+
       - name: Đóng gói bằng Inno Setup
         shell: pwsh
         run: |

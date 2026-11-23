@@ -13,6 +13,8 @@ Mọi trường hợp không chắc (nối lại sau khuất, hai người đi s
 from __future__ import annotations
 
 
+from typing import Optional
+
 import cv2
 import numpy as np
 
@@ -64,8 +66,18 @@ def detect_frame(engine: Engine, image: np.ndarray, cfgs: list[dict], warnings: 
             "box": [round(v, 2) for v in box],
             "score": round(det.score, 3),
             "hist": appearance(image, box),
+            # phần mask phủ trong hộp: người bị cột, xe che ở giữa thì mask thủng dù hộp không co (0.9.4)
+            "fill": round(float(np.count_nonzero(det.mask)) / max(G.box_area(box), 1.0), 3),
         })
     return out
+
+
+def in_zones(box, zones) -> bool:
+    """Tâm hộp nằm trong một vùng bỏ qua (gương, kính, biển quảng cáo, màn hình) do người dùng khoanh."""
+    if not zones:
+        return False
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return any(z[0] <= cx <= z[2] and z[1] <= cy <= z[3] for z in zones)
 
 
 # ------------------------------------------------------------ nối ID -------
@@ -74,6 +86,8 @@ class _Track:
         self.tid = tid
         self.label_id = label_id
         self.obs: dict[int, np.ndarray] = {frame: np.asarray(det["box"], float)}
+        self.fill: dict[int, float] = {frame: float(det.get("fill") or 0.0)}
+        self.target: Optional[str] = None
         self.scores: list[float] = [det["score"]]
         self.hist = np.asarray(det["hist"], float)
         self.last = frame
@@ -99,6 +113,7 @@ class _Track:
 
     def add(self, frame: int, det: dict) -> None:
         self.obs[frame] = np.asarray(det["box"], float)
+        self.fill[frame] = float(det.get("fill") or 0.0)
         self.scores.append(det["score"])
         mixed = 0.85 * self.hist + 0.15 * np.asarray(det["hist"], float)
         self.hist = mixed / (mixed.sum() or 1.0)
@@ -188,7 +203,8 @@ def _smooth(boxes: np.ndarray, window: int) -> np.ndarray:
     return np.array([np.median(boxes[max(0, i - half): i + half + 1], axis=0) for i in range(len(boxes))])
 
 
-def amodal(frames: list[int], boxes: np.ndarray, width: int, height: int, rule: dict) -> tuple[np.ndarray, list[bool]]:
+def amodal(frames: list[int], boxes: np.ndarray, width: int, height: int, rule: dict,
+           fills: Optional[list[float]] = None) -> tuple[np.ndarray, list[bool]]:
     """Box co lại đột ngột (bị che một phần) -> giữ kích thước toàn thân trước đó, gắn occluded.
 
     Guideline: box vẫn ở vị trí ước lượng của toàn thân, không co theo phần nhìn thấy.
@@ -220,6 +236,15 @@ def amodal(frames: list[int], boxes: np.ndarray, width: int, height: int, rule: 
             ref_h.append(h)
             ref_w.append(w)
             prev = b
+    # Mask thủng ở giữa (bị cột, xe, đồ vật che) mà hộp không co: so phần mask phủ trong hộp với lúc thấy rõ.
+    if fills and any(fills):
+        drop = float(cfg.get("fill_ratio", 0.7))
+        clear = [f for f, o in zip(fills, occ) if f and not o]
+        if len(clear) >= 3:
+            ref = float(np.median(clear))
+            for i, f in enumerate(fills):
+                if f and f < drop * ref and not G.touches_border(out[i], width, height, 2):
+                    occ[i] = True
     return out, occ
 
 
@@ -259,17 +284,89 @@ def keyframes(frames: list[int], boxes: np.ndarray, occ: list[bool], iou_thr: fl
     return sorted(idx)
 
 
+def _merge(into: "_Track", other: "_Track") -> None:
+    for f in other.obs:
+        into.obs[f] = other.obs[f]
+        into.fill[f] = other.fill.get(f, 0.0)
+    into.scores += other.scores
+    into.reids += other.reids
+    into.last = max(into.last, other.last)
+
+
+def assign_targets(tracks: list["_Track"], targets: list[dict], rule: dict) -> tuple[list["_Track"], list[str]]:
+    """Chỉ giữ người bạn đã chọn (0.9.4).
+
+    Mỗi người chọn = một hộp ở một frame. Track có hộp trùng (IoU >= 0.4) ở frame đó (hoặc frame gần nhất trong
+    ±3) là người đó. Các đoạn track khác (người đó bị mất dấu rồi hiện lại) được nối vào nếu không trùng thời gian
+    và ngoại hình giống. Phần còn lại (người khác, phản chiếu, quảng cáo) bị bỏ.
+    """
+    notes: list[str] = []
+    chosen: dict[str, _Track] = {}
+    for tg in targets:
+        f0, box = int(tg["frame"]), np.asarray(tg["box"], float)
+        best, best_iou = None, 0.4
+        for t in tracks:
+            if t in chosen.values() or (tg.get("label_id") and t.label_id != tg["label_id"]):
+                continue
+            near = [f for f in t.obs if abs(f - f0) <= 3]
+            if not near:
+                continue
+            f = min(near, key=lambda x: abs(x - f0))
+            iou = G.box_iou(t.obs[f], box)
+            if iou > best_iou:
+                best, best_iou = t, iou
+        if best is None:
+            notes.append(f"Không tìm thấy {tg.get('name', 'người đã chọn')} ở frame {f0}: model không phát hiện được người ở chỗ bạn khoanh.")
+            continue
+        best.target = tg.get("name") or f"P{len(chosen) + 1}"
+        chosen[best.target] = best
+    reid_app = float(rule.get("reid_min_appearance", 0.75))
+    rest = [t for t in tracks if t.target is None]
+    for t in sorted(rest, key=lambda x: -len(x.obs)):
+        best, best_app = None, reid_app
+        for name, tt in chosen.items():
+            if t.label_id != tt.label_id or set(t.obs) & set(tt.obs):
+                continue
+            app = similarity(tt.hist, t.hist)
+            if app >= best_app:
+                best, best_app = tt, app
+        if best is not None:
+            gap = min(abs(f - g) for f in t.obs for g in best.obs)
+            best.reids.append((min(t.obs), gap, best_app))
+            _merge(best, t)
+            t.target = "merged"
+    dropped = sum(1 for t in tracks if t.target is None)
+    if dropped:
+        notes.append(f"Bỏ {dropped} track không phải người bạn đã chọn.")
+    return [t for t in tracks if t.target not in (None, "merged")], notes
+
+
 def build_tracks(frames: list[dict], cfgs: list[dict], profile: dict, width: int, height: int,
-                 start: int, stop: int) -> dict:
+                 start: int, stop: int, targets: Optional[list[dict]] = None, zones: Optional[list[list[float]]] = None) -> dict:
     rule = (profile.get("rules") or {}).get("tracking") or {}
     names = {c["label_id"]: c["name"] for c in cfgs}
+    zone_drop = 0
+    if zones:
+        clean = []
+        for item in frames:
+            dets = [d for d in item.get("dets") or [] if not in_zones(d["box"], zones)]
+            zone_drop += len(item.get("dets") or []) - len(dets)
+            clean.append(dict(item, dets=dets))
+        frames = clean
     tracks = associate(frames, rule)
+    target_notes: list[str] = []
+    if targets:
+        tracks, target_notes = assign_targets(tracks, targets, rule)
     max_gap = int(rule.get("reid_max_gap_frames", 60))
     min_len = int(rule.get("min_track_frames", 5))
     kf_iou = float(rule.get("keyframe_iou", 0.8))
     kf_gap = int(rule.get("max_keyframe_gap", 20))
     dense = float(rule.get("dense_keyframes_per_100", 50))
-    warnings: list[str] = []
+    miss_gap = int(rule.get("miss_gap_frames", 2))          # model bỏ sót vài frame: nối qua, không đặt outside
+    hidden_gap = int(rule.get("max_occluded_frames", 0))     # bị che hẳn tối đa bấy nhiêu frame thì giữ box (cuboid: 6)
+    warnings: list[str] = list(target_notes)
+    if zone_drop:
+        warnings.append(f"Bỏ {zone_drop} phát hiện nằm trong vùng bỏ qua.")
 
     built = []
     for t in tracks:
@@ -281,8 +378,15 @@ def build_tracks(frames: list[dict], cfgs: list[dict], profile: dict, width: int
             n = len(run)
             smoothed[pos:pos + n] = _smooth(raw[pos:pos + n], int(rule.get("smooth_window", 5)))
             pos += n
-        boxes, occ = amodal(frames_seen, smoothed, width, height, rule)
-        built.append({"t": t, "frames": frames_seen, "boxes": boxes, "occ": occ, "flags": []})
+        boxes, occ = amodal(frames_seen, smoothed, width, height, rule, [t.fill.get(f, 0.0) for f in frames_seen])
+        frames_seen, boxes, occ, bridged = bridge_gaps(frames_seen, boxes, occ, width, height, miss_gap, hidden_gap)
+        flags: list[dict] = []
+        if bridged:
+            add_flag(flags, "flag", f"Nối qua {bridged} frame model không thấy (bỏ sót hoặc bị che ngắn): kiểm tra occluded ở các frame đó.")
+        if static_track(frames_seen, boxes, start, stop, width, height):
+            add_flag(flags, "false_track", "Đứng yên gần như suốt job: có thể là người trong ảnh, poster, quảng cáo hoặc phản chiếu. "
+                                           "Bỏ tick nếu không phải người thật cần gán.")
+        built.append({"t": t, "frames": frames_seen, "boxes": boxes, "occ": occ, "flags": flags})
 
     built.sort(key=lambda b: (b["frames"][0], b["t"].tid))
     for i, b in enumerate(built, 1):
@@ -345,6 +449,7 @@ def build_tracks(frames: list[dict], cfgs: list[dict], profile: dict, width: int
             add_flag(flags, "flag", f"{sum(occ)} frame đặt occluded theo ước lượng (box toàn thân khi bị che): kiểm tra lại.")
         out.append({
             "tid": t.tid,
+            "name": t.target if t.target not in (None, "merged") else None,
             "label_id": t.label_id,
             "label_name": names.get(t.label_id, str(t.label_id)),
             "start": frames_seen[0],
@@ -355,11 +460,13 @@ def build_tracks(frames: list[dict], cfgs: list[dict], profile: dict, width: int
             "score": round(float(np.mean(t.scores)), 3),
             "shapes": shapes,
             "flags": flags,
-            "checked": len(frames_seen) >= min_len,
+            "checked": len(frames_seen) >= min_len and not any(f["code"] == "false_track" and "Đứng yên" in f["message"] for f in flags),
         })
 
     # Gợi ý "fragmentation": track mới bắt đầu gần chỗ một track khác vừa mất, nhưng chưa đủ giống để tự nối.
+    # 0.9.4: một cờ cho mỗi track, tối đa 3 ứng viên gần nhất (trước đây mỗi ứng viên một cờ, có track 7 cờ lặp chữ).
     for later in out:
+        cands = []
         for earlier in out:
             if earlier is later or earlier["label_id"] != later["label_id"]:
                 continue
@@ -368,13 +475,59 @@ def build_tracks(frames: list[dict], cfgs: list[dict], profile: dict, width: int
                 last = np.array(earlier["shapes"][-1]["points"])
                 first = np.array(later["shapes"][0]["points"])
                 h = max(last[3] - last[1], 1.0)
-                if np.linalg.norm(_center(last) - _center(first)) / h <= 1.5 * (1 + gap / 30):
-                    add_flag(later["flags"], "id_check",
-                             f"Có thể là người của track #{earlier['tid']} (mất ở frame {earlier['end']}, cách {gap} frame). Nếu đúng thì gộp thành một ID.")
+                d = float(np.linalg.norm(_center(last) - _center(first)) / h)
+                if d <= 1.5 * (1 + gap / 30):
+                    cands.append((d + gap / 60, earlier, gap))
+        if cands:
+            cands.sort(key=lambda c: c[0])
+            parts = [f"#{e['tid']} (mất ở frame {e['end']}, cách {g} frame)" for _, e, g in cands[:3]]
+            more = f" và {len(cands) - 3} track khác" if len(cands) > 3 else ""
+            add_flag(later["flags"], "id_check",
+                     f"Có thể cùng người với track {', '.join(parts)}{more}. Nếu đúng thì gộp thành một ID.")
     out.sort(key=lambda x: (x["start"], x["tid"]))
     if not out:
         warnings.append("Không tìm thấy đối tượng nào trong đoạn frame đã chọn.")
     return {"tracks": out, "warnings": warnings, "start": start, "stop": stop}
+
+
+def bridge_gaps(frames: list[int], boxes: np.ndarray, occ: list[bool], width: int, height: int,
+                miss_gap: int, hidden_gap: int) -> tuple[list[int], np.ndarray, list[bool], int]:
+    """Nối các khoảng ngắn trong một track (0.9.4).
+
+    - Khoảng <= miss_gap frame: model bỏ sót, nối bằng nội suy; occluded theo hai đầu.
+    - Khoảng <= hidden_gap frame: bị che hẳn một lúc rồi hiện lại đúng chỗ, giữ box nội suy và đặt occluded
+      (guideline cuboid: tối đa 6 keyframe). Mặc định 0: theo MOT, bị che hẳn thì outside.
+    - Đang ở mép ảnh rồi mất hơn 1 frame: là ra khỏi khung, luôn outside, không nối.
+    """
+    if len(frames) < 2:
+        return frames, boxes, occ, 0
+    nf, nb, no, bridged = [frames[0]], [boxes[0]], [occ[0]], 0
+    for i in range(1, len(frames)):
+        gap = frames[i] - frames[i - 1] - 1
+        # Đang ở mép ảnh rồi mất hơn 1 frame: là đi ra khỏi khung (outside), không nối.
+        leaving = G.touches_border(boxes[i - 1], width, height, 2) and gap > 1
+        if 0 < gap and not leaving and (gap <= miss_gap or gap <= hidden_gap):
+            for k in range(1, gap + 1):
+                u = k / (gap + 1)
+                nf.append(frames[i - 1] + k)
+                nb.append(_interp(boxes[i - 1], boxes[i], u))
+                no.append(gap > miss_gap or occ[i - 1] or occ[i])
+            bridged += gap
+        nf.append(frames[i])
+        nb.append(boxes[i])
+        no.append(occ[i])
+    return nf, np.array(nb), no, bridged
+
+
+def static_track(frames: list[int], boxes: np.ndarray, start: int, stop: int, width: int, height: int) -> bool:
+    """Track có mặt >= 60% đoạn và gần như không nhúc nhích: thường là ảnh người trên poster / quảng cáo / gương."""
+    span = stop - start + 1
+    if span < 30 or len(frames) < 0.6 * span:
+        return False
+    c = np.stack([(boxes[:, 0] + boxes[:, 2]) / 2, (boxes[:, 1] + boxes[:, 3]) / 2], 1)
+    diag = float(np.hypot(width, height))
+    hs = boxes[:, 3] - boxes[:, 1]
+    return float(c.std(axis=0).max()) < 0.004 * diag and float(hs.std()) < 0.03 * max(float(hs.mean()), 1.0)
 
 
 def video_dets(raw: list[dict], image: np.ndarray, cfgs: list[dict]) -> list[dict]:

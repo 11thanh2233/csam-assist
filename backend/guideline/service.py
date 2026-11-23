@@ -70,6 +70,7 @@ class GuidelineService:
         run_id = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
         run = {
             "id": run_id, "created": time.time(), "status": "scanning", "title": title[:120], "purpose": purpose.strip()[:600],
+            "extra_terms": [" ".join(t.split())[:40] for t in extra_terms][:40],
             "job": job, "labels": [{"id": l.get("id"), "name": l["name"], "type": l.get("type") or "any"} for l in labels],
             "summary": None, "questions": [], "answers": {}, "findings": [], "llm": {}, "warnings": [],
             "markdown": "", "approved": None, "lessons_used": [], "send_images": bool(send_images),
@@ -171,7 +172,8 @@ class GuidelineService:
     def _rebuild_questions(self, run: dict) -> None:
         """Bộ câu hỏi phụ thuộc bài toán: đổi bài toán (ví dụ sang keypoint) thì hỏi lại cho đúng."""
         chosen = run.get("answers", {}).get("task_type")
-        run["questions"] = D.build_questions(run["summary"], run["labels"], run["job"].get("mode", ""), self.lib, chosen)
+        run["questions"] = D.build_questions(run["summary"], run["labels"], run["job"].get("mode", ""), self.lib, chosen,
+                                             purpose=" ".join([run.get("purpose") or ""] + list(run.get("extra_terms") or [])))
         run["answers"] = {k: v for k, v in run.get("answers", {}).items() if any(q["key"] == k for q in run["questions"])}
 
     def draft(self, run_id: str) -> dict:
@@ -385,6 +387,25 @@ class GuidelineService:
                            "attributes": [a["name"] for a in s["attributes"]]}
         return {"total": len(plan["labels"]), "missing": [brief(s) for s in plan["missing"]], "notes": plan["notes"]}
 
+    def _effects(self, run: dict, q: dict) -> dict:
+        """Mỗi lựa chọn của câu hỏi làm bản nháp thêm / đổi dòng nào (0.9.4): soạn thử với từng lựa chọn rồi so dòng."""
+        if q["key"] == "task_type" or len(q.get("options") or []) < 2 or not run.get("summary"):
+            return {}
+        texts = {}
+        try:
+            for opt in q["options"]:
+                trial = dict(run, answers=dict(run.get("answers", {}), **{q["key"]: opt["id"]}))
+                md, _ = D.render_markdown(trial, self.lib)
+                texts[opt["id"]] = [ln.strip() for ln in md.splitlines() if ln.strip()]
+        except Exception:  # noqa: BLE001 - phần xem trước không được làm hỏng bản nháp
+            return {}
+        common = set.intersection(*(set(v) for v in texts.values())) if texts else set()
+        out = {}
+        for oid, lines in texts.items():
+            own = [ln.lstrip("-*# ").strip() for ln in lines if ln not in common]
+            out[oid] = [ln[:180] for ln in own if ln][:3]
+        return out if any(out.values()) else {}
+
     # ---------------------------------------------------------------- xem --
     def view(self, run: dict) -> dict:
         s = run.get("summary") or {}
@@ -396,7 +417,8 @@ class GuidelineService:
                                               "truncated_pct", "tiny_pct", "instances_per_image")},
             "concepts": [c for c in s.get("concepts", []) if c["instances"]][:40],
             "cases": s.get("cases", []),
-            "questions": [dict(q, answer=run["answers"].get(q["key"])) for q in run.get("questions", [])],
+            "questions": [dict(q, answer=run["answers"].get(q["key"]), effects=self._effects(run, q))
+                          for q in run.get("questions", [])],
             "findings": run.get("findings", []), "warnings": run.get("warnings", []),
             "markdown": run.get("approved") or run.get("markdown", ""), "approved": run.get("approved") is not None,
             "lessons_used": lessons, "llm": self.llm_info(run.get("send_images", False)),

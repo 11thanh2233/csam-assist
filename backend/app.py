@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import shutil
+import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -32,7 +33,7 @@ from .guideline.page import PAGE as GUIDELINE_PAGE
 from .i18n import error_code, install_log_filter, set_lang, tr, translate_obj, translate_page, _lang
 from .guideline.service import GuidelineService
 from .learning import Learner, apply_learned
-from .profiles import ProfileStore, resolve_labels
+from .profiles import ProfileStore, norm, resolve_labels
 from .runtime_tools import EngineProxy, IdleWatcher, gpu_info, warmup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -51,6 +52,7 @@ class Runtime:
     trainer: Any = None
     video: Optional[LazyEngine] = None   # SAM3 Video, chỉ nạp khi người dùng bật
     cache: "OrderedDict[str, tuple[np.ndarray, Any]]" = OrderedDict()
+    cancelled: set = set()               # phiên SAM3 Video panel đã bỏ cuộc (0.9.4)
 
 
 rt = Runtime()
@@ -145,10 +147,31 @@ async def language(request, call_next):
         _lang.reset(token)
 
 
+def is_cuda_fault(exc: BaseException) -> bool:
+    """Lỗi làm hỏng hẳn GPU của tiến trình (illegal memory access...): mọi lệnh GPU sau đó đều lỗi."""
+    text = f"{type(exc).__name__}: {exc}"
+    return "AcceleratorError" in text or "CUDA error" in text or "cudaError" in text
+
+
+def restart_after_cuda_fault() -> None:
+    """Thoát tiến trình để app desktop tự bật lại backend (tự bật lại khi backend tắt bất thường)."""
+    import os
+    import threading
+
+    log.error("GPU gặp lỗi không phục hồi được trong tiến trình này: backend tự thoát để được bật lại.")
+    threading.Timer(1.5, lambda: os._exit(3)).start()
+
+
 @app.exception_handler(Exception)
 async def unhandled_error(_: Request, exc: Exception) -> JSONResponse:
     """Lỗi chưa lường trước: trả lý do về panel thay vì chỉ một mã 500 trống."""
     log.exception("Lỗi khi xử lý yêu cầu")
+    if is_cuda_fault(exc) and settings.auto_restart_on_gpu_fault:
+        restart_after_cuda_fault()
+        return JSONResponse(status_code=503, content={
+            "detail": "GPU gặp lỗi (CUDA). Backend đang tự khởi động lại, đợi khoảng 1 phút rồi thử lại. "
+                      "Lặp lại nhiều lần: cập nhật driver NVIDIA, tắt ép xung, đóng bớt phần mềm dùng GPU.",
+            "code": "E_GPU_FAULT"})
     return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {str(exc)[:400]}",
                                                   "code": error_code(str(exc), 500)})
 
@@ -173,6 +196,10 @@ class ResolveReq(BaseModel):
     overrides: dict[str, dict] = Field(default_factory=dict)
     use_learned: bool = True   # áp ngưỡng / chỉnh hộp tool đã học từ cách bạn sửa đề xuất
     user: str = ""             # tên đăng nhập CVAT: mỗi người một bộ "tự học" (khi nhiều người dùng chung backend)
+    project_id: Optional[int] = None   # 0.9.4: project / task của job, để dùng profile đã tạo riêng cho project
+    task_id: Optional[int] = None
+    profile_inline: Optional[dict] = None   # profile chưa lưu (bản xem trước "Thử trên frame này")
+    ignore_zones: list[list[float]] = Field(default_factory=list)   # vùng bỏ qua [x1,y1,x2,y2] (gương, quảng cáo...)
 
 
 class ProposeReq(ResolveReq):
@@ -208,6 +235,7 @@ class TrackBuildReq(ResolveReq):
     height: int
     start: int
     stop: int
+    targets: list[dict] = Field(default_factory=list)   # người bạn chọn: [{name, frame, box, label_id}] (0.9.4)
 
 
 class GuideStartReq(BaseModel):
@@ -256,6 +284,21 @@ class ImportSaveReq(BaseModel):
     analysis: dict
 
 
+class ProjectProfileReq(BaseModel):
+    labels: list[LabelIn]                  # label của task đang mở (nguồn taxonomy, không cần file JSON)
+    project_id: Optional[int] = None
+    task_id: Optional[int] = None
+    name: str = ""                         # tên project / task
+    filename: str = ""                     # guideline (tuỳ chọn)
+    data_b64: str = ""
+    use_llm: bool = False                  # cho phép gửi VĂN BẢN guideline tới LLM
+
+
+class ProjectProfileSaveReq(BaseModel):
+    profile: dict
+    guideline_id: str = ""                 # guideline đi kèm (đã đọc ở bước xem trước): lưu văn bản + checklist
+
+
 class LessonStatusReq(BaseModel):
     status: str
 
@@ -297,11 +340,29 @@ def image_state(image_b64: str) -> tuple[np.ndarray, Any]:
 
 def context(req: ResolveReq, purpose: str = "frame") -> tuple[dict, list[dict], list[dict]]:
     labels = [l.model_dump() for l in req.labels]
-    profile = rt.store.get(req.profile_id, [l["name"] for l in labels], purpose, [l["type"] for l in labels], labels)
-    cfgs = resolve_labels(profile, labels, req.overrides)
+    if req.profile_inline:
+        profile = inline_profile(req.profile_inline)
+    else:
+        profile = rt.store.get(req.profile_id, [l["name"] for l in labels], purpose, [l["type"] for l in labels], labels,
+                               project_id=req.project_id, task_id=req.task_id)
+    cfgs = resolve_labels(profile, labels, req.overrides, purpose)
     if req.use_learned and rt.learner is not None:
         apply_learned(cfgs, learner_for(req.user).for_profile(profile["id"]), req.overrides)
     return profile, labels, cfgs
+
+
+def inline_profile(data: dict) -> dict:
+    """Profile chưa lưu: chuẩn hoá như khi đọc từ file (chỉ mục theo tên)."""
+    profile = json.loads(json.dumps(data))
+    profile.setdefault("id", "preview")
+    profile.setdefault("labels", [])
+    profile.setdefault("rules", {})
+    profile.setdefault("defaults", {})
+    profile["_index"] = {}
+    for entry in profile["labels"]:
+        for key in [entry.get("name", ""), *entry.get("aliases", [])]:
+            profile["_index"][norm(key)] = entry
+    return profile
 
 
 # ------------------------------------------------------------- tự học ------
@@ -342,6 +403,7 @@ class LearnReviewReq(BaseModel):
     job_id: int
     shapes: list[dict] = Field(default_factory=list)
     tracks: list[dict] = Field(default_factory=list)
+    attr_names: dict[str, str] = Field(default_factory=dict)    # {spec_id: tên attribute}
 
 
 class LearnToggleReq(BaseModel):
@@ -366,7 +428,7 @@ def learn_events(req: LearnEventsReq) -> dict:
 @app.post("/learn/review", dependencies=[Depends(require_key)])
 def learn_review(req: LearnReviewReq) -> dict:
     """So nhãn tool đã ghi với annotation hiện tại của job (sau khi người dùng sửa), rồi học lại."""
-    return learner_for(req.user).review(req.job_id, req.shapes, req.tracks)
+    return learner_for(req.user).review(req.job_id, req.shapes, req.tracks, req.attr_names)
 
 
 @app.get("/learn/summary", dependencies=[Depends(require_key)])
@@ -611,7 +673,9 @@ def resolve(req: ResolveReq) -> dict:
         "labels": cfgs,
         # Các skeleton profile biết đặt điểm: tab Label dùng để người dùng chỉ tay khi tool không tự nhận ra label.
         "skeletons": [{"name": e["name"], "points": len(e.get("keypoints") or [])} for e in profile["labels"]
-                      if profile.get("mode") == "keypoints" and e.get("shape") == "skeleton"],
+                      if profile.get("mode") in ("keypoints", "mixed") and e.get("shape") == "skeleton"],
+        "project_profile": bool(profile.get("auto_project")),
+        "checklist": len(profile.get("checklist") or []),
         "track": {
             "profile_id": track_profile["id"],
             "title": track_profile.get("title", track_profile["id"]),
@@ -626,6 +690,8 @@ def propose(req: ProposeReq) -> dict:
     image, state = image_state(req.image_b64)
     if profile.get("mode") == "keypoints":
         result = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face)
+    elif profile.get("mode") == "mixed":
+        result = propose_mixed(req, profile, cfgs, image, state)
     else:
         custom = custom_proposals(req, profile, cfgs, image) if req.use_custom else None
         if custom:
@@ -637,7 +703,37 @@ def propose(req: ProposeReq) -> dict:
             result["custom_labels"] = sorted(custom["names"])
         else:
             result = pipeline.propose(rt.engine, state, image, profile, cfgs, req.existing)
+    if req.ignore_zones:
+        before = len(result["proposals"])
+        result["proposals"] = [p for p in result["proposals"] if not tracking.in_zones(p.get("bbox") or [0, 0, 0, 0], req.ignore_zones)]
+        if before - len(result["proposals"]):
+            result.setdefault("warnings", []).append(f"Bỏ {before - len(result['proposals'])} đề xuất nằm trong vùng bỏ qua.")
     log.info("propose: profile=%s, %d đề xuất, %.1fs", profile["id"], len(result["proposals"]), result["seconds"])
+    return result
+
+
+def propose_mixed(req: ProposeReq, profile: dict, cfgs: list[dict], image: np.ndarray, state: Any) -> dict:
+    """Profile của project: box/polygon/polyline bằng SAM3, skeleton bằng model tư thế/mặt, tag bằng luật tag ảnh."""
+    from . import tags as tagrules
+
+    started = time.time()
+    skel = [c for c in cfgs if c["shape"] == "skeleton"]
+    others = [c if c["shape"] not in ("skeleton", "tag") else dict(c, enabled=False) for c in cfgs]
+    custom = custom_proposals(req, profile, others, image) if req.use_custom else None
+    if custom:
+        done_ids = {p["label_id"] for p in custom["proposals"]} | custom["label_ids"]
+        others = [dict(c, enabled=False) if c["label_id"] in done_ids else c for c in others]
+    result = pipeline.propose(rt.engine, state, image, profile, others, req.existing)
+    if custom:
+        result["proposals"] = pipeline.finalize(result["proposals"] + custom["proposals"])
+        result["warnings"] = result.get("warnings", []) + custom["warnings"]
+        result["custom_labels"] = sorted(custom["names"])
+    if any(c["enabled"] and c["supported"] for c in skel):
+        kp = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face)
+        result["proposals"] += kp["proposals"]
+        result["warnings"] = result.get("warnings", []) + kp["warnings"]
+    result["tags"] = tagrules.suggest(image, [c for c in cfgs if c["shape"] == "tag" and c["enabled"] and c["supported"]])
+    result["seconds"] = round(time.time() - started, 2)
     return result
 
 
@@ -653,18 +749,31 @@ def custom_proposals(req: ProposeReq, profile: dict, cfgs: list[dict], image: np
         return None
     model, meta = got
     usable = set(meta["usable"])
-    targets = {c["name"]: c for c in cfgs if c["enabled"] and c["supported"] and c["shape"] == "rectangle" and c["name"] in usable}
+    # 0.9.4: model riêng tìm hộp; label polygon/mask thì SAM3 tách đúng vật trong hộp đó (nhanh hơn chạy prompt cả ảnh)
+    targets = {c["name"]: c for c in cfgs if c["enabled"] and c["supported"] and c["shape"] in ("rectangle", "polygon", "mask")
+               and c["role"] == "object" and c["name"] in usable}
     if not targets:
         return None
     from . import custom_model
 
     h, w = image.shape[:2]
     dets = []
+    state = None
     for name, box, score in custom_model.predict(model, meta, image, set(targets), 0.3):
         cfg = targets[name]
         if score < cfg["threshold"]:
             continue
-        dets.append(pipeline.Det(cfg, np.zeros((1, 1), bool), score, "custom", G.clamp_box(box, w, h)))
+        box = G.clamp_box(box, w, h)
+        mask = np.zeros((1, 1), bool)
+        if cfg["shape"] != "rectangle":
+            if state is None:
+                _, state = image_state(req.image_b64)
+            found = rt.engine.segment_box(state, box, None, 0.3, None)
+            if not found:
+                continue
+            best = max(found, key=lambda inst: G.box_iou(G.mask_bbox(inst.mask.astype(bool)) or [0, 0, 0, 0], box))
+            mask = G.clean_mask(best.mask.astype(bool))
+        dets.append(pipeline.Det(cfg, mask, score, "custom", box))
     warnings: list[str] = []
     rules = profile.get("rules", {})
     props = pipeline.objects_to_proposals(dets, w, h, rules, warnings)
@@ -703,8 +812,13 @@ def custom_add(req: CustomAddReq) -> dict:
 @app.post("/custom/info", dependencies=[Depends(require_key)])
 def custom_info(req: ResolveReq) -> dict:
     profile, _, _ = context(req)
-    return {"profile_id": profile["id"], "dataset": rt.custom.dataset_info(profile["id"]), "model": rt.custom.meta(profile["id"]),
-            "training": rt.trainer.status()}
+    from . import custom_model
+
+    meta = rt.custom.meta(profile["id"])
+    if meta and "explain" not in meta:          # model huấn luyện bằng bản cũ: giải thích lại
+        meta = dict(meta, explain=custom_model.explain(meta))
+    return {"profile_id": profile["id"], "dataset": rt.custom.dataset_info(profile["id"]), "model": meta,
+            "training": rt.trainer.status(), "has_base": bool(custom_model.base_weights())}
 
 
 @app.post("/custom/train", dependencies=[Depends(require_key)])
@@ -793,6 +907,10 @@ def _video_tracker():
             from .engines.sam3_video import Sam3VideoTracker
 
             rt.video = LazyEngine(lambda: Sam3VideoTracker(settings.hf_model, settings.device, settings.video_dtype).load(), "SAM3 Video")
+    if rt.video.engine is None and hasattr(rt.engine, "unload") and getattr(rt.engine, "name", "") != "mock":
+        # 0.9.4: hai model SAM3 cùng nằm trên GPU dễ đầy VRAM (Windows mượn RAM thường, chạy chậm hàng chục lần):
+        # nhả model gợi ý nhãn trước khi nạp SAM3 Video; lần gợi ý sau tự nạp lại.
+        rt.engine.unload("nạp SAM3 Video")
     tracker = rt.video.get()
     if tracker is None:
         raise HTTPException(status_code=400, detail=f"Không dùng được SAM3 Video: {rt.video.error}. Tool chuyển về cách theo dõi thường.")
@@ -822,15 +940,34 @@ def track_video_frames(req: TrackVideoFramesReq) -> dict:
     out = []
     try:
         for item in sorted(req.frames, key=lambda x: x.frame):
+            if req.session_id in rt.cancelled:
+                raise HTTPException(status_code=409, detail="Đã dừng theo dõi.")
             image = decode_image(item.image_b64)
             raw = tracker.add_frame(req.session_id, image)
             out.append({"frame": item.frame, "width": image.shape[1], "height": image.shape[0],
                         "dets": tracking.video_dets(raw, image, cfgs)})
+    except HTTPException:
+        tracker.end(req.session_id)
+        raise
     except Exception as exc:  # noqa: BLE001
         tracker.end(req.session_id)
         log.warning("SAM3 Video lỗi giữa chừng: %s", exc)
+        if is_cuda_fault(exc):
+            raise
         raise HTTPException(status_code=400, detail=f"SAM3 Video lỗi: {type(exc).__name__}: {str(exc)[:300]}") from exc
     return {"profile_id": profile["id"], "frames": out, "warnings": []}
+
+
+@app.post("/track/cancel", dependencies=[Depends(require_key)])
+def track_cancel(req: TrackVideoEndReq) -> dict:
+    """Panel bỏ cuộc (hết giờ, bấm Dừng): backend dừng phiên SAM3 Video ngay ở frame kế tiếp, không giữ GPU (0.9.4)."""
+    if req.session_id:
+        rt.cancelled.add(req.session_id)
+        if len(rt.cancelled) > 50:
+            rt.cancelled.pop()
+    if rt.video is not None and rt.video.engine is not None:
+        rt.video.engine.end(req.session_id)
+    return {"ok": True}
 
 
 @app.post("/track/video/end", dependencies=[Depends(require_key)])
@@ -844,9 +981,73 @@ def track_video_end(req: TrackVideoEndReq) -> dict:
 def track_build(req: TrackBuildReq) -> dict:
     """Bước 2: nối các phát hiện thành track, áp luật box/occluded/outside/keyframe của guideline."""
     profile, _, cfgs = context(req, "track")
-    result = tracking.build_tracks(req.frames, cfgs, profile, req.width, req.height, req.start, req.stop)
+    result = tracking.build_tracks(req.frames, cfgs, profile, req.width, req.height, req.start, req.stop,
+                                   targets=req.targets, zones=req.ignore_zones)
     log.info("track: profile=%s, %d track", profile["id"], len(result["tracks"]))
     return dict(result, profile_id=profile["id"])
+
+
+# ------------------------------------------------------ cuboid 3D (0.9.4) -----
+class LidarFrame(BaseModel):
+    frame: int
+    data_b64: str
+    name: str = ""
+
+
+class LidarDetectReq(ResolveReq):
+    frames: list[LidarFrame] = Field(default_factory=list, max_length=8)
+
+
+class LidarTrackReq(ResolveReq):
+    frames: list[dict]          # [{frame, objects}] từ /lidar/detect
+
+
+def _lidar_setup(req: ResolveReq) -> tuple[dict, dict, dict, dict]:
+    from . import lidar
+
+    labels = [l.model_dump() for l in req.labels]
+    profile = inline_profile(req.profile_inline) if req.profile_inline else rt.store.get(
+        req.profile_id, [l["name"] for l in labels], "frame", [l["type"] for l in labels], labels, project_id=req.project_id, task_id=req.task_id)
+    rule = dict((profile.get("rules") or {}).get("lidar") or {})
+    table = rule.get("sizes") or lidar.DEFAULT_SIZES
+    wanted = {}
+    for l in labels:
+        if (l.get("type") or "any").lower() in ("cuboid", "any"):
+            key = lidar.class_key(l["name"])
+            if key in table:
+                wanted[key] = l["id"]
+    names = {l["id"]: l["name"] for l in labels}
+    return profile, rule, {k: [tuple(map(tuple, r)) for r in v] for k, v in table.items()}, {"wanted": wanted, "names": names}
+
+
+@app.post("/lidar/detect", dependencies=[Depends(require_key)])
+def lidar_detect(req: LidarDetectReq) -> dict:
+    """Cuboid đề xuất cho từng frame point cloud (CVAT 3D)."""
+    from . import lidar
+
+    profile, rule, table, info = _lidar_setup(req)
+    if not info["wanted"]:
+        raise HTTPException(status_code=400, detail="Task không có label cuboid nào khớp bảng kích thước (Car, Truck, Bus, Pedestrian...). "
+                                                    "Tạo profile cho project kèm guideline có bảng kích thước.")
+    out, warnings = [], []
+    for item in sorted(req.frames, key=lambda x: x.frame):
+        try:
+            points = lidar.read_points(base64.b64decode(item.data_b64.split(",", 1)[-1]), item.name)
+        except (ValueError, KeyError, IndexError) as exc:
+            raise HTTPException(status_code=400, detail=f"Không đọc được point cloud của frame {item.frame}: {exc}") from exc
+        res = lidar.detect(points, info["wanted"], table, rule)
+        out.append({"frame": item.frame, "objects": res["objects"], "points": int(len(points))})
+        warnings += [w for w in res["warnings"] if w not in warnings]
+    return {"profile_id": profile["id"], "frames": out, "warnings": warnings}
+
+
+@app.post("/lidar/track", dependencies=[Depends(require_key)])
+def lidar_track(req: LidarTrackReq) -> dict:
+    from . import lidar
+
+    profile, rule, _, info = _lidar_setup(req)
+    res = lidar.build_tracks(req.frames, rule, info["names"])
+    return dict(res, profile_id=profile["id"])
 
 
 # ------------------------------------------------------- soạn guideline -----
@@ -998,6 +1199,96 @@ def guideline_import_preview(req: ImportPreviewReq) -> dict:
         "profile_id": profile["id"] if profile else None, "profile_exists": paths["profile"].exists(),
         "llm": rt.guide.llm_info(False),
     }
+
+
+# ------------------------------------------------ profile của project (0.9.4) ---
+@app.post("/profile/project/preview", dependencies=[Depends(require_key)])
+def project_profile_preview(req: ProjectProfileReq) -> dict:
+    """Dựng profile cho project từ label của task (+ guideline nếu có). Chưa ghi gì: người dùng xem, thử rồi mới lưu."""
+    from . import autoprofile
+    from .guideline import importer
+
+    labels = [l.model_dump() for l in req.labels]
+    if not labels:
+        raise HTTPException(status_code=400, detail="Task chưa có label nào.")
+    markdown, analysis, notes = "", {}, []
+    if req.data_b64 and req.filename:
+        prompts = known_prompts()
+        try:
+            data = base64.b64decode(req.data_b64.split(",", 1)[-1], validate=False)
+            markdown = importer.read_document(req.filename, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        analysis = importer.analyze(markdown, req.filename, lambda name: prompts.get(norm(name)))
+        paths = _import_paths(analysis["id"])
+        paths["pending"].parent.mkdir(parents=True, exist_ok=True)
+        paths["pending"].write_text(markdown, encoding="utf-8")
+    llm_data: dict = {}
+    if markdown and req.use_llm and rt.guide.llm is not None:
+        try:
+            llm_data = autoprofile.llm_extract(rt.guide.llm, markdown, labels)
+            notes.append("LLM đã đọc guideline để điền prompt, định nghĩa, luật attribute và điểm skeleton.")
+        except Exception as exc:  # noqa: BLE001 - LLM lỗi thì vẫn dựng bằng luật
+            notes.append(f"LLM lỗi, chỉ dùng phần đọc bằng luật: {str(exc)[:200]}")
+    elif markdown and req.use_llm:
+        notes.append("Backend chưa bật AI soạn guideline (Cài đặt của app): tool đọc guideline bằng luật.")
+    prompts = known_prompts()
+    built = autoprofile.build(labels, rt.store.profiles, project={"project_id": req.project_id, "task_id": req.task_id,
+                                                                  "name": req.name},
+                              markdown=markdown, analysis=analysis, llm_data=llm_data,
+                              prompt_lookup=lambda name: prompts.get(norm(name)))
+    profile = built["profile"]
+    task_names = {norm(l["name"]) for l in labels}
+    extra = [l["name"] for l in analysis.get("labels") or [] if norm(l["name"]) not in task_names]
+    if extra:
+        built["warnings"].append(f"Guideline có {len(extra)} label task chưa có ({', '.join(extra[:8])}). "
+                                 "Thêm vào task bằng nút 'Thêm label còn thiếu' sau khi lưu.")
+    return {"profile": profile, "rows": built["rows"], "warnings": built["warnings"], "notes": notes,
+            "guideline": {"id": analysis.get("id", ""), "title": analysis.get("title", ""), "file": req.filename,
+                          "checklist": len(analysis.get("checklist") or []), "issue_types": len(analysis.get("issue_types") or [])}
+            if analysis else None,
+            "exists": profile["id"] in rt.store.profiles, "llm": rt.guide.llm_info(False)}
+
+
+@app.post("/profile/project/save", dependencies=[Depends(require_key)])
+def project_profile_save(req: ProjectProfileSaveReq) -> dict:
+    import yaml
+
+    from .guideline import importer
+
+    profile = {k: v for k, v in req.profile.items() if not str(k).startswith("_")}
+    pid = str(profile.get("id", ""))
+    if not re.fullmatch(r"proj_[pt]\w{1,40}", pid) or profile.get("mode") != "mixed" or not profile.get("auto_project"):
+        raise HTTPException(status_code=400, detail="Profile của project không hợp lệ.")
+    if req.guideline_id:
+        guide_id = _safe_id(req.guideline_id)
+        paths = _import_paths(guide_id)
+        if paths["pending"].exists():
+            for key in ("reference", "record"):
+                paths[key].parent.mkdir(parents=True, exist_ok=True)
+            markdown = paths["pending"].read_text(encoding="utf-8")
+            analysis = importer.analyze(markdown, profile.get("guideline") or guide_id, lambda name: None)
+            analysis["id"] = guide_id
+            paths["reference"].write_text(f"<!-- Nạp kèm profile {pid}. -->\n\n" + markdown, encoding="utf-8")
+            paths["record"].write_text(yaml.safe_dump(importer.knowledge_record(analysis), allow_unicode=True, sort_keys=False, width=140),
+                                       encoding="utf-8")
+            paths["pending"].unlink(missing_ok=True)
+            rt.guide.lib.reload()
+    path = settings.profiles_dir / f"{pid}.yaml"
+    header = ("# Profile của project, tạo ở tab Guideline của panel (0.9.4). Tạo lại sẽ ghi đè file này.\n"
+              "# Chỉnh prompt / ngưỡng ở tab Label; chỉnh luật ở đây.\n")
+    path.write_text(header + yaml.safe_dump(profile, allow_unicode=True, sort_keys=False, width=140), encoding="utf-8")
+    rt.store.reload()
+    return {"profile_id": pid, "file": str(path)}
+
+
+@app.post("/profile/project/current", dependencies=[Depends(require_key)])
+def project_profile_current(req: ProjectProfileReq) -> dict:
+    own = rt.store.for_project(req.project_id, req.task_id)
+    if own is None:
+        return {"profile": None}
+    return {"profile": {"id": own["id"], "title": own.get("title"), "guideline": own.get("guideline") or "",
+                        "labels": len(own.get("labels") or []), "file": own.get("_path")}}
 
 
 @app.post("/guideline/import/save", dependencies=[Depends(require_key)])

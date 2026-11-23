@@ -59,7 +59,7 @@ async function main() {
     await until(() => !doc.getElementById('todoBanner').classList.contains('hidden'), 'báo cần cập nhật PyTorch');
     assert.match(doc.getElementById('todoBanner').textContent, /PyTorch 2\.14\.1, máy đang có 2\.13\.0/);
     assert.match(doc.getElementById('comps').textContent, /Có bản mới/);
-    assert.strictEqual(doc.querySelectorAll('#comps .ccard').length, 4, 'mỗi thành phần một thẻ');
+    assert.strictEqual(doc.querySelectorAll('#comps .ccard').length, 5, 'mỗi thành phần một thẻ (0.9.4: thêm bộ phát hiện)');
     await until(() => /Có bản mới 99\.0\.0/.test(doc.getElementById('updDetail').textContent), 'thông tin bản mới');
     assert.ok(doc.querySelector('#updDetail .notes b'), 'ghi chú bản mới hiện dạng định dạng');
     assert.ok(!doc.getElementById('updBadge').classList.contains('hidden'));
@@ -77,11 +77,11 @@ async function main() {
 
     // Trình cài: bước quét liệt kê từng thành phần, bước chọn chỉ chọn sẵn cái cần
     win.openWizard(1);
-    await until(() => doc.querySelectorAll('#scanBox tr').length === 4, 'kết quả quét');
+    await until(() => doc.querySelectorAll('#scanBox tr').length === 5, 'kết quả quét');
     assert.match(doc.getElementById('scanBox').textContent, /cần cập nhật/);
     assert.match(doc.getElementById('scanBox').textContent, /đã có, đúng bản|chưa có/);
     win.go(4);
-    await until(() => doc.querySelectorAll('#pick input[data-k]').length === 4, 'bảng chọn thành phần');
+    await until(() => doc.querySelectorAll('#pick input[data-k]').length === 5, 'bảng chọn thành phần');
     const torch = doc.querySelector('#pick input[data-k="torch"]');
     assert.ok(torch.checked && torch.disabled, 'PyTorch bắt buộc cập nhật: chọn sẵn, không bỏ được');
     await until(() => /Tải về khoảng/.test(doc.getElementById('estimate').textContent), 'ước lượng dung lượng');
@@ -90,6 +90,7 @@ async function main() {
     assert.strictEqual(doc.querySelectorAll('#stepbar li.done').length, 3, 'bước 4: ba bước trước đã xong');
     assert.match(doc.querySelector('#stepbar li[aria-current="step"]').textContent, /Thành phần/);
     assert.ok(doc.querySelectorAll('#machine .check').length >= 2, 'kiểm tra máy dạng danh sách');
+    assert.match(doc.getElementById('machineSys').textContent, /Ổ đĩa trống/, '0.9.4: bước 1 có kiểm tra ổ đĩa, RAM...');
     win.go(6);
     assert.strictEqual(doc.querySelectorAll('#stepbar li.done').length, 5);
     assert.match(doc.querySelector('.step[data-step="6"]').textContent, /Sẵn sàng/);
@@ -139,6 +140,7 @@ async function main() {
     // 0.9: trang Hỗ trợ có khung xem nhật ký, lọc chỉ lỗi
     win.goPage('support');
     assert.match(doc.getElementById('selftestD').textContent, /Mọi thứ hoạt động/, 'trang Hỗ trợ hiện kết quả kiểm tra lần cuối');
+    await until(() => /Ổ đĩa trống/.test(doc.getElementById('machineD').textContent), '0.9.4: trang Hỗ trợ tự kiểm tra máy');
     await win.runSelftest('selftestD', doc.getElementById('selftestBtn'));
     assert.match(doc.getElementById('toasts').textContent, /Kiểm tra nhanh: mọi thứ hoạt động/);
     await until(() => doc.querySelectorAll('#logView div').length >= 3, 'nhật ký backend');

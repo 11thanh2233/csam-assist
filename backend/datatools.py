@@ -62,7 +62,7 @@ def rank(frames: list[dict], k: Optional[int] = None) -> list[dict]:
         chosen.append(i)
         reasons = []
         if dist[i] / max(scale, 1e-6) > 0.6 or not np.isfinite(dist[i]):
-            reasons.append("khung cảnh khác các frame đã làm")
+            reasons.append("khung cảnh khác các frame đã làm" if len(anchors) else "khung cảnh khác phần lớn job")
         if frames[i].get("flagged"):
             reasons.append(f"{frames[i]['flagged']} đề xuất có cờ")
         if frames[i]["features"]["bright"] < 0.25:

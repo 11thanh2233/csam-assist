@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -28,6 +29,7 @@ from . import geometry as G
 log = logging.getLogger("sam3-assist")
 MIN_BOXES = 30
 MIN_PRECISION, MIN_RECALL = 0.7, 0.6
+MIN_STEPS = 600          # số bước huấn luyện tối thiểu, dù bộ dữ liệu ít ảnh
 
 
 def _slug(text: str) -> str:
@@ -189,13 +191,37 @@ class Trainer:
         return self.models[profile_id]
 
 
+def base_weights() -> str:
+    """Trọng số khởi đầu (Faster R-CNN đã học trên bộ ảnh COCO). Không có thì model học từ con số 0."""
+    base = os.getenv("SAM3_DETECTOR_BASE", "")
+    return base if base and Path(base).exists() else ""
+
+
+def explain(meta: dict) -> list[str]:
+    """Giải thích kết quả cho người dùng (0.9.4): vì sao class nào đó 0% hay chưa dùng được."""
+    notes = []
+    metrics, counts = meta.get("metrics") or {}, meta.get("counts") or {}
+    zero = [c for c in meta.get("classes", []) if not (metrics.get(c) or {}).get("recall")]
+    if not meta.get("base"):
+        notes.append("Model học từ con số 0 vì máy chưa có trọng số khởi đầu: cần hàng nghìn hộp mới ra kết quả, nên thường ra 0%. "
+                     "Cài thành phần 'Trọng số khởi đầu cho model riêng' ở trang Thành phần của app rồi huấn luyện lại.")
+    few = [c for c in meta.get("classes", []) if counts.get(c, 0) < MIN_BOXES]
+    if few:
+        notes.append(f"Class chưa đủ {MIN_BOXES} hộp nên chưa dùng được: {', '.join(few[:8])}. Thu thập thêm từ các job đã duyệt.")
+    if zero and meta.get("base") and meta.get("val_images", 0) < 5:
+        notes.append(f"Chỉ có {meta.get('val_images')} ảnh để kiểm: con số chưa đáng tin. Thu thập thêm job rồi huấn luyện lại.")
+    if meta.get("usable"):
+        notes.append(f"Dùng được cho: {', '.join(meta['usable'])}. Các class khác SAM3 vẫn làm như bình thường.")
+    return notes
+
+
 def _build(num_classes: int, torch):
     from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_fpn
     from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
     model = fasterrcnn_mobilenet_v3_large_fpn(weights=None, weights_backbone=None, num_classes=91, min_size=512, max_size=896)
-    base = os.getenv("SAM3_DETECTOR_BASE", "")
-    if base and Path(base).exists():
+    base = base_weights()
+    if base:
         state = torch.load(base, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=False)
         log.info("Model riêng: khởi đầu từ trọng số %s", base)
@@ -215,18 +241,30 @@ def train(store: CustomStore, profile_id: str, epochs: int, device: str, stop: t
     val, tr = index[:n_val], index[n_val:]
     folder = store.dir(profile_id) / "data"
 
-    def load(item):
+    def load(item, flip: bool = False):
         img = cv2.cvtColor(cv2.imread(str(folder / item["file"])), cv2.COLOR_BGR2RGB)
         boxes = [b for b in item["boxes"] if b["bbox"][2] - b["bbox"][0] > 1 and b["bbox"][3] - b["bbox"][1] > 1]
-        t = {"boxes": torch.tensor([b["bbox"] for b in boxes], dtype=torch.float32).reshape(-1, 4),
+        xyxy = [list(b["bbox"]) for b in boxes]
+        if flip:      # lật ngang: gấp đôi dữ liệu cho bộ ít ảnh (xe, người... không đổi nghĩa khi lật)
+            w = img.shape[1]
+            img = np.ascontiguousarray(img[:, ::-1])
+            xyxy = [[w - x2, y1, w - x1, y2] for x1, y1, x2, y2 in xyxy]
+        t = {"boxes": torch.tensor(xyxy, dtype=torch.float32).reshape(-1, 4),
              "labels": torch.tensor([cid[b["label"]] for b in boxes], dtype=torch.int64)}
         return torch.from_numpy(img).permute(2, 0, 1).float() / 255.0, t
 
     model = _build(len(classes) + 1, torch).to(device)
     params = [p for p in model.parameters() if p.requires_grad]
-    opt = torch.optim.SGD(params, lr=0.01, momentum=0.9, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, epochs))
     batch = 4 if device == "cuda" else 2
+    # 0.9.4: bộ ít ảnh (vd 40 ảnh) với 12 vòng chỉ được ~120 bước, model chưa kịp học (đúng 0%).
+    # Đảm bảo tối thiểu MIN_STEPS bước, thêm warmup cho ổn định khi học từ đầu.
+    epochs = max(epochs, math.ceil(MIN_STEPS / max(1, math.ceil(len(tr) / batch))))
+    steps_total = epochs * max(1, math.ceil(len(tr) / batch))
+    opt = torch.optim.SGD(params, lr=0.01, momentum=0.9, weight_decay=1e-4)
+    warm = min(100, steps_total // 10 + 1)
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda k: (k + 1) / warm if k < warm else 0.5 * (1 + math.cos(math.pi * (k - warm) / max(1, steps_total - warm))))
+    progress(epochs=epochs)
     for epoch in range(epochs):
         if stop.is_set():
             break
@@ -236,7 +274,7 @@ def train(store: CustomStore, profile_id: str, epochs: int, device: str, stop: t
         for i in range(0, len(tr), batch):
             if stop.is_set():
                 break
-            imgs, targets = zip(*[load(it) for it in tr[i:i + batch]])
+            imgs, targets = zip(*[load(it, random.random() < 0.5) for it in tr[i:i + batch]])
             imgs = [x.to(device) for x in imgs]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
             losses = model(imgs, targets)
@@ -245,8 +283,8 @@ def train(store: CustomStore, profile_id: str, epochs: int, device: str, stop: t
             loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 10.0)
             opt.step()
-            total, steps = total + float(loss), steps + 1
-        sched.step()
+            sched.step()
+            total, steps = total + loss.item(), steps + 1
         progress(epoch=epoch + 1, loss=round(total / max(1, steps), 4), message=f"Vòng {epoch + 1}/{epochs}")
     progress(message="Đang đánh giá trên ảnh giữ lại…")
     model.eval()
@@ -263,7 +301,8 @@ def train(store: CustomStore, profile_id: str, epochs: int, device: str, stop: t
     usable = [c for c in classes if counts.get(c, 0) >= MIN_BOXES and metrics[c]["precision"] >= MIN_PRECISION and metrics[c]["recall"] >= MIN_RECALL]
     meta = {"profile_id": profile_id, "classes": classes, "metrics": metrics, "usable": usable, "counts": counts,
             "train_images": len(tr), "val_images": len(val), "epochs": epochs, "device": device,
-            "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"), "base": bool(os.getenv("SAM3_DETECTOR_BASE"))}
+            "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"), "base": bool(base_weights())}
+    meta["explain"] = explain(meta)
     torch.save(model.state_dict(), store.model_path(profile_id))
     (store.dir(profile_id) / "model.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     return meta

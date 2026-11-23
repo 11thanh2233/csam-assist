@@ -63,6 +63,9 @@ def detect(engine: Engine, state: Any, cfgs: list[dict], clean: bool = True, war
                 if np.count_nonzero(mask) < cfg["min_area_px"]:
                     continue
                 box = G.mask_bbox(mask)
+                min_side = cfg.get("min_side_px")
+                if box is not None and min_side and cfg["role"] == "object" and max(box[2] - box[0], box[3] - box[1]) < float(min_side):
+                    continue   # guideline: nhỏ hơn mức này thì không gán (ví dụ đèn, biển dưới 8 px)
                 if box is not None:
                     dets.append(Det(cfg, mask, float(inst.score), prompt, box))
     return dets
@@ -217,7 +220,8 @@ def auto_attributes(dets: list[Det], width: int, height: int, rules: dict) -> di
     min_ioa = float(rule.get("min_overlap", (rules.get("occluded") or {}).get("min_overlap", 0.15)))
     out: dict[int, dict[str, str]] = {}
     for i, det in enumerate(dets):
-        names = {_attr_key(a): a for a in det.cfg.get("attributes", [])}
+        off = {_attr_key(a) for a in det.cfg.get("attr_off") or []}   # tự học: bạn hay đổi giá trị tool điền -> thôi tự điền
+        names = {_attr_key(a): a for a in det.cfg.get("attributes", []) if _attr_key(a) not in off}
         got: dict[str, str] = {}
         for key, attr in names.items():
             if key in TRUNCATED_NAMES:
@@ -668,6 +672,93 @@ def mark_existing_duplicates(proposals: list[dict], existing: list[dict], iou_th
                 break
 
 
+# ------------------------------------------------ luật attribute đo từ ảnh (0.9.4) ---
+def fisheye_circle(image: np.ndarray) -> Optional[tuple[float, float, float]]:
+    """Ảnh fisheye: vòng ảnh sáng giữa bốn góc tối. Trả (cx, cy, bán kính) hoặc None nếu không phải fisheye."""
+    h, w = image.shape[:2]
+    gray = image.mean(axis=2) if image.ndim == 3 else image.astype(float)
+    k = max(4, min(h, w) // 25)
+    corners = [gray[:k, :k], gray[:k, -k:], gray[-k:, :k], gray[-k:, -k:]]
+    center = gray[h // 3: 2 * h // 3, w // 3: 2 * w // 3]
+    if not all(float(c.mean()) < 18 for c in corners) or float(center.mean()) < 40:
+        return None
+    lit = gray > 25
+    rows = np.where(lit.any(axis=1))[0]
+    cols = np.where(lit.any(axis=0))[0]
+    if not len(rows) or not len(cols):
+        return None
+    cx, cy = (cols[0] + cols[-1]) / 2, (rows[0] + rows[-1]) / 2
+    radius = max(cols[-1] - cols[0], rows[-1] - rows[0]) / 2
+    return float(cx), float(cy), float(radius)
+
+
+def light_color(image: np.ndarray, box: list[float]) -> Optional[str]:
+    """Màu đang sáng của cụm đèn: điểm ảnh rất sáng và đậm màu trong hộp. Không có thì 'off'."""
+    x1, y1, x2, y2 = [int(round(v)) for v in box]
+    crop = image[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+    if crop.size == 0 or crop.ndim != 3:
+        return None
+    hsv = cv2.cvtColor(np.ascontiguousarray(crop.astype(np.uint8)), cv2.COLOR_RGB2HSV)
+    lit = (hsv[..., 2] >= 170) & (hsv[..., 1] >= 90)
+    if np.count_nonzero(lit) < max(3, crop.shape[0] * crop.shape[1] * 0.01):
+        return "off"
+    hue = hsv[..., 0][lit].astype(float) * 2   # OpenCV: 0..180 -> độ
+    votes = {"red": np.count_nonzero((hue < 20) | (hue > 330)), "yellow": np.count_nonzero((hue >= 20) & (hue < 70)),
+             "green": np.count_nonzero((hue >= 70) & (hue < 200))}
+    return max(votes, key=votes.get)
+
+
+def _pick_value(values: list[str], want: str) -> Optional[str]:
+    """Giá trị của attribute khớp ý 'true'/'false'/'red'... ('yes' cho 'true', 'Red' cho 'red')."""
+    aliases = {"true": ("true", "yes", "1", "co"), "false": ("false", "no", "0", "khong")}.get(want, (want,))
+    for v in values:
+        if norm(str(v)) in aliases:
+            return str(v)
+    return None
+
+
+def apply_attr_rules(proposals: list[dict], image: np.ndarray, cfgs: list[dict]) -> None:
+    """Luật attribute của profile project cần ảnh: vùng viền fisheye, màu đèn. Giá trị tự điền ghi vào auto_attributes."""
+    by_id = {c["label_id"]: c for c in cfgs}
+    circle = None
+    checked = False
+    for p in proposals:
+        cfg = by_id.get(p.get("label_id")) or {}
+        rules = cfg.get("attr_rules") or {}
+        if not rules:
+            continue
+        values = {a["name"]: [str(v) for v in a.get("values") or []] for a in cfg.get("label_attributes") or []}
+        box = p.get("bbox")
+        filled = dict(p.get("auto_attributes") or {})
+        attrs = dict(p.get("attributes") or {})
+        review = []
+        for name, rule in rules.items():
+            vals = values.get(name, [])
+            value = None
+            if rule == "fisheye_edge" and box:
+                if not checked:
+                    circle, checked = fisheye_circle(image), True
+                if circle:
+                    cx, cy, r = circle
+                    bx, by = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+                    edge = ((bx - cx) ** 2 + (by - cy) ** 2) ** 0.5 > 0.8 * r
+                    value = _pick_value(vals, "true" if edge else "false") if vals else ("true" if edge else "false")
+            elif rule == "light_color" and box:
+                color = light_color(image, box)
+                value = _pick_value(vals, color) if color else None
+            elif rule in ("manual", "unknown_default"):
+                review.append(name)
+            key = norm(name)
+            if value is not None and key not in attrs:
+                attrs[key] = value
+                filled[key] = value
+        if filled:
+            p["auto_attributes"] = filled
+            p["attributes"] = attrs
+        if review:
+            p["review_attributes"] = review
+
+
 def finalize(proposals: list[dict]) -> list[dict]:
     order = {"polygon": 0, "mask": 0, "polyline": 1, "rectangle": 2}
     proposals.sort(key=lambda p: (order.get(p["type"], 3), p["label_name"], -p["score"]))
@@ -724,6 +815,7 @@ def propose(
         elif alt:
             warnings.append(f"'{alt['name']}' được suy ra từ vùng direct; hãy bật cả label direct.")
         mark_existing_duplicates(proposals, existing, float(dedup.get("existing_iou", 0.7)))
+    apply_attr_rules(proposals, image, cfgs)
 
     return {
         "width": width,

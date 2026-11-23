@@ -29,6 +29,9 @@ DISCOVERY = [
     ("billboard", "thing"), ("screen", "thing"), ("poster", "thing"), ("statue", "thing"),
     ("animal", "thing"), ("stroller", "thing"), ("wheelchair", "thing"), ("bench", "thing"), ("trash can", "thing"),
     ("fire hydrant", "thing"), ("face", "thing"),
+    # 0.9.4: vật hay gặp ngoài đường phố (trong xe, trong nhà, kho), để task chỉ có label tạm vẫn được đề xuất class
+    ("hand", "thing"), ("phone", "thing"), ("bag", "thing"), ("bottle", "thing"), ("box", "thing"),
+    ("chair", "thing"), ("seat", "thing"), ("steering wheel", "thing"), ("dog", "thing"), ("boat", "thing"),
     ("road", "stuff"), ("sidewalk", "stuff"), ("building", "stuff"), ("wall", "stuff"), ("fence", "stuff"),
     ("tree", "stuff"), ("bush", "stuff"), ("grass", "stuff"), ("sky", "stuff"), ("water", "stuff"),
     ("bridge", "stuff"), ("tunnel", "stuff"),

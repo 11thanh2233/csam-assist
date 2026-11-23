@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SAM3 CVAT Assist
 // @namespace    sam3-cvat-assist
-// @version      0.9.3
+// @version      0.9.4
 // @description  Gợi ý nhãn bằng SAM3 ngay trên giao diện CVAT: xem trước, duyệt, rồi ghi vào job. Không cần import/export file.
 // ---- Trang CVAT mà tool chạy trên đó -------------------------------------------------------
 // CVAT của khoá học:
@@ -45,7 +45,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.9.3';
+  const VERSION = '0.9.4';
   const DEFAULTS = {
     backendUrl: 'http://127.0.0.1:8765',
     apiKey: '',
@@ -59,6 +59,7 @@
     batchSkip: 'label',        // 'label': frame đã có label đó | 'frame': frame đã có bất kỳ nhãn nào | 'none': không bỏ qua
     batchIncludeFlagged: false,
     guideSample: 40,
+    guideSampleAuto: true,      // 0.9.4: tool tự tính số ảnh mẫu theo độ dài và độ đa dạng của job
     guideSendImages: false,
     importUseLlm: false,
     learnEnabled: true,      // ghi lại cách bạn xử lý đề xuất để tool tự học
@@ -85,7 +86,12 @@
     reviewerMode: false,     // tô nhãn do tool ghi mà chưa ai sửa
   };
   const cfg = Object.assign({}, DEFAULTS, GM_getValue('cfg', {}));
-  const saveCfg = () => GM_setValue('cfg', cfg);
+  const saveCfg = () => {
+    // 0.9.4: profile chọn tay được nhớ theo task (trước đây nhớ chung: chọn "Tracking người" ở job video thì
+    // job ảnh đường phố của task khác cũng dùng profile đó)
+    if (cfg.profileTask) { cfg.profileByTask = cfg.profileByTask || {}; cfg.profileByTask[cfg.profileTask] = cfg.profileId; }
+    GM_setValue('cfg', cfg);
+  };
 
   const FLAG_NAMES = {
     UNCERTAIN_CLASS: 'Không chắc class',
@@ -258,6 +264,109 @@
     return out;
   }
 
+  // ---- 0.9.4: job CVAT 3D (point cloud) ----
+  function is3d() { return !!(S.job && String(S.job.dimension || '').toLowerCase() === '3d'); }
+  async function fetchCloud(number) {
+    const blob = await cvat('GET', `/api/jobs/${S.jobId}/data?type=frame&quality=original&number=${number}`, undefined, true);
+    const b64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1]);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+    return { frame: number, data_b64: b64 };
+  }
+  function cuboidLabels() { return S.labels.filter((l) => (l.type || 'any') === 'cuboid' || ((l.type || 'any') === 'any' && is3d())); }
+
+  async function lidarFrame() {
+    await run('Đang dựng cuboid từ point cloud của frame này…', async () => {
+      const frame = S.frame;
+      const res = await backend('POST', '/lidar/detect', Object.assign(baseBody(), { frames: [await fetchCloud(frame)] }));
+      if (frame !== S.frame) return;
+      const objs = (res.frames[0] || { objects: [] }).objects;
+      S.cuboids = { frame, list: objs.map((o, i) => Object.assign(o, { id: i + 1, checked: !o.flags.some((f) => f.code === 'LOW_VISIBILITY') })), warnings: res.warnings || [] };
+      setStatus(`${objs.length} cuboid đề xuất ở frame ${frame}. Kiểm tra trong cửa sổ 3D của CVAT sau khi ghi (Top / Side / Front).`, 'ok');
+    });
+  }
+
+  async function applyCuboids() {
+    const c = S.cuboids;
+    const chosen = c.list.filter((o) => o.checked);
+    if (!chosen.length) return setStatus('Chưa tick cuboid nào.', 'error');
+    await run('Đang ghi cuboid vào CVAT…', async () => {
+      await saveCvatUi();
+      const shapes = chosen.map((o) => {
+        const label = labelById(o.label_id) || { attributes: [] };
+        return { type: 'cuboid', frame: c.frame, label_id: o.label_id, points: [...o.center, 0, 0, o.yaw, ...o.size, 0, 0, 0, 0, 0, 0, 0],
+          occluded: false, outside: false, z_order: 0, rotation: 0, group: 0, attributes: attributeValues(label, null, false), elements: [] };
+      });
+      const res = await cvat('PATCH', `/api/jobs/${S.jobId}/annotations?action=create`, { version: 0, tags: [], shapes, tracks: [] });
+      pushUndo({ jobId: S.jobId, frame: c.frame, shapes: (res && res.shapes) || [], tracks: [], at: Date.now() });
+      S.cuboids = null;
+      setStatus(`Đã ghi ${shapes.length} cuboid. Tải lại trang (F5) để thấy trong cửa sổ 3D.`, 'ok');
+    });
+  }
+
+  async function lidarTrack() {
+    const r = jobRange();
+    const frames = jobFrames(r.from, r.to);
+    S.stopRequested = false; S.longTask = 'track';
+    await run(`Đang dựng cuboid cho ${frames.length} frame…`, async () => {
+      const detected = [];
+      let warnings = [];
+      const started = Date.now();
+      for (let i = 0; i < frames.length; i += 2) {
+        if (S.stopRequested) break;
+        const part = await Promise.all(frames.slice(i, i + 2).map((f) => fetchCloud(f)));
+        const res = await backend('POST', '/lidar/detect', Object.assign(baseBody(), { frames: part }));
+        for (const fr of res.frames) detected.push({ frame: fr.frame, objects: fr.objects });
+        warnings = warnings.concat((res.warnings || []).filter((w) => !warnings.includes(w)));
+        const per = (Date.now() - started) / detected.length / 1000;
+        setStatus(`Đang dựng cuboid: ${detected.length}/${frames.length} frame. Còn khoảng ${Math.round(per * (frames.length - detected.length))} giây.`, 'busy');
+      }
+      if (!detected.length) return;
+      setStatus('Đang nối track, khoá kích thước, chọn keyframe…', 'busy');
+      const built = await backend('POST', '/lidar/track', Object.assign(baseBody(), { frames: detected }));
+      S.tracks = (built.tracks || []).map((t) => Object.assign(t, { shapes: t.shapes.map((s) => Object.assign(s, { type: 'cuboid' })) }));
+      S.trackMeta = { from: r.from, to: detected[detected.length - 1].frame, warnings: warnings.concat(built.warnings || []), title: 'Cuboid 3D', lidar: true };
+      persist('tracks');
+      const flagged = S.tracks.filter((t) => t.flags.length).length;
+      notify('Dựng cuboid xong', `Job ${S.jobId}: ${S.tracks.length} track, ${flagged} track có cờ.`);
+      setStatus(`${S.tracks.length} track cuboid, ${flagged} track có cờ cần xem. Bấm Ghi rồi kiểm tra trong cửa sổ 3D của CVAT.`, 'ok');
+    });
+    S.longTask = ''; render();
+  }
+
+  function renderLidar() {
+    const busy = !!S.busy;
+    const labels = cuboidLabels();
+    const out = [h('div', { class: 'note', text: 'Job CVAT 3D: tool dựng cuboid từ point cloud (tách mặt đường, gom cụm điểm, đoán class theo bảng kích thước của guideline). '
+      + 'Không vẽ được lên cửa sổ 3D: ghi xong, kiểm tra ở Top / Side / Front và ảnh camera.' })];
+    if (!labels.length) { out.push(h('div', { class: 'note', text: 'Task không có label kiểu cuboid.' })); return out; }
+    out.push(h('div', { class: 'row' },
+      h('button', { class: 'primary grow', type: 'button', disabled: busy || !(S.health && S.health.ok), onclick: lidarFrame, text: 'Gợi ý cuboid cho frame này' }),
+      h('button', { type: 'button', disabled: busy || !(S.health && S.health.ok), onclick: lidarTrack, text: 'Dựng track cả job' }),
+      S.longTask === 'track' ? h('button', { type: 'button', text: 'Dừng', onclick: () => { S.stopRequested = true; } }) : null));
+    const c = S.cuboids;
+    if (c && c.frame === S.frame) {
+      for (const w of c.warnings) out.push(h('div', { class: 'note', text: w }));
+      out.push(h('ul', {}, c.list.map((o) => {
+        const sel = h('select', { title: 'Đổi class', onchange: (ev) => { o.label_id = Number(ev.target.value); } }, labels.map((l) => h('option', { value: String(l.id), text: l.name })));
+        sel.value = String(o.label_id);
+        return h('li', { class: 'item' }, h('div', { class: 'row' },
+          h('input', { type: 'checkbox', checked: o.checked, onchange: (ev) => { o.checked = ev.target.checked; render(); } }),
+          sel, h('span', { class: 'grow muted small-text', text: `${o.size.map((v) => v.toFixed(1)).join(' × ')} m · ${o.points} điểm · cách xe ${Math.hypot(o.center[0], o.center[1]).toFixed(0)} m` })),
+        o.flags.length ? h('div', { class: 'row' }, flagBadges(o.flags)) : null);
+      })));
+      out.push(h('button', { class: 'primary', type: 'button', disabled: busy, onclick: applyCuboids, text: `Ghi ${c.list.filter((o) => o.checked).length} cuboid` }));
+    }
+    if (S.tracks.length && S.trackMeta && S.trackMeta.lidar) {
+      out.push(h('div', { class: 'muted small-text', text: `${S.tracks.length} track cuboid (frame ${S.trackMeta.from}–${S.trackMeta.to}). Duyệt ở tab Cả job rồi bấm Ghi.` }));
+      out.push(h('button', { type: 'button', text: 'Sang tab Cả job', onclick: () => { S.tab = 'job'; render(); } }));
+    }
+    return out;
+  }
+
   async function getFrame() {
     const key = `${S.jobId}:${S.frame}`;
     if (S.frameCache && S.frameCache.key === key) return S.frameCache;
@@ -294,14 +403,15 @@
   }
 
   // ------------------------------------------------------------- backend ---
-  function backend(method, path, body) {
+  function backend(method, path, body, opts) {
+    const timeoutMs = (opts && opts.timeout) || 300000;
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method,
         url: cfg.backendUrl.replace(/\/+$/, '') + path,
         headers: { 'Content-Type': 'application/json', 'X-API-Key': cfg.apiKey || '', 'X-Lang': cfg.lang || 'vi' },
         data: body === undefined ? undefined : JSON.stringify(body),
-        timeout: 300000,
+        timeout: timeoutMs,
         onload: (r) => {
           let data = null;
           try { data = JSON.parse(r.responseText); } catch (e) { /* không phải JSON */ }
@@ -314,7 +424,7 @@
           reject(err);
         },
         onerror: () => reject(Object.assign(new Error(I18N.withCode(`Không kết nối được backend tại ${cfg.backendUrl}. Kiểm tra backend đã chạy và địa chỉ trong Cài đặt panel (nút bánh răng).`, 'E_BACKEND_UNREACHABLE')), { code: 'E_BACKEND_UNREACHABLE' })),
-        ontimeout: () => reject(Object.assign(new Error(I18N.withCode('Backend không phản hồi sau 5 phút.', 'E_BACKEND_TIMEOUT')), { code: 'E_BACKEND_TIMEOUT' })),
+        ontimeout: () => reject(Object.assign(new Error(I18N.withCode(timeoutMs > 300000 ? `Backend không phản hồi sau ${Math.round(timeoutMs / 60000)} phút.` : 'Backend không phản hồi sau 5 phút.', 'E_BACKEND_TIMEOUT')), { code: 'E_BACKEND_TIMEOUT' })),
       });
     });
   }
@@ -338,7 +448,17 @@
     return out;
   }
 
-  const baseBody = () => ({ profile_id: cfg.profileId, labels: labelPayload(), overrides: overridePayload(), use_learned: cfg.useLearned !== false, user: S.user || '', use_custom: !!cfg.useCustom });
+  const baseBody = () => ({ profile_id: cfg.profileId, labels: labelPayload(), overrides: overridePayload(), use_learned: cfg.useLearned !== false, user: S.user || '', use_custom: !!cfg.useCustom,
+    project_id: (S.job && S.job.project_id) || null, task_id: (S.job && S.job.task_id) || null, ignore_zones: zonesOf().map((z) => z.box) });
+  // Vùng bỏ qua (gương, kính, quảng cáo, màn hình): nhớ theo task vì cùng một camera
+  function zonesOf() { cfg.zones = cfg.zones || {}; return (S.job && cfg.zones[S.job.task_id]) || []; }
+  // Người cần theo dõi: nhớ theo job
+  function targetsOf() { return (GM_getValue('targets', {}) || {})[S.jobId] || []; }
+  function saveTargets(list) {
+    const all = GM_getValue('targets', {}) || {};
+    if (list.length) all[S.jobId] = list; else delete all[S.jobId];
+    GM_setValue('targets', all);
+  }
 
   function persist(kind) {
     if (!S.jobId) return;
@@ -420,7 +540,11 @@
   function jobRange() {
     const start = S.job && Number.isFinite(S.job.start_frame) ? S.job.start_frame : 0;
     const stop = S.job && Number.isFinite(S.job.stop_frame) ? S.job.stop_frame : (S.frame || 0);
-    if (!S.range || S.range.job !== S.jobId) S.range = { job: S.jobId, from: start, to: stop };
+    // 0.9.4: khoá theo cả biên của job. Trước đây chuyển job khi thông tin job mới chưa tải xong thì khoảng frame
+    // của job cũ (vd 0–12) bị giữ lại cho job mới (nút "Quét 13 ảnh" dù đặt 50).
+    const key = `${S.jobId}:${start}:${stop}`;
+    if (!S.range || S.range.job !== S.jobId || (S.range.key && S.range.key !== key)) S.range = { job: S.jobId, key, from: start, to: stop };
+    else if (!S.range.key) S.range.key = key;
     return { start, stop, from: Math.max(start, S.range.from), to: Math.min(stop, S.range.to) };
   }
 
@@ -482,6 +606,13 @@
       S.loadError = String(err.message || err);
       S.job = { id: S.jobId, task_id: m ? Number(m[1]) : null }; // vẫn thử đọc label theo địa chỉ trang
     }
+    const task = S.job && S.job.task_id;
+    if (task && cfg.profileTask !== task) {
+      const first = cfg.profileTask === undefined;      // lần đầu chạy 0.9.4: giữ lựa chọn cũ cho task đang mở
+      cfg.profileTask = task;
+      if (!first) cfg.profileId = (cfg.profileByTask || {})[task] || 'auto';
+      saveCfg();
+    }
     const res = await fetchLabels(S.job);
     S.labels = res.labels; S.labelDiag = res.tried;
     if (S.frame === null) S.frame = S.job.start_frame || 0;
@@ -510,7 +641,14 @@
     if (S.resolved && S.health && S.health.ok && consumeAutoNext()) propose();   // vừa "Ghi và sang frame tiếp"
   }
 
+  // Tag ảnh gợi ý (profile của project): frame đã có tag đó thì không tick sẵn
+  function tagSuggestions(list, ann, frame) {
+    const have = new Set(((ann && ann.tags) || []).filter((t) => t.frame === frame).map((t) => t.label_id));
+    return (list || []).map((t) => Object.assign({}, t, { values: Object.assign({}, t.attributes), checked: !have.has(t.label_id), exists: have.has(t.label_id) }));
+  }
+
   function clearProposals() {
+    S.tags = []; S.flagFilter = null;
     S.proposals = []; S.warnings = []; S.propFrame = null; S.highlight = null; S.propSource = '';
     S.qa = null; S.qaFrame = null;
     drawOverlay();
@@ -546,6 +684,7 @@
       }
       if (seq !== S.seq || frame !== S.frame) return; // người dùng đã chuyển frame
       S.proposals = stamp(res.proposals || [], 'frame');
+      S.tags = tagSuggestions(res.tags, ann, frame);
       S.existingIds[frame] = existing.filter((x) => x.id !== undefined).map((x) => x.id);
       S.warnings = res.warnings || [];
       S.propFrame = frame; S.imgW = res.width; S.imgH = res.height;
@@ -571,12 +710,34 @@
       const fr = await getFrame();
       S.imgW = fr.w; S.imgH = fr.h;
       S.box = { mode, start: null, cur: null };
-      setStatus('Kéo chuột trên ảnh để vẽ một hộp quanh đối tượng. Esc để huỷ.', 'info');
+      setStatus(mode === 'zone' ? 'Kéo chuột khoanh vùng cần bỏ qua (gương, kính, biển quảng cáo, màn hình). Esc để huỷ.'
+        : mode === 'target' ? 'Kéo chuột vẽ hộp quanh người cần theo dõi (chọn ở frame người đó rõ nhất). Esc để huỷ.'
+          : 'Kéo chuột trên ảnh để vẽ một hộp quanh đối tượng. Esc để huỷ.', 'info');
       drawOverlay();
     });
   }
 
   async function finishBox(box, mode, negatives) {
+    if (mode === 'target') {
+      const list = targetsOf().slice();
+      const used = new Set(list.map((t) => t.name));
+      let n = 1; while (used.has(`P${n}`)) n += 1;
+      const trackLabel = (trackLabels()[0] || {}).label_id || null;
+      list.push({ name: `P${n}`, frame: S.frame, box: box.map((v) => Math.round(v * 10) / 10), label_id: trackLabel });
+      saveTargets(list);
+      setStatus(`Đã chọn P${n} ở frame ${S.frame}. Chọn thêm người khác, hoặc bấm "Theo dõi" để tool chỉ theo dõi những người đã chọn (cả trước và sau frame này).`, 'ok');
+      render(); drawOverlay();
+      return;
+    }
+    if (mode === 'zone') {
+      cfg.zones = cfg.zones || {};
+      const list = zonesOf().slice();
+      list.push({ box: box.map((v) => Math.round(v)), frame: S.frame });
+      cfg.zones[S.job.task_id] = list; saveCfg();
+      setStatus(`Đã thêm vùng bỏ qua thứ ${list.length}. Mọi phát hiện có tâm nằm trong vùng này bị bỏ (cả gợi ý từng frame và theo dõi) cho mọi job của task.`, 'ok');
+      clearProposals(); render(); drawOverlay();
+      return;
+    }
     await run(negatives ? 'SAM3 đang tìm lại, bỏ các vật giống hộp loại trừ…' : 'SAM3 đang tìm đối tượng trong hộp…', async () => {
       const frame = S.frame;
       const fr = await getFrame();
@@ -633,6 +794,8 @@
       label_id: labelId, label_name: kind === 'rejected' ? (p.orig_label_name || p.label_name) : p.label_name,
       type: p.type, score: p.score, bbox: p.bbox, threshold: c.threshold, source: p.source || 'frame',
       box_adjust: p.box_adjust || null, existing_ids: S.existingIds[frame] || [],
+      auto_attributes: p.auto_attributes || null,
+      points: p.type === 'skeleton' ? Object.fromEntries((p.elements || []).filter((e) => !e.outside).map((e) => [String(e.label_id), [e.x, e.y]])) : null,
     }, extra || {});
   }
 
@@ -659,8 +822,12 @@
     if (cfg.learnEnabled === false || !S.jobId || !(S.health && S.health.ok)) return null;
     const ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
     const shapes = (ann.shapes || []).map((x) => ({ id: x.id, frame: x.frame, label_id: x.label_id, type: x.type,
-      points: x.type === 'mask' ? (x.points || []).slice(-4) : x.points, elements: x.elements }));
-    const res = await backend('POST', '/learn/review', { job_id: S.jobId, shapes, user: S.user || '' });
+      points: x.type === 'mask' ? (x.points || []).slice(-4) : x.points, elements: x.elements, attributes: x.attributes }));
+    // 0.9.4: track (để học từ việc theo dõi) và tên thuộc tính (để biết bạn có đổi giá trị tool tự điền không)
+    const tracks = (ann.tracks || []).map((t) => ({ id: t.id, label_id: t.label_id, shapes: (t.shapes || []).map((s) => ({ frame: s.frame, outside: s.outside, occluded: s.occluded })) }));
+    const attrNames = {};
+    for (const l of S.labels) for (const a of l.attributes || []) attrNames[String(a.id)] = a.name;
+    const res = await backend('POST', '/learn/review', { job_id: S.jobId, shapes, tracks, attr_names: attrNames, user: S.user || '' });
     S.learn = res.learned;
     if (res.reviewed) await resolveLabels();
     if (!silent) {
@@ -704,7 +871,8 @@
         onclick: () => run('Đang đối chiếu…', () => reviewLearning(false)) })));
     if (!S.learn) { loadLearn(); return out; }
     const pid = S.resolved && S.resolved.profile_id;
-    const rows = (S.learn.labels || []).filter((l) => l.profile_id === pid);
+    const trackPid = S.resolved && S.resolved.track && S.resolved.track.profile_id;
+    const rows = (S.learn.labels || []).filter((l) => l.profile_id === pid || (trackPid && l.profile_id === trackPid && l.tracks));
     out.push(h('h2', { text: `Đã học cho profile đang dùng (${rows.length} label)` }));
     if (!rows.length) {
       out.push(h('p', { class: 'muted', style: 'margin:0', text: 'Chưa có dữ liệu. Ghi vài nhãn bằng tool, sửa chúng như bình thường trong CVAT, lưu lại, rồi mở lại job (hoặc bấm Đối chiếu).' }));
@@ -714,6 +882,9 @@
       const lines = [];
       if (l.threshold) lines.push(`Ngưỡng ${l.base_threshold ?? '?'} → ${l.threshold}: ${l.threshold_reason}`);
       if (l.box_adjust) lines.push(`Chỉnh hộp: ${l.box_reason}`);
+      if (l.point_adjust) lines.push(`Chỉnh điểm skeleton: ${l.point_reason}`);
+      if (l.attr_off) lines.push(`Thôi tự điền thuộc tính: ${l.attr_reason}`);
+      if (l.tracks) lines.push(`Track tool đã ghi: giữ ${l.tracks.kept} · bạn sửa ${l.tracks.edited} · xoá ${l.tracks.deleted}`);
       if (!lines.length) lines.push(l.n < 12 ? `Cần thêm dữ liệu (${l.n}/12 đề xuất đã có kết quả).` : 'Chưa thấy cần chỉnh gì.');
       out.push(h('div', { class: 'item', style: 'padding:6px 0;border-bottom:1px solid var(--line, #3a3f47)' },
         h('div', { class: 'row' },
@@ -885,7 +1056,8 @@
   async function applyProposals(opts) {
     const o = opts && opts.nextFrame !== undefined ? opts : {};
     const chosen = S.proposals.filter((p) => p.checked && visible(p));
-    if (!chosen.length) return setStatus('Chưa tick đề xuất nào (đề xuất đang bị ẩn bởi bộ lọc không được ghi).', 'error');
+    const chosenTags = (S.tags || []).filter((t) => t.checked);
+    if (!chosen.length && !chosenTags.length) return setStatus('Chưa tick đề xuất nào (đề xuất đang bị ẩn bởi bộ lọc không được ghi).', 'error');
     if (S.propFrame !== S.frame) return setStatus('Đề xuất thuộc frame khác. Hãy chạy lại gợi ý cho frame này.', 'error');
     const flagged = chosen.filter((p) => p.flags.length).length;
     if (cfg.confirmApply && o.nextFrame === undefined) {
@@ -896,10 +1068,12 @@
       if (!(await preApplyCheck(chosen))) { setStatus('Đã dừng ghi để bạn sửa các lỗi kiểm tra.', 'info'); return; }
       await saveCvatUi(); // lưu các thay đổi bạn đang làm dở trước khi ghi thêm
       const shapes = chosen.map((p) => toCvatShape(p));
+      const tags = chosenTags.map((t) => ({ frame: S.propFrame, label_id: t.label_id, group: 0,
+        attributes: attributeValues(labelById(t.label_id) || { attributes: [] }, t.values, false) }));
       const res = await cvat('PATCH', `/api/jobs/${S.jobId}/annotations?action=create`, {
-        version: 0, tags: [], shapes, tracks: [],
+        version: 0, tags, shapes, tracks: [],
       });
-      pushUndo({ jobId: S.jobId, frame: S.propFrame, shapes: (res && res.shapes) || [], tracks: [], at: Date.now() });
+      pushUndo({ jobId: S.jobId, frame: S.propFrame, shapes: (res && res.shapes) || [], tracks: [], tags: (res && res.tags) || [], at: Date.now() });
       const frame = S.propFrame;
       learnFromApply(chosen, (res && res.shapes) || [], S.proposals, () => frame);
       statsAfterApply(chosen, S.proposals);
@@ -908,11 +1082,11 @@
       const target = o.nextFrame !== undefined ? o.nextFrame : frame;
       if (o.nextFrame !== undefined) GM_setValue('autoNext', { jobId: S.jobId, frame: target, at: Date.now() });
       if (cfg.reloadAfterApply) {
-        setStatus(`Đã ghi ${shapes.length} nhãn. Đang tải lại trang${o.nextFrame !== undefined ? ` ở frame ${target}` : ''}…`, 'ok');
+        setStatus(`Đã ghi ${shapes.length} nhãn${tags.length ? `, ${tags.length} tag` : ''}. Đang tải lại trang${o.nextFrame !== undefined ? ` ở frame ${target}` : ''}…`, 'ok');
         await sleep(300);
         reloadAtFrame(target);
       } else {
-        setStatus(`Đã ghi ${shapes.length} nhãn.${o.nextFrame !== undefined ? '' : ' Tải lại trang (F5) để thấy chúng trên canvas.'}`, 'ok');
+        setStatus(`Đã ghi ${shapes.length} nhãn${tags.length ? `, ${tags.length} tag` : ''}.${o.nextFrame !== undefined ? '' : ' Tải lại trang (F5) để thấy chúng trên canvas.'}`, 'ok');
         if (o.nextFrame !== undefined) goToFrame(target);
       }
     });
@@ -923,18 +1097,19 @@
     const u = stack[stack.length - 1];
     const nShapes = u && u.shapes ? u.shapes.length : 0;
     const nTracks = u && u.tracks ? u.tracks.length : 0;
-    if (!u || !(nShapes + nTracks)) {
+    const nTags = u && u.tags ? u.tags.length : 0;
+    if (!u || !(nShapes + nTracks + nTags)) {
       if (u) popUndo(S.jobId);
       return setStatus('Không có lần ghi nào của job này để hoàn tác.', 'error');
     }
-    const what = [nShapes ? `${nShapes} nhãn` : '', nTracks ? `${nTracks} track` : ''].filter(Boolean).join(' và ');
+    const what = [nShapes ? `${nShapes} nhãn` : '', nTracks ? `${nTracks} track` : '', nTags ? `${nTags} tag` : ''].filter(Boolean).join(', ');
     const more = stack.length > 1 ? ` (còn ${stack.length - 1} lần ghi trước đó có thể hoàn tác tiếp)` : '';
     if (!await uiConfirm(`Xoá ${what} mà tool đã ghi ở frame ${u.frame}${more}?`)) return;
     await run('Đang hoàn tác…', async () => {
       await saveCvatUi();
-      for (let i = 0; i < Math.max(nShapes, nTracks, 1); i += 300) {
+      for (let i = 0; i < Math.max(nShapes, nTracks, nTags, 1); i += 300) {
         await cvat('PATCH', `/api/jobs/${S.jobId}/annotations?action=delete`, {
-          version: 0, tags: [], shapes: (u.shapes || []).slice(i, i + 300), tracks: (u.tracks || []).slice(i, i + 300),
+          version: 0, tags: (u.tags || []).slice(i, i + 300), shapes: (u.shapes || []).slice(i, i + 300), tracks: (u.tracks || []).slice(i, i + 300),
         });
       }
       popUndo(S.jobId);
@@ -1167,18 +1342,26 @@
           engineNote = ` Không dùng được SAM3 Video (${String(err.message || err).slice(0, 160)}), đã theo dõi bằng cách thường.`;
         }
       }
-      for (let i = 0; i < frames.length; i += 4) {
-        if (S.stopRequested) break;
-        const part = frames.slice(i, i + 4);
+      // 0.9.4: SAM3 Video chạy từng 2 frame một lượt (mỗi lượt có tối đa 10 phút) để lượt nào cũng xong sớm và báo tiến độ đều;
+      // panel bỏ cuộc (hết giờ, bấm Dừng) thì báo backend dừng phiên ngay, không để GPU chạy tiếp lượt cũ.
+      const cancelVideo = async () => {
+        if (!video) return;
+        try { await backend('POST', '/track/cancel', { session_id: video.session_id }); } catch (e) { /* bỏ qua */ }
+      };
+      for (let i = 0; i < frames.length; i += (video ? 2 : 4)) {
+        if (S.stopRequested) { await cancelVideo(); break; }
+        const part = frames.slice(i, i + (video ? 2 : 4));
         const images = await Promise.all(part.map((f) => fetchFrame(f)));
         size = size || { w: images[0].w, h: images[0].h };
         const payload = { frames: part.map((f, k) => ({ frame: f, image_b64: images[k].b64 })) };
         let res;
         if (video) {
           try {
-            res = await backend('POST', '/track/video/frames', Object.assign({}, body, payload, { session_id: video.session_id }));
+            res = await backend('POST', '/track/video/frames', Object.assign({}, body, payload, { session_id: video.session_id }), { timeout: 600000 });
           } catch (err) {
             // Hỏng giữa chừng: ID của SAM3 Video và cách thường không nối được với nhau, nên làm lại từ đầu bằng cách thường.
+            await cancelVideo();
+            if (S.stopRequested) break;
             video = null;
             engineNote = ` SAM3 Video lỗi giữa chừng (${String(err.message || err).slice(0, 160)}), đã làm lại bằng cách thường.`;
             detected.length = 0;
@@ -1199,6 +1382,7 @@
       const last = detected[detected.length - 1].frame;
       const built = await backend('POST', '/track/build', Object.assign({}, body, {
         frames: detected, width: size.w, height: size.h, start: r.from, stop: r.start === r.from && r.to === r.stop ? r.stop : last,
+        targets: targetsOf(),
       }));
       S.tracks = built.tracks || [];
       S.trackMeta = {
@@ -1247,7 +1431,7 @@
           frame: t.shapes[0].frame, label_id: t.label_id, group: 0,
           attributes: attributeValues(label, null, true),
           shapes: t.shapes.map((s) => ({
-            type: 'rectangle', frame: s.frame, points: s.points, occluded: !!s.occluded, outside: !!s.outside,
+            type: s.type || 'rectangle', frame: s.frame, points: s.points, occluded: !!s.occluded, outside: !!s.outside,
             z_order: 0, rotation: 0, attributes: [],
           })),
           elements: [],
@@ -1259,6 +1443,17 @@
         version: 0, tags: [], shapes: [], tracks,
       });
       pushUndo({ jobId: S.jobId, frame: S.frame, shapes: [], tracks: (res && res.tracks) || [], at: Date.now() });
+      // 0.9.4: tự học cả từ track (lần đối chiếu sau: track bị xoá, đổi class hay bị sửa keyframe)
+      const made = (res && res.tracks) || [];
+      const trackProfile = S.resolved && S.resolved.track && S.resolved.track.profile_id;
+      if (cfg.learnEnabled !== false && trackProfile && made.length === chosen.length) {
+        try {
+          await backend('POST', '/learn/events', { user: S.user || '', events: chosen.map((t, i) => ({
+            kind: 'applied', profile_id: trackProfile, job_id: S.jobId, frame: t.start, label_id: t.label_id, label_name: t.label_name,
+            type: 'track', score: t.score, bbox: t.shapes[0].points, cvat_id: made[i].id, source: 'track', track_shapes: t.shapes.length,
+          })) });
+        } catch (err) { /* tự học không được làm hỏng việc ghi */ }
+      }
       S.tracks = S.tracks.filter((t) => !t.checked);
       persist('tracks');
       setStatus(`Đã ghi ${tracks.length} track.${cfg.reloadAfterApply ? ' Đang tải lại trang…' : ' Tải lại trang (F5) để thấy chúng.'}`, 'ok');
@@ -1269,6 +1464,19 @@
   // ---------------------------------------------------- soạn guideline ----
   // Chọn ảnh mẫu rải đều cả khoảng frame; vài ảnh đầu (chặng khám phá) cũng rải đều để đa dạng.
   function sampleFrames(from, to, count) {
+    // Có phân tích frame: lấy các frame ở đầu mỗi đoạn thay đổi rõ (đa dạng hơn rải đều), thiếu thì bù bằng rải đều
+    const smart = S.smart && S.smart.job === S.jobId ? (S.smart.keyframes || []).filter((f) => f >= from && f <= to) : [];
+    if (smart.length >= Math.min(count, 8)) {
+      const step = smart.length / Math.min(count, smart.length);
+      const picked = [...new Set(Array.from({ length: Math.min(count, smart.length) }, (_, i) => smart[Math.floor(i * step)]))];
+      if (picked.length < count) {
+        for (const f of sampleFrames.uniform(from, to, count)) { if (picked.length >= count) break; if (!picked.includes(f)) picked.push(f); }
+      }
+      return picked;
+    }
+    return sampleFrames.uniform(from, to, count);
+  }
+  sampleFrames.uniform = function uniformFrames(from, to, count) {
     const total = to - from + 1;
     const n = Math.max(1, Math.min(count, total));
     const picked = [];
@@ -1281,9 +1489,24 @@
     return head.concat(unique.filter((f) => !head.includes(f)));
   }
 
+  // Số ảnh mẫu tự tính: job dài thì nhiều hơn (tăng theo căn bậc hai), có phân tích frame thì theo số cảnh khác nhau.
+  function autoSample(r) {
+    const total = Math.max(0, r.to - r.from + 1);
+    const smart = S.smart && S.smart.job === S.jobId ? S.smart : null;
+    const scenes = smart ? (smart.keyframes || []).filter((f) => f >= r.from && f <= r.to).length : 0;
+    let n = Math.ceil(Math.sqrt(total) * 2.5);
+    if (scenes) n = Math.max(Math.min(n, scenes * 2), Math.min(scenes, 80));
+    n = Math.min(total, Math.max(Math.min(12, total), Math.min(80, n)));
+    const why = scenes ? `job có ${total} frame, ${scenes} đoạn thay đổi rõ` : `job có ${total} frame`;
+    return { n, why };
+  }
+  function sampleCount(r) {
+    return cfg.guideSampleAuto !== false ? autoSample(r).n : Math.min(Number(cfg.guideSample) || 40, Math.max(0, r.to - r.from + 1));
+  }
+
   async function runGuideline() {
     const r = jobRange();
-    const frames = sampleFrames(r.from, r.to, Number(cfg.guideSample) || 40);
+    const frames = sampleFrames(r.from, r.to, sampleCount(r));
     S.stopRequested = false;
     S.longTask = 'guide';
     await run(`Đang quét ${frames.length} ảnh mẫu…`, async () => {
@@ -1522,7 +1745,7 @@
   function renderImport() {
     const busy = !!S.busy;
     const llm = (S.health && S.health.guideline_llm) || { provider: 'none' };
-    const out = [h('h2', { text: 'Nạp guideline có sẵn cho task khác' }),
+    const out = [h('h2', { text: 'Nạp guideline (chỉ văn bản, checklist)' }),
       h('p', { class: 'muted small-text', style: 'margin:0', text:
         'Chọn file guideline (.docx, .md, .txt) và/hoặc file taxonomy (.json, ví dụ JSON label ở tab Raw của task CVAT); '
         + 'chọn cả hai cùng lúc được. Tool đọc bảng taxonomy, định nghĩa, Issue type, checklist, tiêu chí reviewer; '
@@ -1716,6 +1939,18 @@
     overlaySvg.setAttribute('viewBox', `0 0 ${S.imgW} ${S.imgH}`);
     const base = { 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round' };
     const showProps = S.propFrame === S.frame && S.tab !== 'qa';
+    for (const z of S.job ? zonesOf() : []) {      // vùng bỏ qua: gạch chéo xám
+      const [x1, y1, x2, y2] = z.box;
+      overlaySvg.append(svgEl('rect', Object.assign({ x: x1, y: y1, width: x2 - x1, height: y2 - y1, stroke: '#9aa3b2', 'stroke-width': 2,
+        'stroke-dasharray': '8 5', fill: '#9aa3b2', 'fill-opacity': 0.18 }, base)));
+    }
+    for (const t of S.tab === 'job' ? targetsOf().filter((x) => x.frame === S.frame) : []) {   // người cần theo dõi
+      const [x1, y1, x2, y2] = t.box;
+      overlaySvg.append(svgEl('rect', Object.assign({ x: x1, y: y1, width: x2 - x1, height: y2 - y1, stroke: '#ffb000', 'stroke-width': 3, fill: 'none' }, base)));
+      const tx = svgEl('text', { x: x1 + 4, y: y1 + 18, fill: '#ffb000', 'font-size': 16, 'font-weight': 700 });
+      tx.textContent = t.name;
+      overlaySvg.append(tx);
+    }
     for (const p of showProps ? S.proposals.filter(visible) : []) {
       const color = labelColor(p.label_id);
       const hot = S.highlight === 'p' + p.pid || S.sel === p.pid;
@@ -1972,7 +2207,10 @@
     }
     * { box-sizing: border-box; }
     .panel { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius);
-      box-shadow: 0 6px 24px rgba(0,0,0,.18); display: flex; flex-direction: column; max-height: calc(100vh - 96px); }
+      box-shadow: 0 6px 24px rgba(0,0,0,.18); display: flex; flex-direction: column; max-height: var(--panel-h, calc(100vh - 96px)); position: relative; }
+    .grip-w { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 3; }
+    .grip-h { position: absolute; left: 0; right: 0; bottom: -4px; height: 8px; cursor: ns-resize; z-index: 3; }
+    .grip-w:hover, .grip-h:hover { background: color-mix(in srgb, var(--accent) 25%, transparent); }
     header { display: flex; align-items: center; gap: var(--gap); padding: 8px 10px; border-bottom: 1px solid var(--line);
       cursor: move; user-select: none; }
     header h1 { font: inherit; font-weight: 600; margin: 0; flex: 1; }
@@ -1983,7 +2221,7 @@
     nav { display: flex; border-bottom: 1px solid var(--line); }
     nav button { flex: 1; border: 0; border-radius: 0; background: var(--bg-soft); padding: 7px 2px; border-bottom: 2px solid transparent; font-size: 12px; white-space: nowrap; }
     nav button[aria-selected="true"] { background: var(--bg); border-bottom-color: var(--accent); font-weight: 600; }
-    .body { padding: 10px; overflow: auto; display: flex; flex-direction: column; gap: var(--gap); }
+    .body { padding: 10px; overflow: auto; min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: var(--gap); }
     button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius);
       padding: 6px 10px; cursor: pointer; }
     button:hover:not(:disabled) { border-color: var(--accent); }
@@ -1999,7 +2237,8 @@
     .row { display: flex; gap: var(--gap); align-items: center; flex-wrap: wrap; }
     .grow { flex: 1; min-width: 0; }
     .muted { color: var(--muted); } .small-text { font-size: 12px; }
-    .status { padding: 6px 10px; border-top: 1px solid var(--line); min-height: 30px; }
+    table.profiles { table-layout: fixed; width: 100%; } table.profiles td:first-child { overflow-wrap: anywhere; } table.profiles td:last-child { width: 96px; }
+    .status { padding: 6px 10px; border-top: 1px solid var(--line); min-height: 30px; flex-shrink: 0; max-height: 7.5em; overflow: auto; overflow-wrap: anywhere; }
     .status.ok { color: var(--ok); } .status.error { color: var(--err); } .status.busy { color: var(--accent); }
     .note { background: var(--bg-soft); border-left: 3px solid var(--warn); padding: 6px 8px; border-radius: var(--radius); }
     .version-note { display: flex; align-items: center; gap: 8px; } .version-note span { flex: 1; }
@@ -2078,6 +2317,40 @@
     .sec > .sec-b { padding: 0 12px 12px; display: flex; flex-direction: column; gap: var(--gap); }
     .sec:not(.open) > .sec-b { display: none; }
     .group { display: flex; flex-direction: column; gap: 10px; }
+    .qprog .bar { height: 6px; border-radius: 3px; background: var(--line); display: flex; overflow: hidden; }
+    .qprog .bar i { display: block; height: 100%; } .qprog .bar i.done { background: #2e9d5b; } .qprog .bar i.skip { background: #c9cfdb; }
+    li.q .qmark { width: 18px; height: 18px; border-radius: 9px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: #fff; background: #d9a400; }
+    li.q .qmark.done { background: #2e9d5b; } li.q .qmark.skip { background: #9aa3b2; }
+    li.q.done, li.q.skip { padding-top: 4px; padding-bottom: 4px; }
+    li.q.flash { outline: 2px solid var(--accent); }
+    .qopts { display: flex; flex-direction: column; gap: 4px; }
+    .qopt { text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; }
+    .qopt small { color: var(--muted); font-weight: 400; white-space: normal; }
+    .qopt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .chip .x { border: 0; background: none; padding: 0 2px; font-size: 11px; color: var(--muted); }
+    .chip .link { border: 0; background: none; padding: 0; color: inherit; font-size: 12px; }
+    .fchips { gap: 4px; flex-wrap: wrap; }
+    .fchip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px 1px 3px; border-radius: 10px; font-size: 11.5px;
+      border: 1px solid #e3b341; background: #fff6dc; color: #6b4b00; line-height: 18px; }
+    .fchip .fi { width: 14px; height: 14px; border-radius: 7px; background: #d9a400; color: #fff; font-size: 10px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center; }
+    .fchip.on { background: #ffe9a8; }
+    .fdetail { border-left: 3px solid #e3b341; padding: 2px 8px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+    button.small.issue { padding: 1px 8px; font-size: 11.5px; }
+    button.small.on { border-color: var(--accent); color: var(--accent); }
+    details.help > summary { cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; }
+    details.help > summary::before { content: "ⓘ "; }
+    details.help[open] > summary { margin-bottom: 4px; }
+    .tagfs { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; margin-top: 6px; }
+    .tagf { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+    .tagf.need select { border-color: #d9a400; box-shadow: 0 0 0 1px #d9a40055; }
+    .prow { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+    .prow:last-child { border-bottom: 0; }
+    .prow .dot { width: 8px; height: 8px; border-radius: 4px; margin-top: 6px; flex: none; background: #2e9d5b; }
+    .prow .dot.warn { background: #d9a400; } .prow .dot.bad { background: #d64545; }
+    .prow details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    .prow details ul { margin: 4px 0 0; padding-left: 16px; font-size: 12px; }
     label.check.sw { justify-content: space-between; gap: 12px; cursor: pointer; }
     label.check.sw > span { order: -1; flex: 1; }
     label.check.sw input { appearance: none; -webkit-appearance: none; width: 32px; height: 18px; border-radius: 9px; background: #c9cfdb; position: relative;
@@ -2138,7 +2411,33 @@
   els.metaNote = h('div', { class: 'meta-note' });
   els.actions = h('div', { class: 'actions' });
   const headerEl = h('header', {}, logoSvg(), h('h1', { text: 'SAM3 Label Assist' }), els.chip, els.gear, els.collapse);
-  root.append(h('div', { class: 'panel' }, headerEl, els.meta, els.metaNote, els.nav, els.body, els.actions, els.status));
+  // 0.9.4: kéo mép trái đổi độ rộng, mép dưới đổi chiều cao; bấm đúp về mặc định
+  const gripW = h('div', { class: 'grip-w', title: 'Kéo để đổi độ rộng panel (bấm đúp: về mặc định)' });
+  const gripH = h('div', { class: 'grip-h', title: 'Kéo để đổi chiều cao panel (bấm đúp: về mặc định)' });
+  root.append(h('div', { class: 'panel' }, gripW, gripH, headerEl, els.meta, els.metaNote, els.nav, els.body, els.actions, els.status));
+  function dragResize(ev, axis) {
+    ev.preventDefault(); ev.stopPropagation();
+    const r = host.getBoundingClientRect();
+    const scale = Math.max(1, Math.min(1.6, Number(cfg.fontScale) || 1));
+    const move = (e) => {
+      if (axis === 'w') {
+        const right = r.right;
+        const w = Math.max(300, Math.min(window.innerWidth - 40, right - e.clientX));
+        cfg.panelWidth = Math.round(w / scale);
+        if (cfg.pos) { cfg.pos = [Math.max(0, right - w), cfg.pos[1]]; applyPos(); } else host.style.right = `${Math.max(0, window.innerWidth - right)}px`;
+      } else {
+        cfg.panelHeight = Math.max(260, Math.min(window.innerHeight - r.top - 8, e.clientY - r.top));
+      }
+      applyLook();
+    };
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); saveCfg(); };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }
+  gripW.addEventListener('mousedown', (ev) => dragResize(ev, 'w'));
+  gripH.addEventListener('mousedown', (ev) => dragResize(ev, 'h'));
+  gripW.addEventListener('dblclick', () => { cfg.panelWidth = 380; saveCfg(); applyLook(); });
+  gripH.addEventListener('dblclick', () => { cfg.panelHeight = null; saveCfg(); applyLook(); });
   // Phím gõ trong panel không được lọt ra thành phím tắt của CVAT.
   for (const type of ['keydown', 'keyup', 'keypress']) host.addEventListener(type, (ev) => ev.stopPropagation());
 
@@ -2219,8 +2518,55 @@
     }, ico(icon), h('span', { text: name }))));
   }
 
-  function flagBadges(flags) {
-    return flags.map((f) => h('span', { class: 'badge', title: f.message, text: FLAG_NAMES[f.code] || f.code }));
+  // Tag của ảnh: mỗi thuộc tính một ô chọn; giá trị tool tự đoán có dấu ✓ nhỏ, giá trị bạn cần chọn tô vàng
+  function renderTags() {
+    return h('div', { class: 'group tags', style: 'gap:6px' }, h('h4', { text: 'Tag của ảnh' }), ...S.tags.map((t) => {
+      const label = labelById(t.label_id) || { attributes: [] };
+      const fields = (label.attributes || []).map((a) => {
+        const key = normName(a.name);
+        const auto = (t.auto || []).includes(a.name);
+        const sel = h('select', { title: (t.notes && t.notes[a.name]) || (auto ? 'Tool tự đoán từ ảnh: kiểm lại' : 'Bạn chọn'),
+          onchange: (ev) => { t.values[key] = ev.target.value; t.checked = true; t.touched = (t.touched || []).concat(a.name); render(); } },
+        (a.values || []).map((v) => h('option', { value: v, text: v })));
+        sel.value = t.values[key] !== undefined ? t.values[key] : (a.default_value || (a.values || [])[0] || '');
+        const need = !auto && !(t.touched || []).includes(a.name);
+        return h('label', { class: 'tagf' + (need ? ' need' : '') }, h('span', { text: a.name + (auto ? ' ✓' : '') }), sel);
+      });
+      return h('div', { class: 'item' }, h('div', { class: 'row' },
+        h('input', { type: 'checkbox', checked: t.checked, title: 'Ghi tag này vào CVAT', onchange: (ev) => { t.checked = ev.target.checked; render(); } }),
+        h('b', { class: 'grow', text: t.label_name }),
+        t.exists ? h('span', { class: 'muted small-text', text: 'frame đã có tag này' }) : null),
+      fields.length ? h('div', { class: 'tagfs' }, fields) : null);
+    }));
+  }
+
+  // 0.9.4: cờ là chip ngắn có biểu tượng; rê chuột xem giải thích, bấm để hiện giải thích ngay dưới dòng
+  const FLAG_SHORT = { UNCERTAIN_CLASS: 'Class?', UNCERTAIN_BOUNDARY: 'Biên?', UNCERTAIN_SCOPE: 'Phạm vi?', ATTRIBUTE_CHECK: 'Thuộc tính?',
+    LOW_VISIBILITY: 'Khó thấy', DUPLICATE: 'Trùng?', STATE: 'Điểm?', LEFT_RIGHT: 'Trái/phải?', TOPOLOGY: 'Thứ tự?', SCOPE: 'Phạm vi?',
+    id_check: 'ID?', false_track: 'Nhầm?', drift: 'Keyframe', flag: 'Che?', fragmentation: 'Đứt ID?', lost: 'Mất?', merge: 'Gộp?', id_switch: 'Đổi ID?' };
+  S.openFlags = S.openFlags || new Set();
+  // Gom cờ cùng loại thành một chip có số đếm (trước đây một track có thể có 7 chip "Kiểm tra ID" giống nhau)
+  function flagGroups(flags) {
+    const groups = [];
+    for (const f of flags || []) {
+      const g = groups.find((x) => x.code === f.code);
+      if (g) g.items.push(f); else groups.push({ code: f.code, items: [f] });
+    }
+    return groups;
+  }
+  function flagBadges(flags, key) {
+    return flagGroups(flags).map((g) => {
+      const k = `${key}:${g.code}`, name = FLAG_SHORT[g.code] || FLAG_NAMES[g.code] || g.code;
+      return h('button', { type: 'button', class: 'fchip' + (key && S.openFlags.has(k) ? ' on' : ''),
+        title: `${FLAG_NAMES[g.code] || g.code}: ${g.items.map((f) => f.message).join(' · ')}`,
+        onclick: (ev) => { ev.stopPropagation(); if (!key) return; if (S.openFlags.has(k)) S.openFlags.delete(k); else S.openFlags.add(k); render(); } },
+      h('span', { class: 'fi', text: '!' }), g.items.length > 1 ? `${name} ×${g.items.length}` : name);
+    });
+  }
+  function flagDetails(flags, key) {
+    const open = flagGroups(flags).filter((g) => S.openFlags.has(`${key}:${g.code}`));
+    const lines = [...new Set(open.flatMap((g) => g.items.map((f) => f.message)))];
+    return lines.length ? h('div', { class: 'fdetail small-text' }, lines.map((m) => h('div', { text: m }))) : null;
   }
 
   function hover(li, key) {
@@ -2229,6 +2575,7 @@
   }
 
   function renderPropose() {
+    if (is3d()) return renderLidar();
     const out = [tourCard()];
     const ready = S.resolved && S.health && S.health.ok;
     if (S.health && S.health.ok && S.health.is_mock) {
@@ -2251,6 +2598,7 @@
       out.push(h('p', { class: 'muted small-text', style: 'margin:0', text: 'Đề xuất này lấy từ lượt gợi ý cho cả job (tab Cả job).' }));
     }
     if (S.prefetching !== null && cfg.prefetch) out.push(h('div', { class: 'muted small-text', text: `Đang chạy sẵn frame ${S.prefetching}…` }));
+    if ((S.tags || []).length && S.propFrame === S.frame) out.push(renderTags());
 
     if (S.proposals.length && S.propFrame === S.frame) {
       const shown = S.proposals.filter(visible);
@@ -2276,7 +2624,19 @@
         h('button', { class: 'small', type: 'button', text: 'Bỏ mục có cờ', onclick: () => { shown.forEach((p) => { if (p.flags.length) p.checked = false; }); render(); drawOverlay(); } }),
       ));
       for (const t of S.hints || []) out.push(h('div', { class: 'note small-text', text: t }));
-      out.push(h('ul', { class: tourOn('list') }, shown.map((p) => {
+      // 0.9.4: gom cờ: mỗi loại một chip kèm số lượng; bấm để chỉ xem các dòng có cờ đó (không đổi việc ghi)
+      const codes = {};
+      for (const p of shown) for (const f of p.flags) codes[f.code] = (codes[f.code] || 0) + 1;
+      if (Object.keys(codes).length) {
+        out.push(h('div', { class: 'row fchips' }, h('span', { class: 'small-text muted', text: 'Cần xem:' }),
+          Object.entries(codes).map(([code, n]) => h('button', { type: 'button', class: 'fchip' + (S.flagFilter === code ? ' on' : ''), title: FLAG_NAMES[code] || code,
+            onclick: () => { S.flagFilter = S.flagFilter === code ? null : code; render(); } }, h('span', { class: 'fi', text: '!' }), `${FLAG_SHORT[code] || code} ${n}`))));
+      }
+      const listed = S.flagFilter ? shown.filter((p) => p.flags.some((f) => f.code === S.flagFilter)) : shown;
+      if (S.flagFilter && listed.length < shown.length) {
+        out.push(h('div', { class: 'muted small-text', text: `Đang chỉ xem ${listed.length} dòng có cờ "${FLAG_SHORT[S.flagFilter] || S.flagFilter}"; ${shown.length - listed.length} dòng khác vẫn được ghi nếu đang tick.` }));
+      }
+      out.push(h('ul', { class: tourOn('list') }, listed.map((p) => {
         const options = S.labels.filter((l) => !l.type || l.type === 'any' || l.type === p.type || l.id === p.label_id);
         const select = h('select', { class: 'grow', title: 'Đổi class', onchange: (ev) => { p.label_id = Number(ev.target.value); p.label_name = (labelById(p.label_id) || {}).name; p.userTouched = true; render(); drawOverlay(); } },
           options.map((l) => h('option', { value: String(l.id), text: l.name })));
@@ -2291,15 +2651,17 @@
               title: 'Vật này bị nhận nhầm: dùng nó làm mẫu ÂM, SAM3 tìm lại và bỏ mọi vật giống nó', disabled: !!S.busy, onclick: () => excludeSimilar(p) }) : null,
           ),
           p.box_adjust ? h('div', { class: 'muted small-text', text: 'Hộp đã được chỉnh theo cách bạn hay sửa (tab Tự học).' }) : null,
+          p.review_attributes && p.review_attributes.length ? h('div', { class: 'muted small-text',
+            text: `Thuộc tính bạn chọn trong CVAT sau khi ghi: ${p.review_attributes.join(', ')}` }) : null,
           p.auto_attributes && Object.keys(p.auto_attributes).length ? h('div', { class: 'muted small-text',
             text: 'Tự điền: ' + Object.entries(p.auto_attributes).map(([k, v]) => `${k} = ${v}`).join(', ') + ' (đổi được trong CVAT sau khi ghi)' }) : null,
-          p.flags.length || p.occluded ? h('div', { class: 'row' },
+          p.flags.length || p.occluded ? h('div', { class: 'row fchips' },
             p.occluded ? h('span', { class: 'badge', text: 'occluded' }) : null,
-            flagBadges(p.flags),
-            p.flags.length ? h('button', { class: 'small', type: 'button', text: 'Tạo Issue', title: 'Gửi case này cho mentor qua Issue của CVAT',
+            flagBadges(p.flags, 'p' + p.pid),
+            p.flags.length ? h('button', { class: 'small issue', type: 'button', text: 'Issue', title: 'Tạo Issue trên CVAT: gửi case này cho mentor',
               onclick: () => createIssue(p.flags[0].code, `${p.label_name}: ${p.flags.map((f) => f.message).join(' ')}`, p.bbox) }) : null,
           ) : null,
-          p.flags.length ? h('div', { class: 'muted small-text', text: p.flags.map((f) => f.message).join(' ') }) : null,
+          p.flags.length ? flagDetails(p.flags, 'p' + p.pid) : null,
         );
         li.addEventListener('click', (ev) => { if (!ev.target.closest('input,select,button')) { S.sel = p.pid; render(); drawOverlay(); } });
         hover(li, 'p' + p.pid);
@@ -2321,8 +2683,8 @@
     const nUndo = undoStackOf(S.jobId).length;
     const undo = h('button', { class: tourOn('undo'), type: 'button', disabled: !!S.busy || !nUndo, onclick: undoLast,
       title: `${keyName(keyOf('undo'))}. Bấm nhiều lần để lùi thêm (tối đa 20 lần ghi).` }, ico('undo', 's'), h('span', { text: nUndo ? `Hoàn tác (${nUndo})` : 'Hoàn tác' }));
-    if (!(S.proposals.length && S.propFrame === S.frame)) return nUndo ? [h('div', { class: 'row' }, undo)] : [];
-    const checked = S.proposals.filter(visible).filter((p) => p.checked).length;
+    if (!((S.proposals.length || (S.tags || []).length) && S.propFrame === S.frame)) return nUndo ? [h('div', { class: 'row' }, undo)] : [];
+    const checked = S.proposals.filter(visible).filter((p) => p.checked).length + (S.tags || []).filter((t) => t.checked).length;
     const next = nextFrameOf(S.frame);
     const drop = h('button', { type: 'button', disabled: !!S.busy, text: 'Bỏ đề xuất', onclick: () => {
       if (S.batch[S.frame]) { delete S.batch[S.frame]; persist('batch'); }
@@ -2403,17 +2765,26 @@
         h('td', {}, h('input', { type: 'checkbox', checked: c.enabled, disabled: !c.supported, title: 'Bật label này', onchange: (ev) => setOverride(label, { enabled: ev.target.checked }) })),
         h('td', {}, h('div', { text: c.name }), c.note ? h('div', { class: 'small-text', style: 'color:var(--warn)', text: c.note }) : null,
           !c.matched && S.resolved.profile_id !== 'generic' ? h('div', { class: 'small-text muted', text: 'Không có trong guideline' }) : null),
-        h('td', {}, shape),
-        h('td', {}, h('input', { type: 'text', value: c.prompts.join(', '), placeholder: derived ? 'suy ra bằng luật' : 'prompt tiếng Anh',
+        h('td', {}, c.shape === 'tag' ? h('span', { class: 'muted', text: 'tag' }) : shape),
+        h('td', {}, c.shape === 'tag' ? null : h('input', { type: 'text', value: c.prompts.join(', '), placeholder: derived ? 'suy ra bằng luật' : 'prompt tiếng Anh',
           title: 'Prompt cho SAM3, cách nhau bằng dấu phẩy',
           onchange: (ev) => setOverride(label, { prompts: ev.target.value.split(',').map((s) => s.trim()).filter(Boolean) }) })),
-        h('td', {}, h('input', { type: 'number', min: '0.05', max: '0.99', step: '0.05', value: String(c.threshold),
+        h('td', {}, c.shape === 'tag' ? null : h('input', { type: 'number', min: '0.05', max: '0.99', step: '0.05', value: String(c.threshold),
           title: c.learned && c.learned.threshold ? `Tool đã học: ${c.learned.threshold_from} → ${c.learned.threshold} (${c.learned.threshold_reason}). Gõ số khác để đặt tay.` : 'Ngưỡng tin cậy',
           onchange: (ev) => setOverride(label, { threshold: Number(ev.target.value) }) }),
           c.learned ? h('div', { class: 'small-text', style: 'color:var(--accent, #4a90d9)', text: 'tự học', title: [c.learned.threshold_reason, c.learned.box_reason].filter(Boolean).join(' · ') }) : null),
       );
     });
+    // 0.9.4: label không gợi ý được (tag, skeleton lạ, box trong job skeleton...) mà job chưa có profile cho project:
+    // chỉ thẳng tới chỗ tạo, vì profile đó gợi ý theo từng label của task
+    const blocked = S.resolved.labels.filter((c) => !c.supported || (c.shape === 'skeleton' && !c.matched));
+    const banner = blocked.length && !S.resolved.project_profile ? h('div', { class: 'note' },
+      h('div', { text: `${blocked.length} label profile "${S.resolved.title || S.resolved.profile_id}" chưa gợi ý được (${blocked.slice(0, 4).map((c) => c.name).join(', ')}${blocked.length > 4 ? '…' : ''}). `
+        + 'Profile cho project dựng cách gợi ý theo từng label của task, kể cả tag và skeleton.' }),
+      h('button', { class: 'small', type: 'button', style: 'margin-top:6px', text: 'Mở Profile cho project',
+        onclick: () => { cfg.openSecs = cfg.openSecs || {}; cfg.openSecs['guide:Profile cho project'] = true; saveCfg(); S.tab = 'guide'; render(); loadGuide(); } })) : null;
     return [
+      banner,
       h('p', { class: 'muted small-text', style: 'margin:0', text: 'Label lấy từ task CVAT. Prompt nên là cụm danh từ tiếng Anh ngắn. Thay đổi được nhớ theo tên label.' }),
       h('table', {}, h('thead', {}, h('tr', {}, ['', 'Label', 'Shape', 'Prompt', 'Ngưỡng'].map((t) => h('th', { text: t })))), h('tbody', {}, rows)),
       h('div', { class: 'row' },
@@ -2568,6 +2939,12 @@
   }
 
   function renderTrackSection(r, busy) {
+    if (is3d()) {      // 0.9.4: job CVAT 3D: track cuboid dựng từ point cloud
+      const out3 = [h('h2', { text: 'Track cuboid 3D (LiDAR)' }),
+        h('p', { class: 'muted small-text', style: 'margin:0', text: 'Mỗi vật một track: kích thước khoá theo frame có nhiều điểm nhất, yaw theo hướng đi, bị che tối đa 6 frame thì nội suy và bật occluded.' }),
+        h('button', { class: 'primary', type: 'button', disabled: busy || !cuboidLabels().length, onclick: lidarTrack, text: `Dựng track cho ${jobFrames(r.from, r.to).length} frame` })];
+      return S.tracks.length ? out3.concat(renderTrackList(busy)) : out3;
+    }
     const out = [h('h2', { text: 'Theo dõi đối tượng (video)' })];
     const labels = trackLabels();
     const title = S.resolved && S.resolved.track ? S.resolved.track.title : '';
@@ -2579,9 +2956,35 @@
         .map(([v, t]) => h('option', { value: v, text: t })));
     engine.value = cfg.trackEngine || 'classic';
     out.push(h('label', { class: 'field' }, h('span', { text: 'Cách theo dõi' }), engine));
+    // 0.9.4: chỉ theo dõi người bạn chọn; vùng bỏ qua cho phản chiếu, quảng cáo
+    const targets = targetsOf();
+    const zones = zonesOf();
+    out.push(h('div', { class: 'group', style: 'gap:6px' },
+      h('h4', { text: 'Người cần theo dõi' }),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: targets.length
+        ? 'Tool chỉ theo dõi những người này, cả trước và sau frame bạn chọn. Người khác, phản chiếu, quảng cáo bị bỏ.'
+        : 'Chưa chọn ai: tool theo dõi mọi người tìm được. Chọn người ở frame họ rõ nhất để tool bỏ người khác, phản chiếu, quảng cáo.' }),
+      targets.length ? h('div', { class: 'row', style: 'flex-wrap:wrap;gap:4px' }, targets.map((t, i) => h('span', { class: 'chip small' },
+        h('button', { class: 'link', type: 'button', text: `${t.name} · frame ${t.frame}`, title: 'Tới frame này', onclick: () => goToFrame(t.frame) }),
+        h('button', { class: 'x', type: 'button', text: '✕', title: `Bỏ ${t.name}`, onclick: () => { const l = targetsOf().slice(); l.splice(i, 1); saveTargets(l); render(); drawOverlay(); } })))) : null,
+      h('div', { class: 'row' },
+        h('button', { type: 'button', disabled: busy || !labels.length, onclick: () => startBox('target') }, ico('box', 's'), h('span', { text: 'Chọn người ở frame này' })),
+        targets.length ? h('button', { class: 'small', type: 'button', disabled: busy, text: 'Bỏ chọn hết', onclick: () => { saveTargets([]); render(); drawOverlay(); } }) : null)));
+    out.push(h('div', { class: 'group', style: 'gap:6px' },
+      h('h4', { text: 'Vùng bỏ qua' }),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: 'Khoanh gương, kính, biển quảng cáo, màn hình: mọi phát hiện có tâm trong vùng bị bỏ, cho mọi job của task này.' }),
+      zones.length ? h('div', { class: 'row', style: 'flex-wrap:wrap;gap:4px' }, zones.map((z, i) => h('span', { class: 'chip small' },
+        h('span', { text: `Vùng ${i + 1}` }),
+        h('button', { class: 'x', type: 'button', text: '✕', title: 'Bỏ vùng này', onclick: () => { const l = zonesOf().slice(); l.splice(i, 1); cfg.zones[S.job.task_id] = l; saveCfg(); clearProposals(); render(); drawOverlay(); } })))) : null,
+      h('button', { type: 'button', disabled: busy, onclick: () => startBox('zone') }, ico('box', 's'), h('span', { text: 'Khoanh vùng bỏ qua' }))));
     out.push(h('button', { class: 'primary', type: 'button', disabled: busy || !labels.length,
-      onclick: runTracking, text: `Theo dõi ${jobFrames(r.from, r.to).length} frame` }));
+      onclick: runTracking, text: targets.length ? `Theo dõi ${targets.length} người qua ${jobFrames(r.from, r.to).length} frame` : `Theo dõi ${jobFrames(r.from, r.to).length} frame` }));
     if (!S.tracks.length) return out;
+    return out.concat(renderTrackList(busy));
+  }
+
+  function renderTrackList(busy) {
+    const out = [];
     const m = S.trackMeta || {};
     for (const w of m.warnings || []) out.push(h('div', { class: 'note', text: w }));
     if (m.existing) out.push(h('div', { class: 'note', text: `Job đã có ${m.existing} track. Track mới có thể trùng với track cũ.` }));
@@ -2589,17 +2992,26 @@
     out.push(h('div', { class: 'row' },
       h('span', { class: 'grow muted', text: `${S.tracks.length} track (frame ${m.from}–${m.to}) · ${checked} đã chọn` }),
       h('button', { class: 'small', type: 'button', text: 'Bỏ track có cờ', onclick: () => { S.tracks.forEach((t) => { if (t.flags.length) t.checked = false; }); persist('tracks'); render(); drawOverlay(); } })));
-    out.push(h('ul', {}, S.tracks.map((t) => {
+    // 0.9.4: track không chọn (thường là track 1–2 frame, phát hiện nhầm) gom lại cuối danh sách, mặc định ẩn
+    const off = S.tracks.filter((t) => !t.checked);
+    if (off.length && checked) {
+      out.push(h('label', { class: 'check small-text' }, h('input', { type: 'checkbox', checked: !!S.showOffTracks,
+        onchange: (ev) => { S.showOffTracks = ev.target.checked; render(); } }), h('span', { text: `Hiện cả ${off.length} track không chọn` })));
+    }
+    const listed = (off.length && checked && !S.showOffTracks) ? S.tracks.filter((t) => t.checked) : S.tracks;
+    out.push(h('ul', {}, listed.map((t) => {
       const visibleNow = trackBoxAt(t, S.frame);
       const li = h('li', { class: 'item' },
         h('div', { class: 'row' },
           h('input', { type: 'checkbox', checked: t.checked, title: 'Ghi track này', onchange: (ev) => { t.checked = ev.target.checked; persist('tracks'); render(); drawOverlay(); } }),
           h('span', { class: 'swatch', style: `background:${trackColor(t.tid)}` }),
-          h('span', { class: 'grow', text: `#${t.tid} ${t.label_name} · frame ${t.start}–${t.end}` }),
-          h('span', { class: 'muted small-text', text: `${t.keyframes} keyframe${t.gaps ? ` · khuất ${t.gaps} lần` : ''}` }),
-          h('button', { class: 'small', type: 'button', text: 'Tới frame đầu', onclick: () => goToFrame(t.start) })),
-        t.flags.length ? h('div', { class: 'row' }, flagBadges(t.flags)) : null,
-        t.flags.length ? h('div', { class: 'muted small-text', text: t.flags.map((f) => f.message).join(' ') }) : null,
+          // 0.9.4: số keyframe xuống dòng dưới tên, để tên track không bị bóp thành một chữ mỗi dòng
+          h('div', { class: 'grow', style: 'min-width:0' },
+            h('div', { text: `${t.name ? t.name + ' · ' : ''}#${t.tid} ${t.label_name} · frame ${t.start}–${t.end}` }),
+            h('div', { class: 'muted small-text', text: `${t.keyframes} keyframe${t.gaps ? ` · khuất ${t.gaps} lần` : ''}` })),
+          h('button', { class: 'small', type: 'button', style: 'flex-shrink:0', text: 'Tới frame đầu', onclick: () => goToFrame(t.start) })),
+        t.flags.length ? h('div', { class: 'row fchips' }, flagBadges(t.flags, 't' + t.tid)) : null,
+        t.flags.length ? flagDetails(t.flags, 't' + t.tid) : null,
         visibleNow ? null : h('div', { class: 'muted small-text', text: 'Không có trên frame đang xem.' }));
       hover(li, 't' + t.tid);
       return li;
@@ -2618,7 +3030,114 @@
 
   // Tab Guideline: nạp guideline có sẵn (cho task khác), rồi soạn guideline nháp từ ảnh của job.
   function renderGuide() {
-    return [...renderImport(), h('hr', { style: 'border:none;border-top:1px solid var(--line, #3a3f47);margin:10px 0' }), ...renderGuideDraft()];
+    return [...renderProjectProfile(), ...renderImport(), h('hr', { style: 'border:none;border-top:1px solid var(--line, #3a3f47);margin:10px 0' }), ...renderGuideDraft()];
+  }
+
+  // ---- profile của project (0.9.4): dựng từ label của task + guideline, không cần file taxonomy ----
+  function projectInfo() {
+    return { project_id: (S.job && S.job.project_id) || null, task_id: (S.job && S.job.task_id) || null };
+  }
+
+  async function previewProjectProfile() {
+    const file = S.projFile || null;
+    await run(file ? `Đang đọc ${file.name} và label của task…` : 'Đang dựng profile từ label của task…', async () => {
+      if (!S.projName) {        // tên project (hoặc task) để đặt tên profile cho dễ nhận
+        const info = projectInfo();
+        try { S.projName = info.project_id ? (await cvat('GET', `/api/projects/${info.project_id}`)).name : (await cvat('GET', `/api/tasks/${info.task_id}`)).name; } catch (e) { S.projName = ''; }
+      }
+      const body = Object.assign({ labels: labelPayload(), name: (S.projName || ''), use_llm: !!cfg.importUseLlm }, projectInfo());
+      if (file) { body.filename = file.name; body.data_b64 = await readFileB64(file); } else if (S.projUseDraft && S.guide && S.guide.markdown) {
+        // Bản nháp guideline vừa soạn ở mục dưới: dùng luôn làm guideline của profile
+        body.filename = `ban-nhap-${S.jobId}.md`;
+        body.data_b64 = btoa(unescape(encodeURIComponent(S.guide.markdown)));
+      }
+      S.proj = await backend('POST', '/profile/project/preview', body);
+      const bad = S.proj.rows.filter((r) => r.status !== 'ok').length;
+      setStatus(`Đã dựng profile cho ${S.proj.rows.length} label${bad ? `, ${bad} label cần bạn xem` : ''}. Bấm "Thử trên frame này" rồi "Lưu cho project".`, 'ok');
+    });
+  }
+
+  async function tryProjectProfile() {
+    await run('Đang thử profile mới trên frame này…', async () => {
+      const frame = S.frame;
+      let ann = null;
+      try { ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`); } catch (e) { /* vẫn thử được */ }
+      const existing = ann ? existingAt(ann, frame) : [];
+      const fr = await getFrame();
+      const res = await backend('POST', '/propose', Object.assign(baseBody(), { image_b64: fr.b64, existing, profile_inline: S.proj.profile }));
+      if (frame !== S.frame) return;
+      S.proposals = stamp(res.proposals || [], 'frame');
+      S.tags = tagSuggestions(res.tags, ann, frame);
+      S.warnings = res.warnings || [];
+      S.propFrame = frame; S.imgW = res.width; S.imgH = res.height;
+      S.tab = 'propose';
+      setStatus(`Thử profile mới: ${S.proposals.length} đề xuất, ${(S.tags || []).length} tag. Chưa lưu: quay lại tab Guideline để lưu hoặc sửa.`, 'ok');
+      drawOverlay();
+    });
+  }
+
+  async function saveProjectProfile() {
+    const p = S.proj;
+    if (p.exists && !await uiConfirm('Project này đã có profile riêng. Ghi đè bằng bản mới?')) return;
+    await run('Đang lưu profile cho project…', async () => {
+      const res = await backend('POST', '/profile/project/save', { profile: p.profile, guideline_id: (p.guideline && p.guideline.id) || '' });
+      S.proj = null; S.projFile = null; S.projCurrent = null;
+      cfg.profileId = 'auto'; saveCfg();
+      clearProposals();
+      await resolveLabels();
+      setStatus(`Đã lưu profile ${res.profile_id}. Mọi job của ${projectInfo().project_id ? 'project' : 'task'} này tự dùng profile này.`, 'ok');
+    });
+  }
+
+  function renderProjectProfile() {
+    const busy = !!S.busy;
+    const llm = (S.health && S.health.guideline_llm) || { provider: 'none' };
+    const r = S.resolved || {};
+    const out = [h('h2', { text: 'Profile cho project' })];
+    out.push(h('p', { class: 'muted small-text', style: 'margin:0', text:
+      'Tool dựng cách gợi ý riêng cho project từ chính label của task (kể cả attribute, skeleton, tag). '
+      + 'Thêm guideline để tool hiểu định nghĩa, kích thước tối thiểu và quy ước trái/phải. Không cần file taxonomy.' }));
+    out.push(h('div', { class: 'row small-text' }, h('span', { class: 'grow', text: r.profile_id
+      ? `Job này đang dùng: ${r.title || r.profile_id}${r.project_profile ? ' (riêng của project)' : ''}` : 'Chưa đọc được label của job.' })));
+    const picker = h('input', { type: 'file', accept: '.docx,.md,.txt,.markdown,.pdf', disabled: busy,
+      onchange: (ev) => { S.projFile = (ev.target.files || [])[0] || null; render(); } });
+    out.push(h('label', { class: 'field' }, h('span', { text: 'Guideline (tuỳ chọn)' }), picker));
+    if (S.projFile) out.push(h('div', { class: 'muted small-text', text: `Đã chọn: ${S.projFile.name}` }));
+    else if (S.guide && S.guide.markdown) {
+      out.push(h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!S.projUseDraft, onchange: (ev) => { S.projUseDraft = ev.target.checked; } }),
+        h('span', { text: 'Dùng bản nháp guideline vừa soạn (mục Soạn guideline nháp bên dưới)' })));
+    }
+    if (llm.provider !== 'none') {
+      out.push(h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!cfg.importUseLlm,
+        onchange: (ev) => { cfg.importUseLlm = ev.target.checked; saveCfg(); } }),
+        h('span', { text: `Cho AI đọc guideline (gửi VĂN BẢN tới ${llm.provider}${llm.local ? ', chạy trên máy' : ''}, không gửi ảnh)` })));
+    } else {
+      out.push(h('div', { class: 'muted small-text', text: 'Chưa bật AI soạn guideline: tool đọc guideline bằng luật (bảng, câu chữ). Bật ở app: Cài đặt → AI soạn guideline.' }));
+    }
+    out.push(h('div', { class: 'row' }, h('button', { class: 'primary', type: 'button', disabled: busy || !S.labels.length || !(S.health && S.health.ok),
+      text: r.project_profile ? 'Tạo lại profile cho project' : 'Tạo profile cho project', onclick: previewProjectProfile })));
+    if (!S.proj) return out;
+    const p = S.proj;
+    for (const w of p.warnings || []) out.push(h('div', { class: 'note', text: w }));
+    for (const n of p.notes || []) out.push(h('div', { class: 'note', text: n }));
+    if (p.guideline) {
+      out.push(h('div', { class: 'muted small-text', text: `Guideline ${p.guideline.file}: ${p.guideline.checklist} mục checklist, ${p.guideline.issue_types} loại issue (dùng ở tab Kiểm tra).` }));
+    }
+    const label = { ok: 'Tool gợi ý được', warn: 'Gợi ý được một phần', bad: 'Bạn đánh tay' };
+    out.push(h('div', { class: 'group', style: 'gap:0' }, p.rows.map((row) => h('div', { class: 'prow' },
+      h('span', { class: 'dot ' + row.status, title: label[row.status] || '' }),
+      h('div', { class: 'grow', style: 'min-width:0' },
+        h('div', { class: 'row', style: 'gap:6px' }, h('b', { text: row.label }), h('span', { class: 'muted small-text', text: row.type })),
+        h('div', { class: 'small-text', text: row.how }),
+        row.note ? h('div', { class: 'small-text', style: 'color:#b07800', text: row.note }) : null,
+        row.details && row.details.length ? h('details', {}, h('summary', { text: `Chi tiết (${row.details.length})` }),
+          h('ul', {}, row.details.map((d) => h('li', { text: `${d.name}: ${d.text}` })))) : null)))));
+    out.push(h('div', { class: 'row' },
+      h('button', { type: 'button', disabled: busy, text: 'Huỷ', onclick: () => { S.proj = null; render(); } }),
+      h('span', { class: 'grow' }),
+      h('button', { type: 'button', disabled: busy, text: 'Thử trên frame này', onclick: tryProjectProfile }),
+      h('button', { class: 'primary', type: 'button', disabled: busy, text: 'Lưu cho project', onclick: saveProjectProfile })));
+    return out;
   }
 
   function renderGuideDraft() {
@@ -2633,8 +3152,15 @@
         onchange: (ev) => { cfg.guidePurpose = ev.target.value.trim(); saveCfg(); } })));
     out.push(h('div', { class: 'row' },
       h('label', { class: 'field' }, h('span', { text: 'Số ảnh mẫu' }),
-        h('input', { type: 'number', min: '4', max: '300', value: String(cfg.guideSample), style: 'width:80px',
-          onchange: (ev) => { cfg.guideSample = Math.max(4, Math.round(Number(ev.target.value) || 40)); saveCfg(); render(); } })),
+        cfg.guideSampleAuto !== false
+          ? h('div', { class: 'row', style: 'gap:6px' }, h('b', { text: String(autoSample(r).n) }),
+            h('button', { class: 'small', type: 'button', text: 'Tự chọn số', title: 'Nhập số ảnh mẫu bằng tay',
+              onclick: () => { cfg.guideSampleAuto = false; cfg.guideSample = autoSample(r).n; saveCfg(); render(); } }))
+          : h('div', { class: 'row', style: 'gap:6px' },
+            h('input', { type: 'number', min: '4', max: '300', value: String(cfg.guideSample), style: 'width:80px',
+              onchange: (ev) => { cfg.guideSample = Math.max(4, Math.round(Number(ev.target.value) || 40)); saveCfg(); render(); } }),
+            h('button', { class: 'small', type: 'button', text: 'Tự động', title: 'Để tool tự tính theo độ dài và độ đa dạng của job',
+              onclick: () => { cfg.guideSampleAuto = true; saveCfg(); render(); } }))),
       h('label', { class: 'field grow' }, h('span', { text: 'Từ khoá thêm (tiếng Anh, cách nhau bằng dấu phẩy)' }),
         h('input', { type: 'text', value: cfg.guideTerms, placeholder: 'tuk tuk, street vendor',
           onchange: (ev) => { cfg.guideTerms = ev.target.value; saveCfg(); } }))));
@@ -2648,7 +3174,15 @@
         onchange: (ev) => { cfg.guideSendImages = ev.target.checked; saveCfg(); } }),
         h('span', { text: `Cho phép gửi ảnh mẫu tới LLM (${llm.provider}${llm.local ? ', chạy trên máy' : ', ảnh sẽ rời máy bạn'})` })));
     }
-    const count = Math.min(Number(cfg.guideSample) || 40, Math.max(0, r.to - r.from + 1));
+    const count = sampleCount(r);
+    if (cfg.guideSampleAuto !== false) {
+      out.push(h('div', { class: 'muted small-text', text: `Tool tự chọn ${count} ảnh mẫu (${autoSample(r).why}). `
+        + (S.smart && S.smart.job === S.jobId ? '' : 'Chạy "Phân tích frame của job" ở tab Cả job để tool chọn theo độ đa dạng của ảnh.') }));
+    }
+    if (S.labels.length <= 1) {
+      out.push(h('div', { class: 'note', text: 'Task mới có label tạm (CVAT bắt buộc ít nhất 1 label): tool tự tìm các loại vật trong ảnh và đề xuất danh sách class. '
+        + 'Duyệt xong, bấm "Thêm label còn thiếu" để tool thêm vào task (không xoá label tạm).' }));
+    }
     out.push(h('div', { class: 'row' },
       h('button', { class: 'primary grow', type: 'button', disabled: busy || !S.labels.length, onclick: runGuideline, text: `Quét ${count} ảnh và soạn nháp` }),
       S.longTask === 'guide' ? h('button', { type: 'button', text: 'Dừng', onclick: () => { S.stopRequested = true; setStatus('Đang dừng quét, sẽ soạn nháp từ các ảnh đã quét…', 'busy'); } }) : null));
@@ -2687,19 +3221,53 @@
         h('button', { class: 'small', type: 'button', text: 'Sang tab Cả job', onclick: () => { S.tab = 'job'; render(); drawOverlay(); } })));
     }
 
-    const open = g.questions.filter((q) => !q.answer).length;
-    out.push(h('h2', { text: `Câu hỏi cần chốt (còn ${open}/${g.questions.length})` }));
+    // 0.9.4: mỗi câu có trạng thái (đã chốt / bỏ qua / chưa trả lời), câu đã chốt gọn một dòng, mỗi lựa chọn cho xem
+    // trước guideline sẽ thêm hoặc đổi dòng nào.
+    S.guideSkip = S.guideSkip || {};
+    const skip = S.guideSkip[g.run_id] = S.guideSkip[g.run_id] || new Set();
+    const state = (q) => (q.answer ? 'done' : skip.has(q.key) ? 'skip' : 'todo');
+    const nDone = g.questions.filter((q) => state(q) === 'done').length;
+    const nSkip = g.questions.filter((q) => state(q) === 'skip').length;
+    const nTodo = g.questions.length - nDone - nSkip;
+    out.push(h('h2', { text: `Câu hỏi cần chốt (còn ${nTodo}/${g.questions.length})` }));
+    out.push(h('div', { class: 'qprog' }, h('div', { class: 'bar' },
+      h('i', { class: 'done', style: `width:${(100 * nDone) / Math.max(1, g.questions.length)}%` }),
+      h('i', { class: 'skip', style: `width:${(100 * nSkip) / Math.max(1, g.questions.length)}%` })),
+    h('div', { class: 'row small-text' }, h('span', { class: 'grow', text: `Đã chốt ${nDone} · Bỏ qua ${nSkip} · Còn ${nTodo}` }),
+      nTodo ? h('button', { class: 'small', type: 'button', text: 'Tới câu chưa trả lời', onclick: () => {
+        const el = root.querySelector('li.q.todo');
+        if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 900); }
+      } }) : null)));
+    S.qOpen = S.qOpen || new Set();
     out.push(h('ul', {}, g.questions.map((q) => {
+      const st = state(q);
       const recommended = q.options.find((o) => o.id === q.recommended);
-      const select = h('select', { disabled: busy, style: 'width:100%', title: 'Chốt lựa chọn', onchange: (ev) => answerGuide(q.key, ev.target.value) },
-        h('option', { value: '', text: `Chưa chốt (tạm dùng: ${recommended ? recommended.label : q.recommended})` }),
-        q.options.map((o) => h('option', { value: o.id, text: o.label })));
-      select.value = q.answer || '';
-      return h('li', { class: 'item' },
-        h('div', { text: q.text }),
+      const chosen = q.options.find((o) => o.id === q.answer);
+      const mark = { done: '✓', skip: '–', todo: '?' }[st];
+      if (st !== 'todo' && !S.qOpen.has(q.key)) {
+        return h('li', { class: 'item q ' + st }, h('div', { class: 'row' },
+          h('span', { class: 'qmark ' + st, text: mark }),
+          h('span', { class: 'grow small-text', text: q.text }),
+          h('b', { class: 'small-text', text: st === 'done' ? chosen.label : `bỏ qua (tạm dùng: ${recommended ? recommended.label : q.recommended})` }),
+          h('button', { class: 'small', type: 'button', text: 'Sửa', onclick: () => { S.qOpen.add(q.key); render(); } })));
+      }
+      const effects = q.effects || {};
+      const opts = h('div', { class: 'qopts' }, q.options.map((o) => {
+        const lines = effects[o.id] || [];
+        return h('button', { type: 'button', class: 'qopt' + (q.answer === o.id ? ' on' : '') + (o.id === q.recommended ? ' rec' : ''), disabled: busy,
+          title: lines.length ? 'Guideline sẽ ghi:\n' + lines.join('\n') : '',
+          onclick: () => { S.qOpen.delete(q.key); skip.delete(q.key); answerGuide(q.key, o.id); } },
+        h('span', { text: o.label + (o.id === q.recommended ? ' (tool đề xuất)' : '') }),
+        lines.length ? h('small', { text: '→ ' + lines[0] }) : null);
+      }));
+      return h('li', { class: 'item q ' + st },
+        h('div', { class: 'row' }, h('span', { class: 'qmark ' + st, text: mark }), h('b', { class: 'grow', text: q.text })),
         q.evidence ? h('div', { class: 'small-text', text: q.evidence }) : null,
-        select,
-        h('div', { class: 'muted small-text', text: q.reason }),
+        opts,
+        h('div', { class: 'row' }, h('span', { class: 'grow muted small-text', text: q.reason }),
+          q.answer ? h('button', { class: 'small', type: 'button', text: 'Bỏ chốt', onclick: () => { S.qOpen.delete(q.key); answerGuide(q.key, ''); } })
+            : h('button', { class: 'small', type: 'button', text: 'Bỏ qua', title: 'Để sau: tool tạm dùng lựa chọn đề xuất',
+              onclick: () => { skip.add(q.key); S.qOpen.delete(q.key); render(); } })),
         q.examples.length ? h('div', { class: 'row' }, frameButtons(q.examples)) : null);
     })));
 
@@ -2813,7 +3381,11 @@
         h('label', { class: 'row' }, h('span', { class: 'grow', text: 'Ngôn ngữ / Language' }),
           (() => { const sel = h('select', { onchange: (ev) => { cfg.lang = ev.target.value; saveCfg(); render(); } },
             h('option', { value: 'vi', text: 'Tiếng Việt' }), h('option', { value: 'en', text: 'English' })); sel.value = cfg.lang || 'vi'; return sel; })()),
-        sw('Tương phản cao', 'highContrast', '', () => render())),
+        sw('Tương phản cao', 'highContrast', '', () => render()),
+        h('div', { class: 'row' }, h('span', { class: 'grow', text: 'Kích thước panel' }),
+          ...[['Gọn', 320], ['Vừa', 380], ['Rộng', 480]].map(([t, w]) => h('button', { class: 'small' + ((Number(cfg.panelWidth) || 380) === w ? ' on' : ''), type: 'button', text: t,
+            onclick: () => { cfg.panelWidth = w; cfg.panelHeight = null; saveCfg(); applyLook(); render(); } }))),
+        h('p', { class: 'muted small-text', style: 'margin:0', text: 'Hoặc kéo mép trái panel để đổi độ rộng, mép dưới để đổi chiều cao. Bấm đúp mép để về cỡ mặc định.' })),
       h('h2', { text: 'Nâng cao' }),
       ...advanced,
       h('p', { class: 'muted small-text', style: 'margin:0', text: `SAM3 Label Assist ${VERSION}. Giữ Alt rồi bấm lên ảnh để tick / bỏ tick đề xuất.` }),
@@ -2880,7 +3452,10 @@
       const head = h('button', { class: 'sec-h', type: 'button', 'aria-expanded': String(open),
         onclick: () => { cfg.openSecs[id] = !box.classList.contains('open'); saveCfg(); box.classList.toggle('open'); head.setAttribute('aria-expanded', String(cfg.openSecs[id])); } },
       h('span', { text: sec.title }), ico('right', 's chev'));
-      box.append(head, h('div', { class: 'sec-b' }, ...sec.nodes.filter(Boolean)));
+      // 0.9.4: đoạn giải thích dài đầu mục thu vào "Giải thích" để mục gọn, đọc lướt được
+      const nodes = sec.nodes.filter(Boolean).map((n) => (n.tagName === 'P' && n.classList.contains('muted') && n.textContent.length > 120
+        ? h('details', { class: 'help' }, h('summary', { text: 'Giải thích' }), n) : n));
+      box.append(head, h('div', { class: 'sec-b' }, ...nodes));
       out.push(box);
     });
     return out;
@@ -3024,16 +3599,36 @@
     out.push(h('p', { class: 'muted small-text', style: 'margin:0', text: 'Phân tích ảnh nén của các frame (không dùng GPU): frame nào khác lạ / khó nên làm trước, và keyframe theo chuyển động cho video.' }));
     out.push(h('button', { type: 'button', disabled: busy, text: S.smart && S.smart.job === S.jobId ? 'Phân tích lại' : 'Phân tích frame của job', onclick: analyzeJob }));
     if (S.smart && S.smart.job === S.jobId) {
-      out.push(h('div', { class: 'small-text', text: `Nên làm trước (${S.smart.ranking.length}):` }));
-      out.push(h('ul', {}, S.smart.ranking.slice(0, 15).map((x) => h('li', { class: 'item' }, h('div', { class: 'row' },
-        h('button', { class: 'small', type: 'button', text: `#${x.frame}`, onclick: () => goToFrame(x.frame) }),
-        h('span', { class: 'grow small-text muted', text: x.reasons.join(', ') }))))));
+      // 0.9.4: gom các frame cùng lý do vào một dòng (trước đây mỗi frame một thẻ, chữ lặp lại cả trang)
+      const top = S.smart.ranking.slice(0, 15), groups = [];
+      for (const x of top) {
+        const why = x.reasons.join(', ');
+        const g = groups.find((y) => y.why === why);
+        if (g) g.frames.push(x.frame); else groups.push({ why, frames: [x.frame] });
+      }
+      out.push(h('div', { class: 'small-text', text: `Nên làm trước (${top.length} frame, theo thứ tự ưu tiên):` }));
+      out.push(h('ul', {}, groups.map((g) => h('li', { class: 'item' },
+        h('div', { class: 'small-text muted', text: g.why }),
+        h('div', { class: 'row', style: 'flex-wrap:wrap;gap:4px;margin-top:4px' }, g.frames.map((f) =>
+          h('button', { class: 'small', type: 'button', text: `#${f}`, onclick: () => goToFrame(f) })))))));
       const keys = S.smart.keyframes || [];
+      // Ảnh rời (không phải video): gần như frame nào cũng là keyframe, danh sách không giúp gì
+      const allDiffer = S.smart.analyzed > 3 && keys.length >= 0.8 * S.smart.analyzed;
+      // 0.9.4: job video (tracking) thì chạy theo dõi và ra track; gợi ý trên keyframe chỉ ra shape rời từng frame
+      const videoJob = S.job && S.job.mode === 'interpolation' && trackLabels().length;
+      if (allDiffer && !videoJob) {
+        out.push(h('div', { class: 'muted small-text', text: `Keyframe: ${keys.length}/${S.smart.analyzed} frame khác hẳn nhau (ảnh rời, không phải video), `
+          + 'nên không lọc bớt được. Dùng "Gợi ý cả job" như bình thường.' }));
+      } else {
       out.push(h('div', { class: 'row small-text' }, h('span', { class: 'grow', text: `Keyframe theo chuyển động: ${keys.length}/${S.smart.analyzed} frame` }),
-        h('button', { class: 'small', type: 'button', disabled: busy || !keys.length || !S.resolved, text: 'Gợi ý cả job chỉ trên keyframe',
-          title: 'Chỉ chạy SAM3 trên các frame có thay đổi đáng kể', onclick: () => runBatch(false, keys) })));
+        videoJob
+          ? h('button', { class: 'small', type: 'button', disabled: busy || !S.resolved, text: 'Theo dõi cả job (ra track)',
+            title: 'Job video: theo dõi để có track mỗi đối tượng một ID; keyframe do tool chọn theo chuyển động', onclick: runTracking })
+          : h('button', { class: 'small', type: 'button', disabled: busy || !keys.length || !S.resolved, text: 'Gợi ý cả job chỉ trên keyframe',
+            title: 'Chỉ chạy SAM3 trên các frame có thay đổi đáng kể (ra shape trên từng frame, không phải track)', onclick: () => runBatch(false, keys) })));
       out.push(h('div', { class: 'row small-text' }, keys.slice(0, 40).map((f) => h('button', { class: 'small', type: 'button', text: String(f), onclick: () => goToFrame(f) })),
         keys.length > 40 ? h('span', { class: 'muted', text: `+${keys.length - 40}` }) : null));
+      }
     }
     const input = h('input', { type: 'text', class: 'grow', placeholder: 'Tìm frame có… (tiếng Anh, vd: motorbike carrying boxes)', value: (S.search && S.search.query) || '',
       onkeydown: (ev) => { if (ev.key === 'Enter') searchFrames(ev.target.value); } });
@@ -3101,12 +3696,17 @@
       const ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
       const byFrame = {};
       for (const x of ann.shapes || []) {
-        if (x.type !== 'rectangle' || !labelById(x.label_id)) continue;
-        const [x1, y1, x2, y2] = x.points;
-        (byFrame[x.frame] = byFrame[x.frame] || []).push({ label_id: x.label_id, bbox: [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)] });
+        // 0.9.4: học cả polygon và mask (lấy hộp bao); khi gợi ý, SAM3 tách đúng vật trong hộp model riêng tìm được
+        if (!['rectangle', 'polygon', 'mask'].includes(x.type) || !labelById(x.label_id)) continue;
+        let bbox;
+        if (x.type === 'rectangle') { const [x1, y1, x2, y2] = x.points; bbox = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)]; }
+        else if (x.type === 'mask') { const [l, t, r, b] = (x.points || []).slice(-4); bbox = [l, t, r + 1, b + 1]; }
+        else { const xs = x.points.filter((_, i) => i % 2 === 0), ys = x.points.filter((_, i) => i % 2 === 1); bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; }
+        if (!(bbox[2] - bbox[0] > 1 && bbox[3] - bbox[1] > 1)) continue;
+        (byFrame[x.frame] = byFrame[x.frame] || []).push({ label_id: x.label_id, bbox });
       }
       const frames = sampleRange(Object.keys(byFrame).map(Number).sort((a, b) => a - b), 200);
-      if (!frames.length) throw new Error('Job này chưa có nhãn hộp (rectangle) nào để học.');
+      if (!frames.length) throw new Error('Job này chưa có nhãn hộp, polygon hay mask nào để học.');
       let sent = 0, last = null;
       for (let i = 0; i < frames.length; i += 4) {
         if (S.stopRequested) break;
@@ -3122,7 +3722,7 @@
   }
   function renderCustomModel() {
     const out = [h('h2', { text: 'Model riêng của dự án' }),
-      h('p', { class: 'muted small-text', style: 'margin:0', text: 'Một detector nhỏ học từ chính các nhãn hộp đã duyệt của bạn. Class nào đạt chuẩn (đủ ví dụ, đúng ≥ 70%, tìm được ≥ 60% trên ảnh giữ lại để kiểm) mới được dùng, nhanh hơn SAM3 nhiều lần; class khác vẫn do SAM3 làm.' })];
+      h('p', { class: 'muted small-text', style: 'margin:0', text: 'Khác với "học từ cách bạn sửa" ở trên: đây là một detector nhỏ được huấn luyện từ chính các nhãn đã duyệt (hộp, polygon, mask). Class nào đạt chuẩn (đủ ví dụ, đúng ≥ 70%, tìm được ≥ 60% trên ảnh giữ lại để kiểm) mới được dùng, nhanh hơn SAM3 nhiều lần; class khác vẫn do SAM3 làm.' })];
     if (!S.custom) { loadCustom(); return out; }
     if (S.custom.error) { out.push(h('div', { class: 'note small-text', text: S.custom.error })); return out; }
     const d = S.custom.dataset || { images: 0, boxes: 0, per_class: {} };
@@ -3139,12 +3739,16 @@
         onclick: async () => await uiConfirm('Xoá dữ liệu và model riêng của profile này?') && run('Đang xoá…', async () => { await backend('POST', '/custom/clear', baseBody()); await loadCustom(); }) })));
     if (t.running) out.push(h('div', { class: 'small-text', text: `${t.message || 'Đang huấn luyện'}${t.loss ? ` · loss ${t.loss}` : ''}` }));
     if (t.error) out.push(h('div', { class: 'note small-text', text: t.error }));
+    if (S.custom.has_base === false) {
+      out.push(h('div', { class: 'note small-text', text: 'Máy chưa có trọng số khởi đầu cho model riêng: huấn luyện sẽ học từ con số 0 và thường ra 0%. Cài thành phần "Trọng số khởi đầu cho model riêng" ở trang Thành phần của app trước.' }));
+    }
     if (m) {
       out.push(h('table', {}, h('tr', {}, ['Class', 'Đúng', 'Tìm được', 'Ví dụ', 'Dùng'].map((x) => h('th', { text: x }))),
         m.classes.map((c) => { const k = m.metrics[c] || {}; const ok = m.usable.includes(c);
           return h('tr', {}, h('td', { text: c }), h('td', { text: `${Math.round((k.precision || 0) * 100)}%` }), h('td', { text: `${Math.round((k.recall || 0) * 100)}%` }),
             h('td', { text: String((m.counts || {})[c] || 0) }), h('td', { text: ok ? '✓' : '—', style: ok ? 'color:var(--ok)' : '' })); })));
       out.push(h('div', { class: 'muted small-text', text: `Huấn luyện lúc ${m.trained_at} trên ${m.device}, ${m.train_images} ảnh học, ${m.val_images} ảnh kiểm.` }));
+      for (const note of m.explain || []) out.push(h('div', { class: 'note small-text', text: note }));
     }
     out.push(h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!cfg.useCustom, disabled: !(m && m.usable && m.usable.length),
       onchange: (ev) => { cfg.useCustom = ev.target.checked; saveCfg(); clearProposals(); } }),
@@ -3326,7 +3930,7 @@
     const next = nextFrameOf(S.frame);
     if (next === null) return setStatus('Đây là frame cuối của job.', 'info');
     const shown = shownProposals().filter((p) => p.checked);
-    if (!shown.length) {                       // không có gì để ghi: chỉ sang frame tiếp
+    if (!shown.length && !(S.tags || []).some((t) => t.checked)) {   // không có gì để ghi: chỉ sang frame tiếp
       GM_setValue('autoNext', { jobId: S.jobId, frame: next, at: Date.now() });
       goToFrame(next);
       return;
@@ -3470,7 +4074,10 @@
   function applyLook() {
     const scale = Math.min(1.6, Math.max(0.8, Number(cfg.fontScale) || 1));
     host.style.setProperty('--font', `${(13 * scale).toFixed(1)}px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`);
-    host.style.width = `${Math.round(380 * Math.max(1, scale))}px`;
+    // 0.9.4: rộng theo cỡ bạn chọn (hoặc kéo mép trái panel); chữ to thì tự rộng thêm cho vừa
+    const base = Number(cfg.panelWidth) || 380;
+    host.style.width = `${Math.round(Math.min(Math.max(base * Math.max(1, scale), 300), window.innerWidth - 40))}px`;
+    if (cfg.panelHeight) host.style.setProperty('--panel-h', `${Math.round(cfg.panelHeight)}px`); else host.style.removeProperty('--panel-h');
     const hc = !!cfg.highContrast;
     for (const [k, v] of Object.entries({ '--bg': '#000000', '--bg-soft': '#1a1a1a', '--line': '#ffffff', '--text': '#ffffff', '--muted': '#e0e0e0', '--accent': '#ffd400', '--accent-text': '#000000' })) {
       if (hc) host.style.setProperty(k, v); else host.style.removeProperty(k);
@@ -3480,7 +4087,7 @@
 
   // ---- đa ngôn ngữ: toàn bộ chữ của panel có bản tiếng Anh (bộ dịch sinh từ backend/i18n/en.json) ----
   // <i18n-catalog> phần này do scripts/i18n_build.py sinh, đừng sửa tay
-  const I18N_DATA = {"codes":{"Backend không phản hồi sau 5 phút.":"E_BACKEND_TIMEOUT","Backend trả lỗi {0}. ":"E_BACKEND_HTTP","CVAT trả lỗi {0} cho {1} {2}. {3}":"E_CVAT_HTTP","Không kết nối được backend tại {0}. Kiểm tra backend đã chạy và địa chỉ trong Cài đặt panel (nút bánh răng).":"E_BACKEND_UNREACHABLE"},"strings":{"\nMục có cờ ({0}) được giữ lại để bạn duyệt từng frame.":"\nFlagged items ({0}) are kept for you to review frame by frame.","\nProfile có sẵn của tool sẽ quay lại khi bạn giải nén bản cập nhật mới.":"\nThe tool's built-in profile comes back when you unpack a new update.","\nVăn bản và định nghĩa của guideline vẫn còn; gỡ cả guideline ở tab Guideline.":"\nThe guideline's text and definitions remain; remove the guideline itself in the Guideline tab.","\n{0} nhãn đang có cờ cần xem kỹ.":"\n{0} labels are flagged for a closer look.","\n{0} track đang có cờ cần xem.":"\n{0} tracks are flagged for review."," (còn {0} lần ghi trước đó có thể hoàn tác tiếp)":" ({0} earlier saves can still be undone)"," (theo dõi bằng SAM3 Video)":" (tracked with SAM3 Video)"," Guideline không có bảng taxonomy: chọn thêm file taxonomy (.json), hoặc bấm \"Lấy label từ task đang mở\".":" The guideline has no taxonomy table: also choose a taxonomy file (.json), or press \"Take labels from the open task\"."," Không dùng được SAM3 Video ({0}), đã theo dõi bằng cách thường.":" SAM3 Video unavailable ({0}); tracked the regular way."," SAM3 Video lỗi giữa chừng ({0}), đã làm lại bằng cách thường.":" SAM3 Video failed midway ({0}); redone the regular way."," Tải lại trang (F5) để CVAT nhận label mới.":" Reload the page (F5) so CVAT picks up the new labels."," Tải lại trang (F5) để thấy chúng trên canvas.":" Reload the page (F5) to see them on the canvas."," Tải lại trang (F5) để thấy chúng.":" Reload the page (F5) to see them."," Vật nào bị nhận nhầm: bấm \"Loại trừ\" ở dòng của nó để SAM3 bỏ mọi vật giống vậy.":" If an object is wrong: press \"Exclude\" on its row so SAM3 drops every object like it."," và ":" and "," {0} lưu ý cho cả job.":" {0} notes for the whole job."," {0} điểm":" {0} points"," · có nhãn do tool tạo":" · has tool-created labels"," · khuất {0} lần":" · occluded {0} times"," · model đang nghỉ":" · model idle"," · {0} có thể sót":" · {0} possibly missed"," · {0} đang ẩn":" · {0} hidden"," Đang loại trừ {0} mẫu.":" Excluding {0} examples."," Đang tải lại trang để CVAT nhận label mới…":" Reloading the page so CVAT picks up the new labels…"," Đang tải lại trang…":" Reloading the page…"," ở frame {0}":" at frame {0}","(đang tắt) ":"(off) ",", bỏ qua {0} frame {1}":", skipped {0} frames that {1}",", chạy trên máy":", running locally",", {0} chỗ có thể sót":", {0} possibly missed",", ảnh sẽ rời máy bạn":", images will leave your machine","API key (nếu backend có đặt)":"API key (if the backend has one)","API key, phím tắt, nguồn nhãn…":"API key, shortcuts, label source…","Alt+{0} trùng phím của trình duyệt/Windows (menu, quay lại trang...). Chọn phím khác.":"Alt+{0} clashes with a browser/Windows shortcut (menu, page back...). Choose another key.","Backend bản {0} cũ hơn panel bản {1}. Cập nhật backend (cài app bản mới, hoặc git pull nếu chạy từ mã nguồn) rồi khởi động lại backend.":"Backend version {0} is older than panel version {1}. Update the backend (install the new app, or git pull when running from source), then restart the backend.","Backend chưa sẵn sàng: mở Cài đặt để kiểm tra kết nối":"Backend not ready: open Settings to check the connection","Backend không phản hồi sau 5 phút.":"The backend did not respond within 5 minutes.","Backend kết nối tốt ({0} trên {1}), nhưng {2}":"Backend connection OK ({0} on {1}), but {2}","Backend trả lỗi {0}. ":"Backend returned error {0}. ","Backend đang chạy chế độ GIẢ LẬP (mock): kết quả không phải của SAM3, chỉ để thử giao diện.":"The backend is running in MOCK mode: results are not from SAM3, for trying the UI only.","Backend ở máy chia sẻ đang chạy bản {0}, app này là bản {1}. Nhờ người quản lý máy đó cập nhật app cho cùng bản; trong lúc chờ, vài tính năng có thể không chạy.":"The shared machine's backend runs version {0}, this app is version {1}. Ask whoever manages that machine to update to the same version; until then some features may not work.","Backend: {0} trên {1}{2}":"Backend: {0} on {1}{2}","Bài học từ các lần trước đã dùng ({0})":"Lessons from previous runs used ({0})","Bản nháp":"Draft","Bấm \"Ghi\" để lưu vào CVAT, hoặc Alt+Enter để ghi rồi sang frame tiếp: frame sau đã được chạy sẵn.":"Press \"Save\" to store in CVAT, or Alt+Enter to save and go to the next frame: it is already pre-computed.","Bấm \"Gợi ý nhãn cho frame này\" (hoặc Alt+G). SAM3 đề xuất nhãn, hiện dạng xem trước trên ảnh.":"Press \"Suggest labels for this frame\" (or Alt+G). SAM3 suggests labels, shown as a preview on the image.","Bấm lên vật cần tách. Bấm phải (hoặc Shift+bấm) vào chỗ KHÔNG thuộc vật để sửa. Enter hoặc \"Xong\" để giữ, Esc để huỷ.":"Click on the object to segment. Right-click (or Shift+click) on areas NOT part of the object to correct. Enter or \"Done\" to keep, Esc to cancel.","Bấm một dòng để xem trên ảnh · {0} bật/tắt dòng đang chọn · giữ Alt rồi bấm lên ảnh để tick":"Click a row to see it on the image · {0} toggles the selected row · hold Alt and click the image to tick","Bấm một điểm lên vật (bấm thêm điểm để sửa), SAM3 tách đúng vật đó":"Click a point on the object (more points to correct) and SAM3 segments exactly that object","Bấm phím muốn dùng (cùng Alt)":"Press the key to use (with Alt)","Bấm điểm":"Click points","Bấm điểm: {0} điểm thuộc vật, {1} điểm loại trừ.":"Click points: {0} on the object, {1} excluded.","Bấm để ẩn class này":"Click to hide this class","Bật":"On","Bật label này":"Enable this label","Bỏ":"Discard","Bỏ (loại) đề xuất đang chọn":"Drop (reject) the selected suggestion","Bỏ chọn hết":"Select none","Bỏ kết quả":"Discard results","Bỏ label này":"Remove this label","Bỏ mục có cờ":"Untick flagged","Bỏ qua":"Skip","Bỏ qua frame đã có bất kỳ nhãn nào":"Skip frames with any annotation","Bỏ qua label đã có trên frame (chỉ gợi ý label frame còn thiếu)":"Skip labels already on the frame (only suggest labels the frame is missing)","Bỏ track có cờ":"Untick flagged tracks","Bỏ điểm cuối":"Remove last point","Bỏ đề xuất":"Discard","CSS selector của ảnh nền canvas CVAT":"CSS selector of the CVAT canvas image","CVAT không trả về label nào cho job này, nên tool chưa gợi ý được.":"CVAT returned no labels for this job, so the tool cannot suggest yet.","CVAT không trả về label nào cho job này. Xem chi tiết ở tab Label.":"CVAT returned no labels for this job. See details in the Labels tab.","CVAT nhận yêu cầu nhưng chưa thấy label: {0}. Kiểm tra lại phần label của task.":"CVAT accepted the request but the labels are not there: {0}. Check the task's labels.","CVAT nhận yêu cầu nhưng vẫn còn {0} nhãn semi-auto trong {1}. Máy chủ có thể không cho đổi trường này.":"CVAT accepted the request but {0} semi-auto labels remain in {1}. The server may not allow changing this field.","CVAT trả lỗi {0} cho {1} {2}. {3}":"CVAT returned error {0} for {1} {2}. {3}","Ca khó trong ảnh mẫu ({0})":"Hard cases in sample images ({0})","Cho LLM bổ sung prompt tiếng Anh và định nghĩa (gửi VĂN BẢN guideline tới {0}{1})":"Let the LLM add English prompts and definitions (sends the guideline TEXT to {0}{1})","Cho phép gửi ảnh mẫu tới LLM ({0}{1})":"Allow sending sample images to the LLM ({0}{1})","Chuyển file vào profiles/archive/, hiện lại được":"Move the file to profiles/archive/; can be shown again","Chuyển frame là có đề xuất ngay":"Suggestions are ready when you switch frames","Chép JSON label":"Copy label JSON","Chép cả bộ label dạng JSON để dán vào tab Raw khi tạo task mới":"Copy the whole label set as JSON to paste into the Raw tab when creating a new task","Chưa bật AI soạn guideline: bản nháp vẫn tạo được từ số liệu, guideline mẫu và bài học đã có, nhưng class mới bạn tự viết định nghĩa.":"AI guideline drafting is off: drafts are still built from figures, sample guidelines and existing lessons, but you write definitions for new classes yourself.","Chưa chọn label nào để gợi ý.":"No labels chosen to suggest.","Chưa chốt (tạm dùng: {0})":"Not decided (currently using: {0})","Chưa có dữ liệu. Ghi vài nhãn bằng tool, sửa chúng như bình thường trong CVAT, lưu lại, rồi mở lại job (hoặc bấm Đối chiếu).":"No data yet. Save a few labels with the tool, edit them as usual in CVAT, save, then reopen the job (or press Review).","Chưa có profile nào bị ẩn.":"No hidden profiles.","Chưa có đề xuất cho frame này":"No suggestions for this frame yet","Chưa kiểm tra backend":"Backend not checked yet","Chưa nối backend":"No backend","Chưa thấy cần chỉnh gì.":"Nothing to adjust yet.","Chưa tick track nào.":"No tracks ticked.","Chưa tick đề xuất nào (đề xuất đang bị ẩn bởi bộ lọc không được ghi).":"No suggestions ticked (suggestions hidden by filters are not saved).","Chạy gợi ý lần lượt cho mọi frame trong khoảng. Kết quả được giữ lại: mở frame nào thì tab Gợi ý hiện ngay đề xuất của frame đó.":"Runs suggestions for every frame in the range. Results are kept: open any frame and the Suggest tab shows its suggestions right away.","Chạy mọi kiểm tra ở trên cho tất cả frame của job, cộng: frame chưa có nhãn, label chưa dùng lần nào. Lưu (Ctrl+S) trước khi rà.":"Runs every check above on all frames of the job, plus: frames without labels, labels never used. Save (Ctrl+S) before checking.","Chạy nền, vẫn gán nhãn được trong lúc chờ":"Runs in the background; you can keep labelling while waiting","Chạy sẵn gợi ý cho frame tiếp theo":"Pre-run suggestions for the next frame","Chế độ reviewer":"Reviewer mode","Chỉ chạy SAM3 trên các frame có thay đổi đáng kể":"Only run SAM3 on frames with significant change","Chỉ ghi {0} nhãn":"Save {0} only","Chỉ job này":"This job only","Chỉ job {0}":"Job {0} only","Chỉ label chưa có trong job":"Only labels not yet in the job","Chỉ đổi khi phần xem trước không hiện. Mặc định: #cvat_canvas_background":"Only change this if the preview does not show. Default: #cvat_canvas_background","Chỉnh hộp: {0}":"Box adjustment: {0}","Chọn các label chưa có nhãn nào trong job (ví dụ label vừa thêm theo guideline mới)":"Select labels with no annotations in the job (e.g. labels just added for a new guideline)","Chọn file guideline (.docx, .md, .txt) và/hoặc file taxonomy (.json, ví dụ JSON label ở tab Raw của task CVAT); chọn cả hai cùng lúc được. Tool đọc bảng taxonomy, định nghĩa, Issue type, checklist, tiêu chí reviewer; bạn kiểm tra rồi lưu. Sau đó tool có profile gợi ý nhãn, checklist ở tab Kiểm tra, và dùng guideline này khi soạn nháp.":"Choose a guideline file (.docx, .md, .txt) and/or a taxonomy file (.json, e.g. the label JSON in the Raw tab of a CVAT task); you can choose both at once. The tool reads the taxonomy table, definitions, Issue types, checklist and reviewer criteria; you check and save. The tool then has a suggestion profile, a checklist in the Check tab, and uses this guideline when drafting.","Chọn hết":"Select all","Chọn skeleton của guideline…":"Choose the guideline skeleton…","Chọn đề xuất tiếp theo":"Select next suggestion","Chọn đề xuất trước":"Select previous suggestion","Chốt lựa chọn":"Confirm choice","Ctrl+Enter để gửi · Esc để huỷ":"Ctrl+Enter to send · Esc to cancel","Cài bản mới":"Install new version","Cài đặt panel":"Panel settings","Các cách đã thử:":"Attempts made:","Cách theo dõi":"Tracking method","Cách thường: SAM3 từng frame, nối ID theo vị trí và màu":"Regular: SAM3 per frame, IDs linked by position and colour","Cách vẽ vạch":"How to draw markings","Câu hỏi cần chốt (còn {0}/{1})":"Questions to decide ({0}/{1} left)","Có thể bạn đã sót vật":"You may have missed an object","Có thể sót \"{0}\" (SAM3 tin {1}%, chưa có nhãn nào ở đó).":"\"{0}\" may be missing (SAM3 {1}% confident, no label there yet).","Cả job":"Whole job","Cảnh báo":"Warning","Cần thêm dữ liệu ({0}/12 đề xuất đã có kết quả).":"More data needed ({0}/12 suggestions with known outcome).","Cần ít nhất 8 ảnh":"At least 8 images needed","Cỡ chữ {0}%":"Font size {0}%","Duyệt dạng lưới ảnh ({0} frame)":"Review as a thumbnail grid ({0} frames)","Duyệt từng đề xuất: tick để giữ, đổi class nếu sai. Alt+J / Alt+K chọn, Alt+X tick, giữ Alt rồi bấm lên ảnh cũng tick được.":"Review each suggestion: tick to keep, change the class if wrong. Alt+J / Alt+K select, Alt+X ticks; holding Alt and clicking the image also ticks.","Dùng":"Use","Dùng app trên máy này thì không cần sửa. Colab / máy khác: dán địa chỉ https của tunnel.":"No change needed when using the app on this machine. Colab / another machine: paste the tunnel's https address.","Dùng cho job này":"Use for this job","Dùng danh sách label của task đang mở làm taxonomy":"Use the open task's label list as the taxonomy","Dùng làm profile":"Use as profile","Dùng model riêng cho các class đạt chuẩn khi gợi ý":"Use the custom model for classes that reach the bar when suggesting","Dùng điều tool đã học khi gợi ý (ngưỡng, chỉnh hộp)":"Use what the tool learned (thresholds, box adjustments)","Dừng":"Stop","Dữ liệu model riêng: {0} ảnh, {1} hộp.":"Custom model data: {0} images, {1} boxes.","Dữ liệu thông minh":"Smart data","Dữ liệu: {0} ảnh, {1} hộp{2}":"Data: {0} images, {1} boxes{2}","Enter để đồng ý · Esc để huỷ":"Enter to confirm · Esc to cancel","Frame cần duyệt:":"Frames to review:","Frame lệch nhiều:":"Frames with large differences:","Frame này":"This frame","Frame {0} có {1} \"{2}\", frame này mới có {3}: có thể còn sót {4}.":"Frame {0} has {1} \"{2}\", this frame only has {3}: {4} may be missing.","Frame {0}: {1}/{2} frame, {3} đề xuất. Còn khoảng {4}. Bấm Dừng để tạm dừng, tiếp tục sau (kể cả khi tắt trình duyệt).":"Frame {0}: {1}/{2} frames, {3} suggestions. About {4} left. Press Stop to pause and continue later (even after closing the browser).","Frame đã có nhãn":"Frames already labelled","Ghi các đề xuất đã tick":"Save ticked suggestions","Ghi cả mục có cờ":"Include flagged items","Ghi lại cách tôi xử lý đề xuất để tool học":"Record how I handle suggestions so the tool can learn","Ghi nhãn này vào CVAT ({0}, hoặc giữ Alt rồi bấm lên ảnh)":"Save this label to CVAT ({0}, or hold Alt and click the image)","Ghi nhận sai sót sau khi dùng guideline":"Record a mistake found after using the guideline","Ghi nhận để lần sau không lặp lại":"Record so it does not happen again","Ghi rồi sang frame tiếp (đề xuất đã chạy sẵn)":"Save, then go to the next frame (suggestions pre-computed)","Ghi thành track: mỗi đối tượng một ID qua các frame, CVAT nội suy giữa các keyframe. Label: {0}. Profile: {1}.":"Saves as tracks: one ID per object across frames, CVAT interpolates between keyframes. Labels: {0}. Profile: {1}.","Ghi track này":"Save this track","Ghi {0} nhãn":"Save {0} labels","Ghi {0} nhãn trên {1} frame vào job {2}?{3}":"Save {0} labels on {1} frames to job {2}?{3}","Ghi {0} nhãn vào CVAT":"Save {0} labels to CVAT","Ghi {0} nhãn vào frame {1} của job {2}?{3}":"Save {0} labels to frame {1} of job {2}?{3}","Ghi {0} track vào CVAT":"Save {0} tracks to CVAT","Ghi {0} track vào job {1}?{2}":"Save {0} tracks to job {1}?{2}","Ghi {0}, sang frame tiếp":"Save {0}, next frame","Giả lập":"Mock","Giữ / bỏ mọi đề xuất của frame này":"Keep / drop all suggestions of this frame","Giữ {0} · sửa hình {1} · đổi class {2} · xoá {3} · bỏ tick {4} · bạn tự vẽ thêm {5}":"Kept {0} · reshaped {1} · class changed {2} · deleted {3} · unticked {4} · drawn by you {5}","Guideline \"{0}\" đã được nạp trước đây. Ghi đè bản cũ (cả profile gl_{1}, nếu bạn đã sửa tay)?":"Guideline \"{0}\" was imported before. Overwrite the old version (including profile gl_{1}, if you edited it by hand)?","Guideline đã nạp":"Imported guidelines","Gõ thứ cần tìm (tiếng Anh), ví dụ: motorbike carrying boxes":"Type what to look for (English), e.g.: motorbike carrying boxes","Gỡ":"Remove","Gỡ guideline \"{0}\" khỏi tool? File được chuyển vào thư mục archive, không bị xoá hẳn.":"Remove guideline \"{0}\" from the tool? The file is moved to the archive folder, not deleted.","Gợi ý":"Suggest","Gợi ý (chưa tự áp dụng)":"Notes (not applied automatically)","Gợi ý cho cả job":"Suggest for whole job","Gợi ý cho {0} frame{1}":"Suggest for {0} frames{1}","Gợi ý cả job chỉ trên keyframe":"Suggest for whole job on keyframes only","Gợi ý cả job xong":"Whole-job suggestions finished","Gợi ý nhãn cho frame này":"Suggest labels for this frame","Gửi":"Send","Gửi case này cho mentor qua Issue của CVAT":"Send this case to the mentor via a CVAT Issue","Hai job không có frame chung nào có nhãn (job {0}: {1} frame, job {2}: {3} frame).":"The two jobs share no labelled frames (job {0}: {1} frames, job {2}: {3} frames).","Hay gán khác nhau: {0}":"Often labelled differently: {0}","Hiển thị":"Display","Hiện lại":"Show","Hoàn tác":"Undo","Hoàn tác ({0})":"Undo ({0})","Hoàn tác lần ghi gần nhất":"Undo last save","Huấn luyện":"Train","Huấn luyện lúc {0} trên {1}, {2} ảnh học, {3} ảnh kiểm.":"Trained at {0} on {1}, {2} training images, {3} test images.","Huấn luyện model riêng xong":"Custom model training finished","Huỷ":"Cancel","Hãy mô tả sai sót cụ thể hơn.":"Please describe the mistake more specifically.","Hôm nay":"Today","Hôm nay: {0} nhãn, {1} frame, ước tính tiết kiệm {2} phút.":"Today: {0} labels, {1} frames, about {2} minutes saved.","Hướng dẫn":"Tour","Hướng dẫn {0}/{1}":"Tour {0}/{1}","Hỏi lại trước khi ghi":"Ask before saving","Hộp quá nhỏ, hãy vẽ lại.":"Box too small, please draw again.","Hộp đã được chỉnh theo cách bạn hay sửa (tab Tự học).":"The box was adjusted the way you usually fix it (Learning tab).","Job có {0} track; tool chỉ kiểm tra shape, chưa kiểm tra track.":"The job has {0} tracks; the tool only checks shapes, not tracks yet.","Job không có label rectangle nào để theo dõi.":"The job has no rectangle labels to track.","Job này chưa có nhãn hộp (rectangle) nào để học.":"This job has no box (rectangle) labels to learn from.","Job này chưa có đề xuất nào do tool ghi (hoặc bạn đã tắt ghi nhận).":"This job has no suggestions saved by the tool yet (or you turned recording off).","Job {0}: {1} frame, {2} lỗi, {3} cảnh báo.":"Job {0}: {1} frames, {2} errors, {3} warnings.","Job {0}: {1} frame, {2} đề xuất, {3} mục có cờ.":"Job {0}: {1} frames, {2} suggestions, {3} flagged items.","Job {0}: {1} track, {2} track có cờ.":"Job {0}: {1} tracks, {2} flagged tracks.","Job đã có {0} track. Track mới có thể trùng với track cũ.":"The job already has {0} tracks. New tracks may duplicate old ones.","Keyframe dày":"Dense keyframes","Keyframe theo chuyển động: {0}/{1} frame":"Motion keyframes: {0}/{1} frames","Khi duyệt":"While reviewing","Khi ghi vào CVAT":"When saving to CVAT","Khi task đã đủ label và bạn đã bấm \"Dùng làm profile\": tool gán nhãn được cho mọi frame (ảnh, skeleton) hoặc theo dõi (video).":"Once the task has all labels and you have pressed \"Use as profile\": the tool can label every frame (images, skeletons) or track (video).","Khoảng frame không hợp lệ.":"Invalid frame range.","Khó quan sát":"Hard to see","Không bỏ qua (đề xuất trùng nhãn cũ bị bỏ tick)":"Do not skip (suggestions duplicating existing labels are unticked)","Không chắc biên":"Uncertain boundary","Không chắc class":"Uncertain class","Không chắc phạm vi":"Uncertain scope","Không có lần ghi nào của job này để hoàn tác.":"No saves in this job to undo.","Không có lỗi nào để tạo Issue.":"No errors to create Issues for.","Không có nhãn semi-auto nào trong {0}.":"No semi-auto labels in {0}.","Không có trong guideline":"Not in the guideline","Không có trên frame đang xem.":"Not on the current frame.","Không có đề xuất nào sẵn sàng để ghi.":"No suggestions ready to save.","Không kết nối được backend tại {0}. Kiểm tra backend đã chạy và địa chỉ trong Cài đặt panel (nút bánh răng).":"Cannot connect to the backend at {0}. Check the backend is running and the address in Panel settings (gear button).","Không thấy lỗi đo được bằng máy. Các mục \"Tự rà\" vẫn cần bạn kiểm tra.":"No machine-measurable errors found. The \"Self-check\" items still need your review.","Không tách được vật ở các điểm này. Thử bấm vào giữa vật.":"Could not segment an object at these points. Try clicking the middle of the object.","Không tìm thấy canvas của CVAT nên không bấm điểm được.":"CVAT canvas not found, so points cannot be clicked.","Không tìm thấy canvas của CVAT nên không vẽ hộp được. Xem mục \"Xử lý sự cố\" trong README.":"CVAT canvas not found, so a box cannot be drawn. See \"Troubleshooting\" in the README.","Không tìm thấy ô số frame. Hãy tự chuyển tới frame {0}.":"Frame number box not found. Please go to frame {0} yourself.","Không áp điều đã học cho label này (vẫn giữ dữ liệu)":"Do not apply what was learned for this label (data is kept)","Không đọc được file.":"Cannot read the file.","Khớp":"Matched","Kiểm luật QA trước khi ghi":"Check QA rules before saving","Kiểm tra":"Check","Kiểm tra ID":"Check ID","Kiểm tra annotation của frame này":"Check annotations on this frame","Kiểm tra attribute":"Check attributes","Kiểm tra kết nối":"Test connection","Kiểm tra occluded":"Check occluded","Kiểm tra trước khi ghi: {0} lỗi trên các đề xuất đã tick.\n\n{1}\n\nVẫn ghi?":"Pre-save check: {0} errors on the ticked suggestions.\n\n{1}\n\nSave anyway?","Kéo chuột trên ảnh để vẽ một hộp quanh đối tượng. Esc để huỷ.":"Drag on the image to draw a box around the object. Esc to cancel.","Kéo thanh \"Ngưỡng\" để ẩn đề xuất điểm thấp, bấm tên class để ẩn/hiện cả class.":"Drag the \"Threshold\" slider to hide low-score suggestions; click a class name to hide/show the whole class.","Kết nối":"Connect","Kết nối tốt: {0} trên {1}, phiên bản {2}. Đã đọc {3} label.":"Connection OK: {0} on {1}, version {2}. Read {3} labels.","Kết quả quá lớn để giữ lại khi tải lại trang. Hãy ghi hoặc duyệt trước khi tải lại.":"Result too large to keep across a page reload. Save or review it before reloading.","Label cho hộp vẽ tay":"Label for hand-drawn boxes","Label cần gợi ý ({0}/{1}):":"Labels to suggest ({0}/{1}):","Label lấy từ task CVAT. Prompt nên là cụm danh từ tiếng Anh ngắn. Thay đổi được nhớ theo tên label.":"Labels come from the CVAT task. Prompts should be short English noun phrases. Changes are remembered by label name.","Label nào trong job cũng đã có nhãn; chọn tay label cần gợi ý.":"Every label in the job already has annotations; choose the labels to suggest by hand.","Label này là skeleton nào của guideline":"Which guideline skeleton this label is","Loại bài toán (tool đoán: {0})":"Task type (tool guess: {0})","Loại shape":"Shape type","Loại trừ":"Exclude","Lưu vào tool":"Save to tool","Lượt \"Tìm tương tự\" này đã cũ. Vẽ lại hộp mẫu.":"This \"Find similar\" session is stale. Draw the example box again.","Lượt gợi ý cả job đang tạm dừng: còn {0}/{1} frame.":"The whole-job run is paused: {0}/{1} frames left.","Lấy label từ task đang mở":"Take labels from the open task","Lỗ hổng tool tự phát hiện ({0})":"Gaps the tool found ({0})","Lỗi":"Error","Lỡ tay? \"Hoàn tác\" (Alt+Z) xoá lần ghi gần nhất, bấm tiếp để lùi thêm. Tab Tự học cho biết tool đã học gì từ cách bạn sửa.":"Made a mistake? \"Undo\" (Alt+Z) deletes the last save; press again to go further back. The Learning tab shows what the tool learned from your edits.","Model riêng của dự án":"Project custom model","Muốn AI viết giúp: mở app SAM3 Label Assist trên máy chạy backend → Cài đặt → AI soạn guideline, rồi bật lại backend.":"To let AI help: open the SAM3 Label Assist app on the computer running the backend → Settings → AI guideline drafting, then restart the backend.","Một detector nhỏ học từ chính các nhãn hộp đã duyệt của bạn. Class nào đạt chuẩn (đủ ví dụ, đúng ≥ 70%, tìm được ≥ 60% trên ảnh giữ lại để kiểm) mới được dùng, nhanh hơn SAM3 nhiều lần; class khác vẫn do SAM3 làm.":"A small detector that learns from your own reviewed box labels. Only classes that reach the bar (enough examples, precision ≥ 70%, recall ≥ 60% on held-out images) are used, many times faster than SAM3; other classes are still handled by SAM3.","Mở bản nháp để sửa và duyệt":"Open the draft to edit and approve","Mở frame này":"Open this frame","Mở rộng panel":"Expand panel","Mục đích của bộ dữ liệu (model sẽ dùng nhãn này để làm gì)":"Purpose of the dataset (what the model will use these labels for)","Ngôn ngữ / Language":"Language / Ngôn ngữ","Ngưỡng":"Threshold","Ngưỡng tin cậy":"Confidence threshold","Ngưỡng tin cậy khi tìm người":"Confidence threshold when finding people","Ngưỡng {0} → {1}: {2}":"Threshold {0} → {1}: {2}","Ngưỡng {0}%":"Threshold {0}%","Nhập số job khác (cùng task, cùng frame) để so.":"Enter another job number (same task, same frames) to compare.","Nhắc khi frame có ít vật hơn frame bên cạnh":"Warn when a frame has fewer objects than its neighbors","Nâng cao":"Advanced","Nên làm trước ({0}):":"Do first ({0}):","Nạp bản nháp gần nhất của job này":"Load this job's latest draft","Nạp guideline có sẵn cho task khác":"Import a guideline for another task","Nạp lại":"Reload","Nạp lại profile":"Reload profiles","Nội dung Issue gửi mentor/reviewer:":"Issue text for the mentor/reviewer:","Outside cả skeleton ({0} điểm)":"Whole skeleton Outside ({0} points)","Panel (userscript) bản {0} cũ hơn backend bản {1}. Bấm \"Cài bản mới\" rồi chọn Update trong Tampermonkey, sau đó tải lại trang.":"The panel (userscript) version {0} is older than backend version {1}. Click \"Install new version\", choose Update in Tampermonkey, then reload the page.","Phát hiện ({0})":"Findings ({0})","Phân tích frame của job":"Analyse the job's frames","Phân tích lại":"Analyse again","Phân tích ảnh nén của các frame (không dùng GPU): frame nào khác lạ / khó nên làm trước, và keyframe theo chuyển động cho video.":"Analyses compressed frame images (no GPU): which frames are unusual / hard and worth doing first, and motion keyframes for video.","Phím Alt+{0} đang dùng cho \"{1}\".":"Alt+{0} is already used for \"{1}\".","Phím tắt (giữ Alt + phím)":"Shortcuts (hold Alt + key)","Phạm vi":"Scope","Profile có sẵn \"{0}\" đã khớp các label này. \"Tự chọn profile\" sẽ giữ profile có sẵn; muốn dùng guideline mới thì chọn tay profile của nó ở đầu panel (hoặc bấm \"Dùng cho job này\").":"Existing profile \"{0}\" already matches these labels. \"Auto-select profile\" keeps the existing profile; to use the new guideline, choose its profile by hand at the top of the panel (or press \"Use for this job\").","Profile guideline · đang dùng: {0}":"Guideline profile · in use: {0}","Profile đang dùng ({0})":"Active profiles ({0})","Profile đang ẩn ({0})":"Hidden profiles ({0})","Prompt SAM3 để tìm người":"SAM3 prompt to find people","Prompt cho SAM3, cách nhau bằng dấu phẩy":"Prompts for SAM3, separated by commas","Quay lại":"Back","Quét {0} ảnh và soạn nháp":"Scan {0} images and draft","Quên":"Forget","Quên tất cả":"Forget all","Quản lý profile":"Manage profiles","Rà cả job":"Check whole job","Rà cả job xong":"Whole-job check finished","Rà {0} frame có nhãn: {1} lỗi, {2} cảnh báo{3}.{4}":"Checked {0} labelled frames: {1} errors, {2} warnings{3}.{4}","SAM3 Assist: hiện/ẩn panel":"SAM3 Assist: show/hide panel","SAM3 Label Assist {0}. Giữ Alt rồi bấm lên ảnh để tick / bỏ tick đề xuất.":"SAM3 Label Assist {0}. Hold Alt and click the image to tick / untick suggestions.","SAM3 Video (thử nghiệm): model tự giữ ID, tốn VRAM hơn":"SAM3 Video (experimental): the model keeps IDs itself, uses more VRAM","SAM3 đang phân tích frame…":"SAM3 is analysing the frame…","SAM3 đang tách vật theo các điểm…":"SAM3 is segmenting the object from the points…","SAM3 đang tìm \"{0}\" trong {1} frame…":"SAM3 is searching for \"{0}\" in {1} frames…","SAM3 đang tìm lại, bỏ các vật giống hộp loại trừ…":"SAM3 is searching again, excluding objects like the excluded boxes…","SAM3 đang tìm đối tượng trong hộp…":"SAM3 is looking for the object in the box…","Sang frame tiếp":"Next frame","Sang tab Cả job":"Go to the Whole job tab","So các nhãn tool đã ghi với nhãn hiện tại (sau khi bạn sửa) rồi học lại. Tool cũng tự làm việc này mỗi lần mở job.":"Compare the labels the tool saved with the current labels (after your edits) and re-learn. The tool also does this every time a job opens.","So nhãn của job này với một job khác gán cùng các frame (ví dụ job kiểm tra chéo). Class đồng thuận thấp thường là chỗ guideline còn mơ hồ.":"Compares this job's labels with another job that labelled the same frames (e.g. a cross-check job). Classes with low agreement usually point to vague parts of the guideline.","So sánh":"Compare","So với job":"Compare with job","Soạn guideline nháp từ ảnh của job":"Draft a guideline from job images","Sẵn sàng":"Ready","Số ảnh mẫu":"Number of sample images","Task còn thiếu: {0}.":"Task is missing: {0}.","Task đã có đủ label theo guideline.{0}":"The task already has all labels from the guideline.{0}","Task đã có đủ label theo taxonomy của bản nháp.":"The task already has all labels from the draft's taxonomy.","Task đã có đủ label theo taxonomy.":"The task already has all taxonomy labels.","Theo dõi {0} frame":"Track {0} frames","Theo dõi đối tượng (video)":"Track objects (video)","Theo dõi đối tượng xong":"Object tracking finished","Thu gọn panel":"Collapse panel","Thu thập từ job này":"Collect from this job","Thêm label":"Add label","Thêm label còn thiếu":"Add missing labels","Thêm {0} label còn thiếu vào task":"Add {0} missing labels to the task","Thêm {0} label vào {1}?\n{2}\n\nTool chỉ thêm label mới; label đang có được giữ nguyên.":"Add {0} labels to {1}?\n{2}\n\nThe tool only adds new labels; existing labels are kept.","Thêm {0} đề xuất từ hộp vừa vẽ.{1}{2}":"Added {0} suggestions from the box just drawn.{1}{2}","Thứ tự điểm":"Point order","Tick / bỏ tick đề xuất đang chọn":"Tick / untick the selected suggestion","Tiếng Việt":"Tiếng Việt","Tiếp":"Next","Tiếp tục":"Continue","Tool chỉ gợi ý. Bạn duyệt từng nhãn rồi mới ghi vào CVAT.":"The tool only suggests. You review each label before it is saved to CVAT.","Tool gợi ý nhãn đang dùng profile sinh từ bản nháp này. Đổi lại ở ô chọn profile phía trên.":"Suggestions now use the profile generated from this draft. Change it back in the profile selector above.","Tool học từ cách BẠN xử lý đề xuất: nhãn giữ nguyên, nhãn bị kéo lại, đổi class, xoá, bỏ tick, và nhãn bạn tự vẽ thêm. Từ đó nó chỉnh ngưỡng tin cậy và cách đặt hộp cho từng label. Model SAM3 không bị huấn luyện lại; chỉnh tay ở tab Label luôn thắng điều tool đã học.":"The tool learns from how YOU handle suggestions: labels kept, labels dragged, class changes, deletions, unticks, and labels you draw yourself. From that it adjusts the confidence threshold and box placement for each label. The SAM3 model is not retrained; manual settings in the Labels tab always win over what the tool learned.","Tool quét một số ảnh mẫu, đo xem trong ảnh có gì và chỗ nào dễ nhầm, rồi soạn bản nháp theo khung của các guideline mẫu. Luật là quyết định của người: tool hỏi, bạn chốt.":"The tool scans some sample images, measures what is in them and what is easy to confuse, then drafts a guideline in the structure of the sample guidelines. Rules are human decisions: the tool asks, you decide.","Tool tự thấy: ":"The tool noticed: ","Tool đã học: {0} → {1} ({2}). Gõ số khác để đặt tay.":"The tool learned: {0} → {1} ({2}). Type another number to set it by hand.","Track nhầm?":"Wrong track?","Trái/phải?":"Left/right?","Trên các đề xuất đã tick":"On the ticked suggestions","Trùng lặp":"Duplicate","Trạng thái backend":"Backend status","Trạng thái điểm":"Point state","Tìm":"Find","Tìm \"{0}\": {1}/{2} frame, thấy {3}.":"Searching \"{0}\": {1}/{2} frames, found {3}.","Tìm cả đối tượng có thể bị sót (chạy SAM3 trên từng frame, chậm như Gợi ý cho cả job)":"Also look for possibly missed objects (runs SAM3 on every frame, as slow as Suggest for whole job)","Tìm frame có… (tiếng Anh, vd: motorbike carrying boxes)":"Find frames with… (English, e.g. motorbike carrying boxes)","Tìm frame xong":"Frame search finished","Tìm tương tự":"Find similar","Tìm được":"Recall","Tương phản cao":"High contrast","Tạo Issue":"Create issue","Tạo Issue cho mọi lỗi":"Create issues for all errors","Tạo profile từ bản nháp để tool gợi ý nhãn theo đúng các luật này":"Create a profile from the draft so the tool suggests labels by exactly these rules","Tạo {0} Issue trên CVAT (mỗi lỗi một Issue, đặt đúng frame và vị trí)?":"Create {0} Issues in CVAT (one Issue per error, at the right frame and position)?","Tải .md":"Download .md","Tải lại trang sau khi ghi":"Reload the page after saving","Tất cả":"All","Tắt":"Off","Tắt bài học sai ở trang duyệt bản nháp.":"Turn off wrong lessons on the draft review page.","Tới frame này và khoanh vùng ví dụ":"Go to this frame and highlight the example","Tới frame đầu":"Go to first frame","Từ frame":"From frame","Từ khoá thêm (tiếng Anh, cách nhau bằng dấu phẩy)":"Extra keywords (English, separated by commas)","Tự chọn profile":"Auto-select profile","Tự chọn: {0}":"Auto: {0}","Tự gợi ý khi chuyển frame":"Suggest automatically when changing frame","Tự học":"Learning","Tự rà":"Self-check","Tự vẽ một nhãn":"Draw a label yourself","Tự điền: {0} (đổi được trong CVAT sau khi ghi)":"Auto-filled: {0} (can be changed in CVAT after saving)","Viền tím \"AI\" cho nhãn tool ghi mà chưa ai sửa":"Purple \"AI\" outline on labels the tool saved that nobody has edited","Ví dụ":"Examples","Ví dụ: phát hiện người đi bộ cho camera hành trình":"E.g. pedestrian detection for dash cams","Ví dụ: reviewer trả bài vì xe ba bánh chở hàng phải gán truck":"E.g. the reviewer rejected work because cargo tricycles must be labelled truck","Vật này bị nhận nhầm: dùng nó làm mẫu ÂM, SAM3 tìm lại và bỏ mọi vật giống nó":"This object is wrong: use it as a NEGATIVE example; SAM3 searches again and drops every object like it","Vẽ hộp":"Draw box","Vẽ một hộp làm mẫu, SAM3 tìm mọi đối tượng giống vậy":"Draw an example box and SAM3 finds every similar object","Vẽ một hộp, SAM3 lấy đúng đối tượng đó":"Draw a box and SAM3 takes exactly that object","Về mặc định của profile":"Reset to profile defaults","Về phím mặc định":"Reset shortcuts","Xem lại hướng dẫn":"Show the tour again","Xem trước: {0}":"Preview: {0}","Xoá":"Delete","Xoá dữ liệu và model riêng của profile này?":"Delete this profile's custom model and data?","Xoá dữ liệu và điều đã học của label này":"Delete this label's data and what was learned","Xoá hẳn file profile":"Permanently delete the profile file","Xoá hẳn profile {0}? File bị xoá khỏi máy, không hoàn tác được.{1}{2}":"Permanently delete profile {0}? The file is removed from the machine and cannot be undone.{1}{2}","Xoá mọi điều tool đã học (mọi profile)?":"Delete everything the tool learned (all profiles)?","Xoá mọi điều tool đã học về \"{0}\"?":"Delete everything the tool learned about \"{0}\"?","Xoá {0} mà tool đã ghi ở frame {1}{2}?":"Delete {0} that the tool saved at frame {1}{2}?","Xuất báo cáo CSV":"Export CSV report","Xuất báo cáo năng suất (CSV)":"Export productivity report (CSV)","bạn sửa":"edited by you","chưa kiểm tra":"not checked","chưa kết nối":"not connected","có sẵn trong tool":"built into the tool","cả job {0}":"whole job {0}","hai cạnh dài (crosswalk)":"two long sides (crosswalk)","hai mép (vạch kép)":"two edges (double line)","luôn có":"always present","model khuôn mặt":"face model","ngay (đã chạy sẵn)":"instantly (pre-computed)","nạp từ guideline":"imported from guideline","project {0} (label của task này nằm ở project)":"project {0} (this task's labels live in the project)","prompt tiếng Anh":"English prompt","skeleton {0} điểm":"{0}-point skeleton","skeleton: không dùng prompt":"skeleton: no prompt used","suy ra bằng luật":"derived by rules","số job":"job number","tab Label của job":"the job's Labels tab","task đang mở":"the open task","theo tim vạch":"along the centre","tới":"to","tự học":"learned","{0} ({1} điểm)":"{0} ({1} points)","{0} Issue type · {1} mục checklist · {2} tiêu chí reviewer. Prompt là cụm tiếng Anh ngắn SAM3 dùng để tìm vật (rê chuột lên ô để xem nguồn); để trống thì tool không tự tìm label đó.":"{0} Issue types · {1} checklist items · {2} reviewer criteria. The prompt is the short English phrase SAM3 uses to find objects (hover to see its source); if empty, the tool will not look for that label.","{0} Nếu tài khoản của bạn không có quyền sửa task, bấm \"Chép JSON label\" và gửi cho người tạo task.":"{0} If your account cannot edit the task, press \"Copy label JSON\" and send it to the task creator.","{0} cờ":"{0} flags","{0} frame có kết quả · {1} đề xuất · {2} mục có cờ":"{0} frames with results · {1} suggestions · {2} flagged items","{0} frame cần xem · {1} lỗi · {2} cảnh báo{3}":"{0} frames to review · {1} errors · {2} warnings{3}","{0} giây":"{0} seconds","{0} lỗi · {1} khác{2}":"{0} errors · {1} other{2}","{0} nhãn":"{0} labels","{0} nhãn đã ghi · {1} đề xuất bị bỏ · {2} frame · ước tính tiết kiệm {3} phút":"{0} labels saved · {1} suggestions dropped · {2} frames · about {3} minutes saved","{0} phút":"{0} minutes","{0} track (frame {1}–{2}) · {3} đã chọn":"{0} tracks (frames {1}–{2}) · {3} selected","{0} vật, điểm {1}%":"{0} objects, score {1}%","{0} · {1} ảnh · {2} loại đối tượng · {3}% bị che · {4}% rất nhỏ":"{0} · {1} images · {2} kinds of objects · {3}% occluded · {4}% very small","{0} Đổi lại ở ô chọn profile phía trên.":"{0} Change it back in the profile selector above.","{0} điều đã học cho \"{1}\".":"{0} learned for \"{1}\".","{0} đề xuất {1}, {2} cần xem kỹ. Duyệt rồi bấm \"Ghi\" (hoặc {3}: ghi và sang frame tiếp).":"{0} suggestions {1}, {2} need a closer look. Review, then press \"Save\" (or {3}: save and go to the next frame).","{0} đề xuất · {1} đã chọn{2}":"{0} suggestions · {1} selected{2}","{0}\"{1}\": thấy ở {2} frame.":"{0}\"{1}\": found in {2} frames.","{0}. Bấm nhiều lần để lùi thêm (tối đa 20 lần ghi).":"{0}. Press repeatedly to go further back (up to 20 saves).","{0}/{1} điểm{2}":"{0}/{1} points{2}","{0}: ghi nhưng ở lại frame này":"{0}: save but stay on this frame","{0}: ghi rồi sang frame {1}, đề xuất của frame đó đã chạy sẵn":"{0}: save, then go to frame {1}, whose suggestions are already pre-computed","{0}{1} frame có {2} đề xuất{3}. {4} mục có cờ cần duyệt.":"{0}{1} frames have {2} suggestions{3}. {4} flagged items need review.","{0}{1} track, {2} track có cờ cần xem{3}. Tua qua các frame để kiểm tra rồi bấm Ghi.{4}":"{0}{1} tracks, {2} flagged tracks to review{3}. Scrub through the frames to check, then press Save.{4}","Áp lại điều đã học":"Apply what was learned again","Đang bắt đầu huấn luyện…":"Starting training…","Đang chạy sẵn frame {0}…":"Pre-computing frame {0}…","Đang cập nhật bản nháp…":"Updating the draft…","Đang cập nhật label…":"Updating labels…","Đang cập nhật phần tự học…":"Updating learning data…","Đang cập nhật profile…":"Updating profile…","Đang dùng":"In use","Đang dùng profile của \"{0}\": khớp {1}/{2} label của job.":"Using the profile of \"{0}\": matches {1}/{2} labels of the job.","Đang dừng quét, sẽ soạn nháp từ các ảnh đã quét…":"Stopping the scan; the draft will use the images scanned so far…","Đang dừng sau frame hiện tại…":"Stopping after the current frame…","Đang ghi nhãn của cả job…":"Saving labels for the whole job…","Đang ghi nhãn vào CVAT…":"Saving labels to CVAT…","Đang ghi nhận…":"Recording…","Đang ghi track vào CVAT…":"Saving tracks to CVAT…","Đang gỡ…":"Removing…","Đang gợi ý cho {0} frame…":"Suggesting for {0} frames…","Đang hoàn tác…":"Undoing…","Đang huấn luyện":"Training","Đang huấn luyện model riêng (chạy nền).":"Training the custom model (in the background).","Đang kiểm tra":"Checking","Đang kiểm tra annotation của frame…":"Checking the frame's annotations…","Đang kiểm tra backend…":"Checking the backend…","Đang lưu guideline vào tool…":"Saving the guideline to the tool…","Đang lấy ảnh frame…":"Getting the frame image…","Đang nạp bản nháp guideline…":"Loading the draft guideline…","Đang nạp lại profile…":"Reloading profiles…","Đang nối ID và chọn keyframe…":"Linking IDs and choosing keyframes…","Đang phân tích frame: {0}/{1}…":"Analysing frames: {0}/{1}…","Đang phân tích {0} frame…":"Analysing {0} frames…","Đang quét {0} ảnh mẫu…":"Scanning {0} sample images…","Đang rà cả job…":"Checking the whole job…","Đang so job {0} với job {1}…":"Comparing job {0} with job {1}…","Đang soạn bản nháp và tự kiểm tra…":"Writing the draft and self-checking…","Đang theo dõi {0} frame…":"Tracking {0} frames…","Đang thu thập ảnh + hộp đã duyệt của job…":"Collecting reviewed images + boxes from the job…","Đang thêm label vào CVAT…":"Adding labels to CVAT…","Đang tìm label chưa có trong job…":"Looking for labels not yet used in the job…","Đang tìm đối tượng có thể bị sót: {0}/{1} frame. Còn khoảng {2} giây.":"Looking for possibly missed objects: {0}/{1} frames. About {2} seconds left.","Đang tìm đối tượng: {0}/{1} frame. Còn khoảng {2} giây.":"Looking for objects: {0}/{1} frames. About {2} seconds left.","Đang tạo Issue…":"Creating Issues…","Đang tạo JSON label…":"Creating label JSON…","Đang tạo profile từ bản nháp…":"Creating a profile from the draft…","Đang tải danh sách profile…":"Loading profile list…","Đang xoá…":"Deleting…","Đang áp profile…":"Applying profile…","Đang đọc annotation của job…":"Reading the job's annotations…","Đang đọc job và label từ CVAT…":"Reading job and labels from CVAT…","Đang đọc {0}…":"Reading {0}…","Đang đối chiếu…":"Comparing…","Đang đổi source của {0} nhãn…":"Changing the source of {0} labels…","Đang đợi gợi ý đã chạy sẵn cho frame này…":"Waiting for the pre-computed suggestions for this frame…","Đang ẩn class này: bấm để hiện":"This class is hidden: click to show","Đánh dấu nhãn do tool ghi là source = \"semi-auto\"":"Mark tool labels as source = \"semi-auto\"","Đây là frame cuối của job.":"This is the last frame of the job.","Đây là giả thuyết của tool, không phải kết luận. Xem rồi sửa bản nháp nếu đúng.":"These are the tool's hypotheses, not conclusions. Review them and fix the draft if they are right.","Đã bật":"Turned on","Đã bỏ kết quả gợi ý của cả job.":"Discarded the whole-job suggestions.","Đã bỏ kết quả theo dõi.":"Discarded the tracking results.","Đã chép JSON của {0} label. Khi tạo task mới, dán vào tab Raw ở phần label.":"Copied JSON for {0} labels. When creating a new task, paste it into the Raw tab of the labels section.","Đã chép JSON của {0} label. Khi tạo task mới, dán vào tab Raw ở phần label.{1}":"Copied JSON for {0} labels. When creating a new task, paste it into the Raw tab of the labels section.{1}","Đã chọn {0} label chưa có nhãn nào trong job.":"Selected {0} labels that have no annotations in the job.","Đã cập nhật bản nháp theo lựa chọn của bạn.":"Updated the draft with your choices.","Đã duyệt":"Approved","Đã dừng ghi để bạn sửa các lỗi kiểm tra.":"Saving stopped so you can fix the check errors.","Đã dừng ở frame {0}. ":"Stopped at frame {0}. ","Đã dừng. ":"Stopped. ","Đã ghi nhận. Bài học này sẽ được dùng ở các lần soạn sau.":"Recorded. This lesson will be used in future drafts.","Đã ghi {0} nhãn. Đang tải lại trang{1}…":"Saved {0} labels. Reloading the page{1}…","Đã ghi {0} nhãn.{1}":"Saved {0} labels.{1}","Đã ghi {0} track.{1}":"Saved {0} tracks.{1}","Đã ghi {0}/{1} nhãn…":"Saved {0}/{1} labels…","Đã ghép {0} label mới và cập nhật {1} label từ {2} vào guideline \"{3}\". Kiểm tra rồi bấm Lưu.":"Merged {0} new labels and updated {1} labels from {2} into guideline \"{3}\". Check, then press Save.","Đã giữ vật vừa tách. Duyệt rồi ghi như các đề xuất khác.":"Kept the segmented object. Review and save it like other suggestions.","Đã gỡ \"{0}\".":"Removed \"{0}\".","Đã gửi {0}/{1} frame cho model riêng…":"Sent {0}/{1} frames to the custom model…","Đã hiện lại":"Shown again","Đã huỷ bấm điểm.":"Cancelled point clicking.","Đã huỷ vẽ hộp.":"Box drawing cancelled.","Đã huỷ.":"Cancelled.","Đã học cho profile đang dùng ({0} label)":"Learned for the current profile ({0} labels)","Đã kiểm tra {0} annotation: {1} lỗi, {2} cảnh báo.":"Checked {0} annotations: {1} errors, {2} warnings.","Đã lấy {0} label từ task đang mở ({1} label đã có trong bản xem trước).":"Took {0} labels from the open task ({1} labels were already in the preview).","Đã nạp văn bản, định nghĩa và checklist ({0} label). Guideline skeleton chưa có profile gợi ý tự động.":"Imported text, definitions and checklist ({0} labels). Skeleton guidelines do not get an automatic suggestion profile yet.","Đã nạp {0} label. Profile \"{1}\" đã có trong ô chọn profile; bấm \"Dùng cho job này\" ở danh sách bên dưới nếu job đang mở thuộc guideline này.":"Imported {0} labels. Profile \"{1}\" is now in the profile selector; press \"Use for this job\" in the list below if the open job belongs to this guideline.","Đã phân tích {0} frame: {1} keyframe theo chuyển động. Xem danh sách \"Nên làm trước\".":"Analysed {0} frames: {1} motion keyframes. See the \"Do first\" list.","Đã quét {0}/{1} ảnh, thấy {2} loại đối tượng. Còn khoảng {3} giây.":"Scanned {0}/{1} images, found {2} kinds of objects. About {3} seconds left.","Đã quên \"{0}\".":"Forgot \"{0}\".","Đã soạn bản nháp từ {0} ảnh: {1} câu hỏi cần chốt, {2} lỗ hổng tool tự thấy.":"Drafted from {0} images: {1} questions to decide, {2} gaps the tool found.","Đã thêm {0} label.{1}":"Added {0} labels.{1}","Đã thêm {0} label.{1} Tải lại trang (F5) để CVAT nhận label mới.":"Added {0} labels.{1} Reload the page (F5) so CVAT picks up the new labels.","Đã tách vật ({0}%). Bấm thêm điểm để sửa, Enter để giữ.":"Object segmented ({0}%). Click more points to correct, Enter to keep.","Đã tạm dừng ({0}/{1} frame). Bấm \"Tiếp tục\" để chạy nốt. ":"Paused ({0}/{1} frames). Press \"Continue\" to finish. ","Đã tạo Issue trên frame này.":"Created an Issue on this frame.","Đã tạo {0} Issue. Tải lại trang (F5) để thấy chúng trong CVAT.":"Created {0} Issues. Reload the page (F5) to see them in CVAT.","Đã tạo {0}/{1} Issue…":"Created {0}/{1} Issues…","Đã tắt":"Turned off","Đã xoá":"Deleted","Đã xoá mọi điều tool đã học.":"Deleted everything the tool learned.","Đã xoá. Đang tải lại trang…":"Deleted. Reloading the page…","Đã đọc \"{0}\": {1} label, {2} mục checklist.{3} Kiểm tra bảng bên dưới rồi bấm Lưu.":"Read \"{0}\": {1} labels, {2} checklist items.{3} Check the table below, then press Save.","Đã đọc {0} label từ CVAT nhưng chưa nối được backend. Kiểm tra ở Cài đặt panel (nút bánh răng).":"Read {0} labels from CVAT but cannot reach the backend yet. Check Panel settings (gear button).","Đã đọc {0} label từ {1}. Nếu có file guideline (.docx), chọn nó ngay sau đây: tool sẽ ghép label này với văn bản và checklist của guideline.":"Read {0} labels from {1}. If you have a guideline file (.docx), choose it next: the tool will merge these labels with the guideline's text and checklist.","Đã đối chiếu {0} đề xuất của job này với nhãn hiện tại và học lại.":"Compared {0} suggestions of this job with the current labels and re-learned.","Đã đổi {0} nhãn sang manual. Đang tải lại trang…":"Changed {0} labels to manual. Reloading the page…","Đã ẩn":"Hidden","Đóng lưới ảnh":"Close thumbnail grid","Đóng quản lý profile":"Close profile manager","Đúng":"Precision","Đạt":"Passed","Đề xuất này lấy từ lượt gợi ý cho cả job (tab Cả job).":"This suggestion comes from the whole-job run (Whole job tab).","Đề xuất thuộc frame khác. Hãy chạy lại gợi ý cho frame này.":"These suggestions belong to another frame. Run suggestions again for this frame.","Để thấy ngay nhãn mới trong CVAT":"To see new labels in CVAT right away","Để tool tự nhận":"Let the tool detect it","Địa chỉ backend SAM3":"SAM3 backend address","Đọc lại các file YAML trong thư mục profiles/ của backend":"Re-read the YAML files in the backend's profiles/ folder","Đọc lại label từ CVAT":"Reload labels from CVAT","Đối chiếu annotation đã lưu của frame với checklist trong guideline. Hãy lưu (Ctrl+S) trước khi kiểm tra.":"Compares the frame's saved annotations with the guideline checklist. Save (Ctrl+S) before checking.","Đối chiếu job này ngay":"Review this job now","Đồng thuận":"Agreement","Đồng thuận chung {0}% trên {1} frame chung.":"Overall agreement {0}% over {1} shared frames.","Đồng ý":"OK","Đổi class":"Change class","Đổi nhãn semi-auto đã lưu thành manual":"Change saved semi-auto labels to manual","Đổi source của {0} nhãn trong {1} từ \"semi-auto\" sang \"manual\"?\nGồm cả nhãn tạo bằng công cụ AI có sẵn của CVAT, nếu có.":"Change the source of {0} labels in {1} from \"semi-auto\" to \"manual\"?\nIncludes labels made with CVAT's built-in AI tools, if any.","Độ đậm vùng tô":"Fill opacity","Độ đồng thuận giữa hai người gán":"Agreement between two annotators","đã có nhãn":"already labelled","đã có đủ các label đã chọn":"already has all selected labels","đã có đủ label":"already has all labels","đúng {0}% · tìm được {1}%":"precision {0}% · recall {1}%","Ẩn":"Hide","Ẩn / hiện panel":"Hide / show panel","Ẩn = chuyển file vào thư mục profiles/archive/ của backend; profile biến khỏi ô chọn và khỏi \"Tự chọn profile\", hiện lại được. Xoá = xoá hẳn file. Hai profile dự phòng (generic, generic_track) luôn có.":"Hide = move the file into the backend's profiles/archive/ folder; the profile disappears from the selector and from \"Auto-select profile\" and can be shown again. Delete = delete the file permanently. The two fallback profiles (generic, generic_track) are always present.","Ẩn đề xuất có điểm thấp hơn":"Hide suggestions with a lower score","… và {0} frame nữa.":"… and {0} more frames.","‹ Trước":"‹ Previous"}};
+  const I18N_DATA = {"codes":{"Backend không phản hồi sau 5 phút.":"E_BACKEND_TIMEOUT","Backend trả lỗi {0}. ":"E_BACKEND_HTTP","CVAT trả lỗi {0} cho {1} {2}. {3}":"E_CVAT_HTTP","Không kết nối được backend tại {0}. Kiểm tra backend đã chạy và địa chỉ trong Cài đặt panel (nút bánh răng).":"E_BACKEND_UNREACHABLE"},"strings":{"\nMục có cờ ({0}) được giữ lại để bạn duyệt từng frame.":"\nFlagged items ({0}) are kept for you to review frame by frame.","\nProfile có sẵn của tool sẽ quay lại khi bạn giải nén bản cập nhật mới.":"\nThe tool's built-in profile comes back when you unpack a new update.","\nVăn bản và định nghĩa của guideline vẫn còn; gỡ cả guideline ở tab Guideline.":"\nThe guideline's text and definitions remain; remove the guideline itself in the Guideline tab.","\n{0} nhãn đang có cờ cần xem kỹ.":"\n{0} labels are flagged for a closer look.","\n{0} track đang có cờ cần xem.":"\n{0} tracks are flagged for review."," (còn {0} lần ghi trước đó có thể hoàn tác tiếp)":" ({0} earlier saves can still be undone)"," (riêng của project)":" (project's own)"," (theo dõi bằng SAM3 Video)":" (tracked with SAM3 Video)"," (tool đề xuất)":" (suggested by the tool)"," Guideline không có bảng taxonomy: chọn thêm file taxonomy (.json), hoặc bấm \"Lấy label từ task đang mở\".":" The guideline has no taxonomy table: also choose a taxonomy file (.json), or press \"Take labels from the open task\"."," Không dùng được SAM3 Video ({0}), đã theo dõi bằng cách thường.":" SAM3 Video unavailable ({0}); tracked the regular way."," SAM3 Video lỗi giữa chừng ({0}), đã làm lại bằng cách thường.":" SAM3 Video failed midway ({0}); redone the regular way."," Tải lại trang (F5) để CVAT nhận label mới.":" Reload the page (F5) so CVAT picks up the new labels."," Tải lại trang (F5) để thấy chúng trên canvas.":" Reload the page (F5) to see them on the canvas."," Tải lại trang (F5) để thấy chúng.":" Reload the page (F5) to see them."," Vật nào bị nhận nhầm: bấm \"Loại trừ\" ở dòng của nó để SAM3 bỏ mọi vật giống vậy.":" If an object is wrong: press \"Exclude\" on its row so SAM3 drops every object like it."," {0} lưu ý cho cả job.":" {0} notes for the whole job."," {0} điểm":" {0} points"," · có nhãn do tool tạo":" · has tool-created labels"," · khuất {0} lần":" · occluded {0} times"," · model đang nghỉ":" · model idle"," · {0} có thể sót":" · {0} possibly missed"," · {0} đang ẩn":" · {0} hidden"," Đang loại trừ {0} mẫu.":" Excluding {0} examples."," Đang tải lại trang để CVAT nhận label mới…":" Reloading the page so CVAT picks up the new labels…"," Đang tải lại trang…":" Reloading the page…"," ở frame {0}":" at frame {0}","(đang tắt) ":"(off) ",", bỏ qua {0} frame {1}":", skipped {0} frames that {1}",", chạy trên máy":", running locally",", {0} chỗ có thể sót":", {0} possibly missed",", {0} label cần bạn xem":", {0} labels need your review",", ảnh sẽ rời máy bạn":", images will leave your machine","API key (nếu backend có đặt)":"API key (if the backend has one)","API key, phím tắt, nguồn nhãn…":"API key, shortcuts, label source…","Alt+{0} trùng phím của trình duyệt/Windows (menu, quay lại trang...). Chọn phím khác.":"Alt+{0} clashes with a browser/Windows shortcut (menu, page back...). Choose another key.","Backend bản {0} cũ hơn panel bản {1}. Cập nhật backend (cài app bản mới, hoặc git pull nếu chạy từ mã nguồn) rồi khởi động lại backend.":"Backend version {0} is older than panel version {1}. Update the backend (install the new app, or git pull when running from source), then restart the backend.","Backend chưa sẵn sàng: mở Cài đặt để kiểm tra kết nối":"Backend not ready: open Settings to check the connection","Backend không phản hồi sau 5 phút.":"The backend did not respond within 5 minutes.","Backend không phản hồi sau {0} phút.":"The backend did not respond after {0} minutes.","Backend kết nối tốt ({0} trên {1}), nhưng {2}":"Backend connection OK ({0} on {1}), but {2}","Backend trả lỗi {0}. ":"Backend returned error {0}. ","Backend đang chạy chế độ GIẢ LẬP (mock): kết quả không phải của SAM3, chỉ để thử giao diện.":"The backend is running in MOCK mode: results are not from SAM3, for trying the UI only.","Backend ở máy chia sẻ đang chạy bản {0}, app này là bản {1}. Nhờ người quản lý máy đó cập nhật app cho cùng bản; trong lúc chờ, vài tính năng có thể không chạy.":"The shared machine's backend runs version {0}, this app is version {1}. Ask whoever manages that machine to update to the same version; until then some features may not work.","Backend: {0} trên {1}{2}":"Backend: {0} on {1}{2}","Biên?":"Edge?","Bài học từ các lần trước đã dùng ({0})":"Lessons from previous runs used ({0})","Bạn chọn":"You choose","Bạn đánh tay":"You annotate","Bản nháp":"Draft","Bấm \"Ghi\" để lưu vào CVAT, hoặc Alt+Enter để ghi rồi sang frame tiếp: frame sau đã được chạy sẵn.":"Press \"Save\" to store in CVAT, or Alt+Enter to save and go to the next frame: it is already pre-computed.","Bấm \"Gợi ý nhãn cho frame này\" (hoặc Alt+G). SAM3 đề xuất nhãn, hiện dạng xem trước trên ảnh.":"Press \"Suggest labels for this frame\" (or Alt+G). SAM3 suggests labels, shown as a preview on the image.","Bấm lên vật cần tách. Bấm phải (hoặc Shift+bấm) vào chỗ KHÔNG thuộc vật để sửa. Enter hoặc \"Xong\" để giữ, Esc để huỷ.":"Click on the object to segment. Right-click (or Shift+click) on areas NOT part of the object to correct. Enter or \"Done\" to keep, Esc to cancel.","Bấm một dòng để xem trên ảnh · {0} bật/tắt dòng đang chọn · giữ Alt rồi bấm lên ảnh để tick":"Click a row to see it on the image · {0} toggles the selected row · hold Alt and click the image to tick","Bấm một điểm lên vật (bấm thêm điểm để sửa), SAM3 tách đúng vật đó":"Click a point on the object (more points to correct) and SAM3 segments exactly that object","Bấm phím muốn dùng (cùng Alt)":"Press the key to use (with Alt)","Bấm điểm":"Click points","Bấm điểm: {0} điểm thuộc vật, {1} điểm loại trừ.":"Click points: {0} on the object, {1} excluded.","Bấm để ẩn class này":"Click to hide this class","Bật":"On","Bật label này":"Enable this label","Bỏ":"Discard","Bỏ (loại) đề xuất đang chọn":"Drop (reject) the selected suggestion","Bỏ chọn hết":"Select none","Bỏ chốt":"Unanswer","Bỏ kết quả":"Discard results","Bỏ label này":"Remove this label","Bỏ mục có cờ":"Untick flagged","Bỏ qua":"Skip","Bỏ qua frame đã có bất kỳ nhãn nào":"Skip frames with any annotation","Bỏ qua label đã có trên frame (chỉ gợi ý label frame còn thiếu)":"Skip labels already on the frame (only suggest labels the frame is missing)","Bỏ track có cờ":"Untick flagged tracks","Bỏ vùng này":"Remove this zone","Bỏ {0}":"Remove {0}","Bỏ điểm cuối":"Remove last point","Bỏ đề xuất":"Discard","CSS selector của ảnh nền canvas CVAT":"CSS selector of the CVAT canvas image","CVAT không trả về label nào cho job này, nên tool chưa gợi ý được.":"CVAT returned no labels for this job, so the tool cannot suggest yet.","CVAT không trả về label nào cho job này. Xem chi tiết ở tab Label.":"CVAT returned no labels for this job. See details in the Labels tab.","CVAT nhận yêu cầu nhưng chưa thấy label: {0}. Kiểm tra lại phần label của task.":"CVAT accepted the request but the labels are not there: {0}. Check the task's labels.","CVAT nhận yêu cầu nhưng vẫn còn {0} nhãn semi-auto trong {1}. Máy chủ có thể không cho đổi trường này.":"CVAT accepted the request but {0} semi-auto labels remain in {1}. The server may not allow changing this field.","CVAT trả lỗi {0} cho {1} {2}. {3}":"CVAT returned error {0} for {1} {2}. {3}","Ca khó trong ảnh mẫu ({0})":"Hard cases in sample images ({0})","Chi tiết ({0})":"Details ({0})","Cho AI đọc guideline (gửi VĂN BẢN tới {0}{1}, không gửi ảnh)":"Let AI read the guideline (sends the TEXT to {0}{1}, no images)","Cho LLM bổ sung prompt tiếng Anh và định nghĩa (gửi VĂN BẢN guideline tới {0}{1})":"Let the LLM add English prompts and definitions (sends the guideline TEXT to {0}{1})","Cho phép gửi ảnh mẫu tới LLM ({0}{1})":"Allow sending sample images to the LLM ({0}{1})","Chuyển file vào profiles/archive/, hiện lại được":"Move the file to profiles/archive/; can be shown again","Chuyển frame là có đề xuất ngay":"Suggestions are ready when you switch frames","Chép JSON label":"Copy label JSON","Chép cả bộ label dạng JSON để dán vào tab Raw khi tạo task mới":"Copy the whole label set as JSON to paste into the Raw tab when creating a new task","Chưa bật AI soạn guideline: bản nháp vẫn tạo được từ số liệu, guideline mẫu và bài học đã có, nhưng class mới bạn tự viết định nghĩa.":"AI guideline drafting is off: drafts are still built from figures, sample guidelines and existing lessons, but you write definitions for new classes yourself.","Chưa bật AI soạn guideline: tool đọc guideline bằng luật (bảng, câu chữ). Bật ở app: Cài đặt → AI soạn guideline.":"AI guideline drafting is off: the tool reads the guideline with rules (tables, wording). Turn it on in the app: Settings → AI guideline drafting.","Chưa chọn ai: tool theo dõi mọi người tìm được. Chọn người ở frame họ rõ nhất để tool bỏ người khác, phản chiếu, quảng cáo.":"Nobody chosen: the tool follows everyone it finds. Choose people on the frame where they are clearest so the tool drops others, reflections and ads.","Chưa chọn label nào để gợi ý.":"No labels chosen to suggest.","Chưa có dữ liệu. Ghi vài nhãn bằng tool, sửa chúng như bình thường trong CVAT, lưu lại, rồi mở lại job (hoặc bấm Đối chiếu).":"No data yet. Save a few labels with the tool, edit them as usual in CVAT, save, then reopen the job (or press Review).","Chưa có profile nào bị ẩn.":"No hidden profiles.","Chưa có đề xuất cho frame này":"No suggestions for this frame yet","Chưa kiểm tra backend":"Backend not checked yet","Chưa nối backend":"No backend","Chưa thấy cần chỉnh gì.":"Nothing to adjust yet.","Chưa tick cuboid nào.":"No cuboid ticked.","Chưa tick track nào.":"No tracks ticked.","Chưa tick đề xuất nào (đề xuất đang bị ẩn bởi bộ lọc không được ghi).":"No suggestions ticked (suggestions hidden by filters are not saved).","Chưa đọc được label của job.":"Could not read the job's labels yet.","Chạy \"Phân tích frame của job\" ở tab Cả job để tool chọn theo độ đa dạng của ảnh.":"Run \"Analyse job frames\" in the Whole job tab so the tool picks by image variety.","Chạy gợi ý lần lượt cho mọi frame trong khoảng. Kết quả được giữ lại: mở frame nào thì tab Gợi ý hiện ngay đề xuất của frame đó.":"Runs suggestions for every frame in the range. Results are kept: open any frame and the Suggest tab shows its suggestions right away.","Chạy mọi kiểm tra ở trên cho tất cả frame của job, cộng: frame chưa có nhãn, label chưa dùng lần nào. Lưu (Ctrl+S) trước khi rà.":"Runs every check above on all frames of the job, plus: frames without labels, labels never used. Save (Ctrl+S) before checking.","Chạy nền, vẫn gán nhãn được trong lúc chờ":"Runs in the background; you can keep labelling while waiting","Chạy sẵn gợi ý cho frame tiếp theo":"Pre-run suggestions for the next frame","Chế độ reviewer":"Reviewer mode","Chỉ chạy SAM3 trên các frame có thay đổi đáng kể (ra shape trên từng frame, không phải track)":"Run SAM3 only on frames with significant change (gives shapes per frame, not tracks)","Chỉ ghi {0} nhãn":"Save {0} only","Chỉ job này":"This job only","Chỉ job {0}":"Job {0} only","Chỉ label chưa có trong job":"Only labels not yet in the job","Chỉ đổi khi phần xem trước không hiện. Mặc định: #cvat_canvas_background":"Only change this if the preview does not show. Default: #cvat_canvas_background","Chỉnh hộp: {0}":"Box adjustment: {0}","Chỉnh điểm skeleton: {0}":"Adjust skeleton points: {0}","Chọn các label chưa có nhãn nào trong job (ví dụ label vừa thêm theo guideline mới)":"Select labels with no annotations in the job (e.g. labels just added for a new guideline)","Chọn file guideline (.docx, .md, .txt) và/hoặc file taxonomy (.json, ví dụ JSON label ở tab Raw của task CVAT); chọn cả hai cùng lúc được. Tool đọc bảng taxonomy, định nghĩa, Issue type, checklist, tiêu chí reviewer; bạn kiểm tra rồi lưu. Sau đó tool có profile gợi ý nhãn, checklist ở tab Kiểm tra, và dùng guideline này khi soạn nháp.":"Choose a guideline file (.docx, .md, .txt) and/or a taxonomy file (.json, e.g. the label JSON in the Raw tab of a CVAT task); you can choose both at once. The tool reads the taxonomy table, definitions, Issue types, checklist and reviewer criteria; you check and save. The tool then has a suggestion profile, a checklist in the Check tab, and uses this guideline when drafting.","Chọn hết":"Select all","Chọn người ở frame này":"Choose a person on this frame","Chọn skeleton của guideline…":"Choose the guideline skeleton…","Chọn đề xuất tiếp theo":"Select next suggestion","Chọn đề xuất trước":"Select previous suggestion","Ctrl+Enter để gửi · Esc để huỷ":"Ctrl+Enter to send · Esc to cancel","Cài bản mới":"Install new version","Cài đặt panel":"Panel settings","Các cách đã thử:":"Attempts made:","Cách theo dõi":"Tracking method","Cách thường: SAM3 từng frame, nối ID theo vị trí và màu":"Regular: SAM3 per frame, IDs linked by position and colour","Cách vẽ vạch":"How to draw markings","Câu hỏi cần chốt (còn {0}/{1})":"Questions to decide ({0}/{1} left)","Có thể bạn đã sót vật":"You may have missed an object","Có thể sót \"{0}\" (SAM3 tin {1}%, chưa có nhãn nào ở đó).":"\"{0}\" may be missing (SAM3 {1}% confident, no label there yet).","Cả job":"Whole job","Cảnh báo":"Warning","Cần thêm dữ liệu ({0}/12 đề xuất đã có kết quả).":"More data needed ({0}/12 suggestions with known outcome).","Cần xem:":"Review:","Cần ít nhất 8 ảnh":"At least 8 images needed","Cỡ chữ {0}%":"Font size {0}%","Duyệt dạng lưới ảnh ({0} frame)":"Review as a thumbnail grid ({0} frames)","Duyệt từng đề xuất: tick để giữ, đổi class nếu sai. Alt+J / Alt+K chọn, Alt+X tick, giữ Alt rồi bấm lên ảnh cũng tick được.":"Review each suggestion: tick to keep, change the class if wrong. Alt+J / Alt+K select, Alt+X ticks; holding Alt and clicking the image also ticks.","Dùng":"Use","Dùng app trên máy này thì không cần sửa. Colab / máy khác: dán địa chỉ https của tunnel.":"No change needed when using the app on this machine. Colab / another machine: paste the tunnel's https address.","Dùng bản nháp guideline vừa soạn (mục Soạn guideline nháp bên dưới)":"Use the guideline draft just written (Draft a guideline section below)","Dùng cho job này":"Use for this job","Dùng danh sách label của task đang mở làm taxonomy":"Use the open task's label list as the taxonomy","Dùng làm profile":"Use as profile","Dùng model riêng cho các class đạt chuẩn khi gợi ý":"Use the custom model for classes that reach the bar when suggesting","Dùng điều tool đã học khi gợi ý (ngưỡng, chỉnh hộp)":"Use what the tool learned (thresholds, box adjustments)","Dừng":"Stop","Dữ liệu model riêng: {0} ảnh, {1} hộp.":"Custom model data: {0} images, {1} boxes.","Dữ liệu thông minh":"Smart data","Dữ liệu: {0} ảnh, {1} hộp{2}":"Data: {0} images, {1} boxes{2}","Dựng cuboid xong":"Cuboids built","Dựng track cho {0} frame":"Build tracks for {0} frames","Dựng track cả job":"Build tracks for the whole job","Enter để đồng ý · Esc để huỷ":"Enter to confirm · Esc to cancel","Frame cần duyệt:":"Frames to review:","Frame lệch nhiều:":"Frames with large differences:","Frame này":"This frame","Frame {0} có {1} \"{2}\", frame này mới có {3}: có thể còn sót {4}.":"Frame {0} has {1} \"{2}\", this frame only has {3}: {4} may be missing.","Frame {0}: {1}/{2} frame, {3} đề xuất. Còn khoảng {4}. Bấm Dừng để tạm dừng, tiếp tục sau (kể cả khi tắt trình duyệt).":"Frame {0}: {1}/{2} frames, {3} suggestions. About {4} left. Press Stop to pause and continue later (even after closing the browser).","Frame đã có nhãn":"Frames already labelled","Ghi các đề xuất đã tick":"Save ticked suggestions","Ghi cả mục có cờ":"Include flagged items","Ghi lại cách tôi xử lý đề xuất để tool học":"Record how I handle suggestions so the tool can learn","Ghi nhãn này vào CVAT ({0}, hoặc giữ Alt rồi bấm lên ảnh)":"Save this label to CVAT ({0}, or hold Alt and click the image)","Ghi nhận sai sót sau khi dùng guideline":"Record a mistake found after using the guideline","Ghi nhận để lần sau không lặp lại":"Record so it does not happen again","Ghi rồi sang frame tiếp (đề xuất đã chạy sẵn)":"Save, then go to the next frame (suggestions pre-computed)","Ghi tag này vào CVAT":"Save this tag to CVAT","Ghi thành track: mỗi đối tượng một ID qua các frame, CVAT nội suy giữa các keyframe. Label: {0}. Profile: {1}.":"Saves as tracks: one ID per object across frames, CVAT interpolates between keyframes. Labels: {0}. Profile: {1}.","Ghi track này":"Save this track","Ghi {0} nhãn":"Save {0} labels","Ghi {0} nhãn trên {1} frame vào job {2}?{3}":"Save {0} labels on {1} frames to job {2}?{3}","Ghi {0} nhãn vào CVAT":"Save {0} labels to CVAT","Ghi {0} nhãn vào frame {1} của job {2}?{3}":"Save {0} labels to frame {1} of job {2}?{3}","Ghi {0} track vào CVAT":"Save {0} tracks to CVAT","Ghi {0} track vào job {1}?{2}":"Save {0} tracks to job {1}?{2}","Ghi {0}, sang frame tiếp":"Save {0}, next frame","Giả lập":"Mock","Giải thích":"Explanation","Giữ / bỏ mọi đề xuất của frame này":"Keep / drop all suggestions of this frame","Giữ {0} · sửa hình {1} · đổi class {2} · xoá {3} · bỏ tick {4} · bạn tự vẽ thêm {5}":"Kept {0} · reshaped {1} · class changed {2} · deleted {3} · unticked {4} · drawn by you {5}","Guideline \"{0}\" đã được nạp trước đây. Ghi đè bản cũ (cả profile gl_{1}, nếu bạn đã sửa tay)?":"Guideline \"{0}\" was imported before. Overwrite the old version (including profile gl_{1}, if you edited it by hand)?","Guideline (tuỳ chọn)":"Guideline (optional)","Guideline sẽ ghi:\n{0}":"The guideline will say:\n{0}","Guideline {0}: {1} mục checklist, {2} loại issue (dùng ở tab Kiểm tra).":"Guideline {0}: {1} checklist items, {2} issue types (used in the Check tab).","Guideline đã nạp":"Imported guidelines","Gõ thứ cần tìm (tiếng Anh), ví dụ: motorbike carrying boxes":"Type what to look for (English), e.g.: motorbike carrying boxes","Gọn":"Compact","Gộp?":"Merged?","Gỡ":"Remove","Gỡ guideline \"{0}\" khỏi tool? File được chuyển vào thư mục archive, không bị xoá hẳn.":"Remove guideline \"{0}\" from the tool? The file is moved to the archive folder, not deleted.","Gợi ý":"Suggest","Gợi ý (chưa tự áp dụng)":"Notes (not applied automatically)","Gợi ý cho cả job":"Suggest for whole job","Gợi ý cho {0} frame{1}":"Suggest for {0} frames{1}","Gợi ý cuboid cho frame này":"Suggest cuboids for this frame","Gợi ý cả job chỉ trên keyframe":"Suggest for whole job on keyframes only","Gợi ý cả job xong":"Whole-job suggestions finished","Gợi ý nhãn cho frame này":"Suggest labels for this frame","Gợi ý được một phần":"Partly suggested","Gửi":"Send","Hai job không có frame chung nào có nhãn (job {0}: {1} frame, job {2}: {3} frame).":"The two jobs share no labelled frames (job {0}: {1} frames, job {2}: {3} frames).","Hay gán khác nhau: {0}":"Often labelled differently: {0}","Hiển thị":"Display","Hiện cả {0} track không chọn":"Show all {0} unticked tracks","Hiện lại":"Show","Hoàn tác":"Undo","Hoàn tác ({0})":"Undo ({0})","Hoàn tác lần ghi gần nhất":"Undo last save","Hoặc kéo mép trái panel để đổi độ rộng, mép dưới để đổi chiều cao. Bấm đúp mép để về cỡ mặc định.":"Or drag the panel's left edge to change the width and its bottom edge to change the height. Double-click an edge to go back to the default size.","Huấn luyện":"Train","Huấn luyện lúc {0} trên {1}, {2} ảnh học, {3} ảnh kiểm.":"Trained at {0} on {1}, {2} training images, {3} test images.","Huấn luyện model riêng xong":"Custom model training finished","Huỷ":"Cancel","Hãy mô tả sai sót cụ thể hơn.":"Please describe the mistake more specifically.","Hôm nay":"Today","Hôm nay: {0} nhãn, {1} frame, ước tính tiết kiệm {2} phút.":"Today: {0} labels, {1} frames, about {2} minutes saved.","Hướng dẫn":"Tour","Hướng dẫn {0}/{1}":"Tour {0}/{1}","Hỏi lại trước khi ghi":"Ask before saving","Hộp quá nhỏ, hãy vẽ lại.":"Box too small, please draw again.","Hộp đã được chỉnh theo cách bạn hay sửa (tab Tự học).":"The box was adjusted the way you usually fix it (Learning tab).","Job CVAT 3D: tool dựng cuboid từ point cloud (tách mặt đường, gom cụm điểm, đoán class theo bảng kích thước của guideline). Không vẽ được lên cửa sổ 3D: ghi xong, kiểm tra ở Top / Side / Front và ảnh camera.":"CVAT 3D job: the tool builds cuboids from the point cloud (removes the road surface, clusters points, guesses the class from the guideline's size table). It cannot draw in the 3D view: after saving, check in Top / Side / Front and the camera image.","Job có {0} track; tool chỉ kiểm tra shape, chưa kiểm tra track.":"The job has {0} tracks; the tool only checks shapes, not tracks yet.","Job không có label rectangle nào để theo dõi.":"The job has no rectangle labels to track.","Job này chưa có nhãn hộp, polygon hay mask nào để học.":"This job has no boxes, polygons or masks to learn from yet.","Job này chưa có đề xuất nào do tool ghi (hoặc bạn đã tắt ghi nhận).":"This job has no suggestions saved by the tool yet (or you turned recording off).","Job này đang dùng: {0}{1}":"This job uses: {0}{1}","Job video: theo dõi để có track mỗi đối tượng một ID; keyframe do tool chọn theo chuyển động":"Video job: track so each object gets one track ID; the tool picks keyframes by motion","Job {0}: {1} frame, {2} lỗi, {3} cảnh báo.":"Job {0}: {1} frames, {2} errors, {3} warnings.","Job {0}: {1} frame, {2} đề xuất, {3} mục có cờ.":"Job {0}: {1} frames, {2} suggestions, {3} flagged items.","Job {0}: {1} track, {2} track có cờ.":"Job {0}: {1} tracks, {2} flagged tracks.","Job đã có {0} track. Track mới có thể trùng với track cũ.":"The job already has {0} tracks. New tracks may duplicate old ones.","Keyframe dày":"Dense keyframes","Keyframe theo chuyển động: {0}/{1} frame":"Motion keyframes: {0}/{1} frames","Keyframe: {0}/{1} frame khác hẳn nhau (ảnh rời, không phải video), nên không lọc bớt được. Dùng \"Gợi ý cả job\" như bình thường.":"Keyframes: {0}/{1} frames all differ (separate images, not a video), so nothing can be skipped. Use \"Suggest whole job\" as usual.","Khi duyệt":"While reviewing","Khi ghi vào CVAT":"When saving to CVAT","Khi task đã đủ label và bạn đã bấm \"Dùng làm profile\": tool gán nhãn được cho mọi frame (ảnh, skeleton) hoặc theo dõi (video).":"Once the task has all labels and you have pressed \"Use as profile\": the tool can label every frame (images, skeletons) or track (video).","Khoanh gương, kính, biển quảng cáo, màn hình: mọi phát hiện có tâm trong vùng bị bỏ, cho mọi job của task này.":"Outline mirrors, glass, billboards, screens: every detection centred inside is dropped, for all jobs of this task.","Khoanh vùng bỏ qua":"Outline an ignore zone","Khoảng frame không hợp lệ.":"Invalid frame range.","Khác với \"học từ cách bạn sửa\" ở trên: đây là một detector nhỏ được huấn luyện từ chính các nhãn đã duyệt (hộp, polygon, mask). Class nào đạt chuẩn (đủ ví dụ, đúng ≥ 70%, tìm được ≥ 60% trên ảnh giữ lại để kiểm) mới được dùng, nhanh hơn SAM3 nhiều lần; class khác vẫn do SAM3 làm.":"Different from \"learn from how you fix\" above: this is a small detector trained on your reviewed labels (boxes, polygons, masks). Only classes that pass (enough examples, ≥ 70% correct, ≥ 60% found on held-out test images) are used, many times faster than SAM3; SAM3 still handles the rest.","Khó quan sát":"Hard to see","Khó thấy":"Hard to see","Không bỏ qua (đề xuất trùng nhãn cũ bị bỏ tick)":"Do not skip (suggestions duplicating existing labels are unticked)","Không chắc biên":"Uncertain boundary","Không chắc class":"Uncertain class","Không chắc phạm vi":"Uncertain scope","Không có lần ghi nào của job này để hoàn tác.":"No saves in this job to undo.","Không có lỗi nào để tạo Issue.":"No errors to create Issues for.","Không có nhãn semi-auto nào trong {0}.":"No semi-auto labels in {0}.","Không có trong guideline":"Not in the guideline","Không có trên frame đang xem.":"Not on the current frame.","Không có đề xuất nào sẵn sàng để ghi.":"No suggestions ready to save.","Không kết nối được backend tại {0}. Kiểm tra backend đã chạy và địa chỉ trong Cài đặt panel (nút bánh răng).":"Cannot connect to the backend at {0}. Check the backend is running and the address in Panel settings (gear button).","Không thấy lỗi đo được bằng máy. Các mục \"Tự rà\" vẫn cần bạn kiểm tra.":"No machine-measurable errors found. The \"Self-check\" items still need your review.","Không tách được vật ở các điểm này. Thử bấm vào giữa vật.":"Could not segment an object at these points. Try clicking the middle of the object.","Không tìm thấy canvas của CVAT nên không bấm điểm được.":"CVAT canvas not found, so points cannot be clicked.","Không tìm thấy canvas của CVAT nên không vẽ hộp được. Xem mục \"Xử lý sự cố\" trong README.":"CVAT canvas not found, so a box cannot be drawn. See \"Troubleshooting\" in the README.","Không tìm thấy ô số frame. Hãy tự chuyển tới frame {0}.":"Frame number box not found. Please go to frame {0} yourself.","Không áp điều đã học cho label này (vẫn giữ dữ liệu)":"Do not apply what was learned for this label (data is kept)","Không đọc được file.":"Cannot read the file.","Khớp":"Matched","Kiểm luật QA trước khi ghi":"Check QA rules before saving","Kiểm tra":"Check","Kiểm tra ID":"Check ID","Kiểm tra annotation của frame này":"Check annotations on this frame","Kiểm tra attribute":"Check attributes","Kiểm tra kết nối":"Test connection","Kiểm tra occluded":"Check occluded","Kiểm tra trước khi ghi: {0} lỗi trên các đề xuất đã tick.\n\n{1}\n\nVẫn ghi?":"Pre-save check: {0} errors on the ticked suggestions.\n\n{1}\n\nSave anyway?","Kéo chuột khoanh vùng cần bỏ qua (gương, kính, biển quảng cáo, màn hình). Esc để huỷ.":"Drag to outline an area to ignore (mirror, glass, billboard, screen). Esc to cancel.","Kéo chuột trên ảnh để vẽ một hộp quanh đối tượng. Esc để huỷ.":"Drag on the image to draw a box around the object. Esc to cancel.","Kéo chuột vẽ hộp quanh người cần theo dõi (chọn ở frame người đó rõ nhất). Esc để huỷ.":"Drag a box around the person to follow (pick the frame where they are clearest). Esc to cancel.","Kéo thanh \"Ngưỡng\" để ẩn đề xuất điểm thấp, bấm tên class để ẩn/hiện cả class.":"Drag the \"Threshold\" slider to hide low-score suggestions; click a class name to hide/show the whole class.","Kéo để đổi chiều cao panel (bấm đúp: về mặc định)":"Drag to change the panel height (double-click: default)","Kéo để đổi độ rộng panel (bấm đúp: về mặc định)":"Drag to change the panel width (double-click: default)","Kích thước panel":"Panel size","Kết nối":"Connect","Kết nối tốt: {0} trên {1}, phiên bản {2}. Đã đọc {3} label.":"Connection OK: {0} on {1}, version {2}. Read {3} labels.","Kết quả quá lớn để giữ lại khi tải lại trang. Hãy ghi hoặc duyệt trước khi tải lại.":"Result too large to keep across a page reload. Save or review it before reloading.","Label cho hộp vẽ tay":"Label for hand-drawn boxes","Label cần gợi ý ({0}/{1}):":"Labels to suggest ({0}/{1}):","Label lấy từ task CVAT. Prompt nên là cụm danh từ tiếng Anh ngắn. Thay đổi được nhớ theo tên label.":"Labels come from the CVAT task. Prompts should be short English noun phrases. Changes are remembered by label name.","Label nào trong job cũng đã có nhãn; chọn tay label cần gợi ý.":"Every label in the job already has annotations; choose the labels to suggest by hand.","Label này là skeleton nào của guideline":"Which guideline skeleton this label is","Loại bài toán (tool đoán: {0})":"Task type (tool guess: {0})","Loại shape":"Shape type","Loại trừ":"Exclude","Lưu cho project":"Save for project","Lưu vào tool":"Save to tool","Lượt \"Tìm tương tự\" này đã cũ. Vẽ lại hộp mẫu.":"This \"Find similar\" session is stale. Draw the example box again.","Lượt gợi ý cả job đang tạm dừng: còn {0}/{1} frame.":"The whole-job run is paused: {0}/{1} frames left.","Lấy label từ task đang mở":"Take labels from the open task","Lỗ hổng tool tự phát hiện ({0})":"Gaps the tool found ({0})","Lỗi":"Error","Lỡ tay? \"Hoàn tác\" (Alt+Z) xoá lần ghi gần nhất, bấm tiếp để lùi thêm. Tab Tự học cho biết tool đã học gì từ cách bạn sửa.":"Made a mistake? \"Undo\" (Alt+Z) deletes the last save; press again to go further back. The Learning tab shows what the tool learned from your edits.","Model riêng của dự án":"Project custom model","Muốn AI viết giúp: mở app SAM3 Label Assist trên máy chạy backend → Cài đặt → AI soạn guideline, rồi bật lại backend.":"To let AI help: open the SAM3 Label Assist app on the computer running the backend → Settings → AI guideline drafting, then restart the backend.","Máy chưa có trọng số khởi đầu cho model riêng: huấn luyện sẽ học từ con số 0 và thường ra 0%. Cài thành phần \"Trọng số khởi đầu cho model riêng\" ở trang Thành phần của app trước.":"The starting weights for the custom model are not installed: training starts from scratch and usually scores 0%. Install the \"Starting weights for the custom model\" component on the app's Components page first.","Mất?":"Lost?","Mỗi vật một track: kích thước khoá theo frame có nhiều điểm nhất, yaw theo hướng đi, bị che tối đa 6 frame thì nội suy và bật occluded.":"One track per object: size locked from the frame with the most points, yaw from the direction of travel, hidden up to 6 frames is interpolated and set occluded.","Mở Profile cho project":"Open Project profile","Mở bản nháp để sửa và duyệt":"Open the draft to edit and approve","Mở frame này":"Open this frame","Mở rộng panel":"Expand panel","Mục đích của bộ dữ liệu (model sẽ dùng nhãn này để làm gì)":"Purpose of the dataset (what the model will use these labels for)","Ngôn ngữ / Language":"Language / Ngôn ngữ","Người cần theo dõi":"People to follow","Ngưỡng":"Threshold","Ngưỡng tin cậy":"Confidence threshold","Ngưỡng tin cậy khi tìm người":"Confidence threshold when finding people","Ngưỡng {0} → {1}: {2}":"Threshold {0} → {1}: {2}","Ngưỡng {0}%":"Threshold {0}%","Nhầm?":"Wrong?","Nhập số job khác (cùng task, cùng frame) để so.":"Enter another job number (same task, same frames) to compare.","Nhập số ảnh mẫu bằng tay":"Enter the number of sample images yourself","Nhắc khi frame có ít vật hơn frame bên cạnh":"Warn when a frame has fewer objects than its neighbors","Nâng cao":"Advanced","Nên làm trước ({0} frame, theo thứ tự ưu tiên):":"Do first ({0} frames, in priority order):","Nạp bản nháp gần nhất của job này":"Load this job's latest draft","Nạp guideline (chỉ văn bản, checklist)":"Load a guideline (text and checklist only)","Nạp lại":"Reload","Nạp lại profile":"Reload profiles","Nội dung Issue gửi mentor/reviewer:":"Issue text for the mentor/reviewer:","Outside cả skeleton ({0} điểm)":"Whole skeleton Outside ({0} points)","Panel (userscript) bản {0} cũ hơn backend bản {1}. Bấm \"Cài bản mới\" rồi chọn Update trong Tampermonkey, sau đó tải lại trang.":"The panel (userscript) version {0} is older than backend version {1}. Click \"Install new version\", choose Update in Tampermonkey, then reload the page.","Phát hiện ({0})":"Findings ({0})","Phân tích frame của job":"Analyse the job's frames","Phân tích lại":"Analyse again","Phân tích ảnh nén của các frame (không dùng GPU): frame nào khác lạ / khó nên làm trước, và keyframe theo chuyển động cho video.":"Analyses compressed frame images (no GPU): which frames are unusual / hard and worth doing first, and motion keyframes for video.","Phím Alt+{0} đang dùng cho \"{1}\".":"Alt+{0} is already used for \"{1}\".","Phím tắt (giữ Alt + phím)":"Shortcuts (hold Alt + key)","Phạm vi":"Scope","Phạm vi?":"Scope?","Profile có sẵn \"{0}\" đã khớp các label này. \"Tự chọn profile\" sẽ giữ profile có sẵn; muốn dùng guideline mới thì chọn tay profile của nó ở đầu panel (hoặc bấm \"Dùng cho job này\").":"Existing profile \"{0}\" already matches these labels. \"Auto-select profile\" keeps the existing profile; to use the new guideline, choose its profile by hand at the top of the panel (or press \"Use for this job\").","Profile guideline · đang dùng: {0}":"Guideline profile · in use: {0}","Profile đang dùng ({0})":"Active profiles ({0})","Profile đang ẩn ({0})":"Hidden profiles ({0})","Project này đã có profile riêng. Ghi đè bằng bản mới?":"This project already has its own profile. Overwrite it with the new one?","Prompt SAM3 để tìm người":"SAM3 prompt to find people","Prompt cho SAM3, cách nhau bằng dấu phẩy":"Prompts for SAM3, separated by commas","Quay lại":"Back","Quét {0} ảnh và soạn nháp":"Scan {0} images and draft","Quên":"Forget","Quên tất cả":"Forget all","Quản lý profile":"Manage profiles","Rà cả job":"Check whole job","Rà cả job xong":"Whole-job check finished","Rà {0} frame có nhãn: {1} lỗi, {2} cảnh báo{3}.{4}":"Checked {0} labelled frames: {1} errors, {2} warnings{3}.{4}","Rộng":"Wide","SAM3 Assist: hiện/ẩn panel":"SAM3 Assist: show/hide panel","SAM3 Label Assist {0}. Giữ Alt rồi bấm lên ảnh để tick / bỏ tick đề xuất.":"SAM3 Label Assist {0}. Hold Alt and click the image to tick / untick suggestions.","SAM3 Video (thử nghiệm): model tự giữ ID, tốn VRAM hơn":"SAM3 Video (experimental): the model keeps IDs itself, uses more VRAM","SAM3 đang phân tích frame…":"SAM3 is analysing the frame…","SAM3 đang tách vật theo các điểm…":"SAM3 is segmenting the object from the points…","SAM3 đang tìm \"{0}\" trong {1} frame…":"SAM3 is searching for \"{0}\" in {1} frames…","SAM3 đang tìm lại, bỏ các vật giống hộp loại trừ…":"SAM3 is searching again, excluding objects like the excluded boxes…","SAM3 đang tìm đối tượng trong hộp…":"SAM3 is looking for the object in the box…","Sang frame tiếp":"Next frame","Sang tab Cả job":"Go to the Whole job tab","So các nhãn tool đã ghi với nhãn hiện tại (sau khi bạn sửa) rồi học lại. Tool cũng tự làm việc này mỗi lần mở job.":"Compare the labels the tool saved with the current labels (after your edits) and re-learn. The tool also does this every time a job opens.","So nhãn của job này với một job khác gán cùng các frame (ví dụ job kiểm tra chéo). Class đồng thuận thấp thường là chỗ guideline còn mơ hồ.":"Compares this job's labels with another job that labelled the same frames (e.g. a cross-check job). Classes with low agreement usually point to vague parts of the guideline.","So sánh":"Compare","So với job":"Compare with job","Soạn guideline nháp từ ảnh của job":"Draft a guideline from job images","Sẵn sàng":"Ready","Số ảnh mẫu":"Number of sample images","Sửa":"Edit","Tag của ảnh":"Image tags","Task còn thiếu: {0}.":"Task is missing: {0}.","Task không có label kiểu cuboid.":"The task has no cuboid labels.","Task mới có label tạm (CVAT bắt buộc ít nhất 1 label): tool tự tìm các loại vật trong ảnh và đề xuất danh sách class. Duyệt xong, bấm \"Thêm label còn thiếu\" để tool thêm vào task (không xoá label tạm).":"New task with a placeholder label (CVAT requires at least 1 label): the tool finds the kinds of objects in the images and proposes a class list. After review, press \"Add missing labels\" so the tool adds them to the task (the placeholder is not deleted).","Task đã có đủ label theo guideline.{0}":"The task already has all labels from the guideline.{0}","Task đã có đủ label theo taxonomy của bản nháp.":"The task already has all labels from the draft's taxonomy.","Task đã có đủ label theo taxonomy.":"The task already has all taxonomy labels.","Theo dõi cả job (ra track)":"Track the whole job (as tracks)","Theo dõi {0} frame":"Track {0} frames","Theo dõi {0} người qua {1} frame":"Track {0} people across {1} frames","Theo dõi đối tượng (video)":"Track objects (video)","Theo dõi đối tượng xong":"Object tracking finished","Thu gọn panel":"Collapse panel","Thu thập từ job này":"Collect from this job","Thuộc tính bạn chọn trong CVAT sau khi ghi: {0}":"Attributes you choose in CVAT after saving: {0}","Thuộc tính?":"Attribute?","Thêm label":"Add label","Thêm label còn thiếu":"Add missing labels","Thêm {0} label còn thiếu vào task":"Add {0} missing labels to the task","Thêm {0} label vào {1}?\n{2}\n\nTool chỉ thêm label mới; label đang có được giữ nguyên.":"Add {0} labels to {1}?\n{2}\n\nThe tool only adds new labels; existing labels are kept.","Thêm {0} đề xuất từ hộp vừa vẽ.{1}{2}":"Added {0} suggestions from the box just drawn.{1}{2}","Thôi tự điền thuộc tính: {0}":"Stop auto-filling attributes: {0}","Thứ tự điểm":"Point order","Thứ tự?":"Order?","Thử profile mới: {0} đề xuất, {1} tag. Chưa lưu: quay lại tab Guideline để lưu hoặc sửa.":"New profile trial: {0} proposals, {1} tags. Not saved yet: go back to the Guideline tab to save or edit.","Thử trên frame này":"Try on this frame","Tick / bỏ tick đề xuất đang chọn":"Tick / untick the selected suggestion","Tiếng Việt":"Tiếng Việt","Tiếp":"Next","Tiếp tục":"Continue","Tool chỉ gợi ý. Bạn duyệt từng nhãn rồi mới ghi vào CVAT.":"The tool only suggests. You review each label before it is saved to CVAT.","Tool chỉ theo dõi những người này, cả trước và sau frame bạn chọn. Người khác, phản chiếu, quảng cáo bị bỏ.":"The tool follows only these people, before and after the frame you chose. Other people, reflections and ads are dropped.","Tool dựng cách gợi ý riêng cho project từ chính label của task (kể cả attribute, skeleton, tag). Thêm guideline để tool hiểu định nghĩa, kích thước tối thiểu và quy ước trái/phải. Không cần file taxonomy.":"The tool builds project-specific suggestions from the task's own labels (including attributes, skeletons, tags). Add a guideline so the tool knows definitions, minimum size and the left/right convention. No taxonomy file needed.","Tool gợi ý nhãn đang dùng profile sinh từ bản nháp này. Đổi lại ở ô chọn profile phía trên.":"Suggestions now use the profile generated from this draft. Change it back in the profile selector above.","Tool gợi ý được":"The tool can suggest","Tool học từ cách BẠN xử lý đề xuất: nhãn giữ nguyên, nhãn bị kéo lại, đổi class, xoá, bỏ tick, và nhãn bạn tự vẽ thêm. Từ đó nó chỉnh ngưỡng tin cậy và cách đặt hộp cho từng label. Model SAM3 không bị huấn luyện lại; chỉnh tay ở tab Label luôn thắng điều tool đã học.":"The tool learns from how YOU handle suggestions: labels kept, labels dragged, class changes, deletions, unticks, and labels you draw yourself. From that it adjusts the confidence threshold and box placement for each label. The SAM3 model is not retrained; manual settings in the Labels tab always win over what the tool learned.","Tool quét một số ảnh mẫu, đo xem trong ảnh có gì và chỗ nào dễ nhầm, rồi soạn bản nháp theo khung của các guideline mẫu. Luật là quyết định của người: tool hỏi, bạn chốt.":"The tool scans some sample images, measures what is in them and what is easy to confuse, then drafts a guideline in the structure of the sample guidelines. Rules are human decisions: the tool asks, you decide.","Tool tự chọn {0} ảnh mẫu ({1}). {2}":"The tool picks {0} sample images ({1}). {2}","Tool tự thấy: ":"The tool noticed: ","Tool tự đoán từ ảnh: kiểm lại":"Guessed from the image: check it","Tool đã học: {0} → {1} ({2}). Gõ số khác để đặt tay.":"The tool learned: {0} → {1} ({2}). Type another number to set it by hand.","Track nhầm?":"Wrong track?","Track tool đã ghi: giữ {0} · bạn sửa {1} · xoá {2}":"Tracks saved by the tool: kept {0} · you edited {1} · deleted {2}","Trái/phải?":"Left/right?","Trên các đề xuất đã tick":"On the ticked suggestions","Trùng lặp":"Duplicate","Trùng?":"Duplicate?","Trạng thái backend":"Backend status","Trạng thái điểm":"Point state","Tìm":"Find","Tìm \"{0}\": {1}/{2} frame, thấy {3}.":"Searching \"{0}\": {1}/{2} frames, found {3}.","Tìm cả đối tượng có thể bị sót (chạy SAM3 trên từng frame, chậm như Gợi ý cho cả job)":"Also look for possibly missed objects (runs SAM3 on every frame, as slow as Suggest for whole job)","Tìm frame có… (tiếng Anh, vd: motorbike carrying boxes)":"Find frames with… (English, e.g. motorbike carrying boxes)","Tìm frame xong":"Frame search finished","Tìm tương tự":"Find similar","Tìm được":"Recall","Tương phản cao":"High contrast","Tạo Issue":"Create issue","Tạo Issue cho mọi lỗi":"Create issues for all errors","Tạo Issue trên CVAT: gửi case này cho mentor":"Create a CVAT Issue: send this case to the mentor","Tạo lại profile cho project":"Recreate the project profile","Tạo profile cho project":"Create a project profile","Tạo profile từ bản nháp để tool gợi ý nhãn theo đúng các luật này":"Create a profile from the draft so the tool suggests labels by exactly these rules","Tạo {0} Issue trên CVAT (mỗi lỗi một Issue, đặt đúng frame và vị trí)?":"Create {0} Issues in CVAT (one Issue per error, at the right frame and position)?","Tải .md":"Download .md","Tải lại trang sau khi ghi":"Reload the page after saving","Tất cả":"All","Tắt":"Off","Tắt bài học sai ở trang duyệt bản nháp.":"Turn off wrong lessons on the draft review page.","Tới câu chưa trả lời":"Go to the next unanswered question","Tới frame này":"Go to this frame","Tới frame này và khoanh vùng ví dụ":"Go to this frame and highlight the example","Tới frame đầu":"Go to first frame","Từ frame":"From frame","Từ khoá thêm (tiếng Anh, cách nhau bằng dấu phẩy)":"Extra keywords (English, separated by commas)","Tự chọn profile":"Auto-select profile","Tự chọn số":"Set the number","Tự chọn: {0}":"Auto: {0}","Tự gợi ý khi chuyển frame":"Suggest automatically when changing frame","Tự học":"Learning","Tự rà":"Self-check","Tự vẽ một nhãn":"Draw a label yourself","Tự điền: {0} (đổi được trong CVAT sau khi ghi)":"Auto-filled: {0} (can be changed in CVAT after saving)","Tự động":"Automatic","Viền tím \"AI\" cho nhãn tool ghi mà chưa ai sửa":"Purple \"AI\" outline on labels the tool saved that nobody has edited","Ví dụ":"Examples","Ví dụ: phát hiện người đi bộ cho camera hành trình":"E.g. pedestrian detection for dash cams","Ví dụ: reviewer trả bài vì xe ba bánh chở hàng phải gán truck":"E.g. the reviewer rejected work because cargo tricycles must be labelled truck","Vùng bỏ qua":"Ignore zones","Vùng {0}":"Zone {0}","Vật này bị nhận nhầm: dùng nó làm mẫu ÂM, SAM3 tìm lại và bỏ mọi vật giống nó":"This object is wrong: use it as a NEGATIVE example; SAM3 searches again and drops every object like it","Vẽ hộp":"Draw box","Vẽ một hộp làm mẫu, SAM3 tìm mọi đối tượng giống vậy":"Draw an example box and SAM3 finds every similar object","Vẽ một hộp, SAM3 lấy đúng đối tượng đó":"Draw a box and SAM3 takes exactly that object","Về mặc định của profile":"Reset to profile defaults","Về phím mặc định":"Reset shortcuts","Vừa":"Medium","Xem lại hướng dẫn":"Show the tour again","Xem trước: {0}":"Preview: {0}","Xoá":"Delete","Xoá dữ liệu và model riêng của profile này?":"Delete this profile's custom model and data?","Xoá dữ liệu và điều đã học của label này":"Delete this label's data and what was learned","Xoá hẳn file profile":"Permanently delete the profile file","Xoá hẳn profile {0}? File bị xoá khỏi máy, không hoàn tác được.{1}{2}":"Permanently delete profile {0}? The file is removed from the machine and cannot be undone.{1}{2}","Xoá mọi điều tool đã học (mọi profile)?":"Delete everything the tool learned (all profiles)?","Xoá mọi điều tool đã học về \"{0}\"?":"Delete everything the tool learned about \"{0}\"?","Xoá {0} mà tool đã ghi ở frame {1}{2}?":"Delete {0} that the tool saved at frame {1}{2}?","Xuất báo cáo CSV":"Export CSV report","Xuất báo cáo năng suất (CSV)":"Export productivity report (CSV)","bạn sửa":"edited by you","bỏ qua (tạm dùng: {0})":"skipped (using for now: {0})","chưa kiểm tra":"not checked","chưa kết nối":"not connected","có sẵn trong tool":"built into the tool","cả job {0}":"whole job {0}","frame đã có tag này":"the frame already has this tag","hai cạnh dài (crosswalk)":"two long sides (crosswalk)","hai mép (vạch kép)":"two edges (double line)","job có {0} frame":"the job has {0} frames","job có {0} frame, {1} đoạn thay đổi rõ":"the job has {0} frames, {1} clear scene changes","luôn có":"always present","model khuôn mặt":"face model","ngay (đã chạy sẵn)":"instantly (pre-computed)","nạp từ guideline":"imported from guideline","project {0} (label của task này nằm ở project)":"project {0} (this task's labels live in the project)","prompt tiếng Anh":"English prompt","skeleton {0} điểm":"{0}-point skeleton","skeleton: không dùng prompt":"skeleton: no prompt used","suy ra bằng luật":"derived by rules","số job":"job number","tab Label của job":"the job's Labels tab","task đang mở":"the open task","theo tim vạch":"along the centre","tới":"to","tự học":"learned","{0} ({1} điểm)":"{0} ({1} points)","{0} Issue type · {1} mục checklist · {2} tiêu chí reviewer. Prompt là cụm tiếng Anh ngắn SAM3 dùng để tìm vật (rê chuột lên ô để xem nguồn); để trống thì tool không tự tìm label đó.":"{0} Issue types · {1} checklist items · {2} reviewer criteria. The prompt is the short English phrase SAM3 uses to find objects (hover to see its source); if empty, the tool will not look for that label.","{0} Nếu tài khoản của bạn không có quyền sửa task, bấm \"Chép JSON label\" và gửi cho người tạo task.":"{0} If your account cannot edit the task, press \"Copy label JSON\" and send it to the task creator.","{0} cuboid đề xuất ở frame {1}. Kiểm tra trong cửa sổ 3D của CVAT sau khi ghi (Top / Side / Front).":"{0} cuboid proposals on frame {1}. Check them in CVAT's 3D view after saving (Top / Side / Front).","{0} cờ":"{0} flags","{0} frame có kết quả · {1} đề xuất · {2} mục có cờ":"{0} frames with results · {1} suggestions · {2} flagged items","{0} frame cần xem · {1} lỗi · {2} cảnh báo{3}":"{0} frames to review · {1} errors · {2} warnings{3}","{0} giây":"{0} seconds","{0} label profile \"{1}\" chưa gợi ý được ({2}{3}). Profile cho project dựng cách gợi ý theo từng label của task, kể cả tag và skeleton.":"{0} labels the profile \"{1}\" cannot suggest ({2}{3}). A project profile builds suggestions per task label, including tags and skeletons.","{0} lỗi · {1} khác{2}":"{0} errors · {1} other{2}","{0} m · {1} điểm · cách xe {2} m":"{0} m · {1} points · {2} m from the car","{0} nhãn":"{0} labels","{0} nhãn đã ghi · {1} đề xuất bị bỏ · {2} frame · ước tính tiết kiệm {3} phút":"{0} labels saved · {1} suggestions dropped · {2} frames · about {3} minutes saved","{0} phút":"{0} minutes","{0} track (frame {1}–{2}) · {3} đã chọn":"{0} tracks (frames {1}–{2}) · {3} selected","{0} track cuboid (frame {1}–{2}). Duyệt ở tab Cả job rồi bấm Ghi.":"{0} cuboid tracks (frames {1}–{2}). Review in the Whole job tab, then press Save.","{0} track cuboid, {1} track có cờ cần xem. Bấm Ghi rồi kiểm tra trong cửa sổ 3D của CVAT.":"{0} cuboid tracks, {1} flagged for review. Press Save, then check in CVAT's 3D view.","{0} vật, điểm {1}%":"{0} objects, score {1}%","{0} · {1} ảnh · {2} loại đối tượng · {3}% bị che · {4}% rất nhỏ":"{0} · {1} images · {2} kinds of objects · {3}% occluded · {4}% very small","{0} Đổi lại ở ô chọn profile phía trên.":"{0} Change it back in the profile selector above.","{0} điều đã học cho \"{1}\".":"{0} learned for \"{1}\".","{0} đề xuất {1}, {2} cần xem kỹ. Duyệt rồi bấm \"Ghi\" (hoặc {3}: ghi và sang frame tiếp).":"{0} suggestions {1}, {2} need a closer look. Review, then press \"Save\" (or {3}: save and go to the next frame).","{0} đề xuất · {1} đã chọn{2}":"{0} suggestions · {1} selected{2}","{0}\"{1}\": thấy ở {2} frame.":"{0}\"{1}\": found in {2} frames.","{0}. Bấm nhiều lần để lùi thêm (tối đa 20 lần ghi).":"{0}. Press repeatedly to go further back (up to 20 saves).","{0}/{1} điểm{2}":"{0}/{1} points{2}","{0}: ghi nhưng ở lại frame này":"{0}: save but stay on this frame","{0}: ghi rồi sang frame {1}, đề xuất của frame đó đã chạy sẵn":"{0}: save, then go to frame {1}, whose suggestions are already pre-computed","{0}{1} frame có {2} đề xuất{3}. {4} mục có cờ cần duyệt.":"{0}{1} frames have {2} suggestions{3}. {4} flagged items need review.","{0}{1} track, {2} track có cờ cần xem{3}. Tua qua các frame để kiểm tra rồi bấm Ghi.{4}":"{0}{1} tracks, {2} flagged tracks to review{3}. Scrub through the frames to check, then press Save.{4}","Áp lại điều đã học":"Apply what was learned again","Đang bắt đầu huấn luyện…":"Starting training…","Đang chạy sẵn frame {0}…":"Pre-computing frame {0}…","Đang chỉ xem {0} dòng có cờ \"{1}\"; {2} dòng khác vẫn được ghi nếu đang tick.":"Showing only {0} rows flagged \"{1}\"; {2} other rows are still saved if ticked.","Đang cập nhật bản nháp…":"Updating the draft…","Đang cập nhật label…":"Updating labels…","Đang cập nhật phần tự học…":"Updating learning data…","Đang cập nhật profile…":"Updating profile…","Đang dùng":"In use","Đang dùng profile của \"{0}\": khớp {1}/{2} label của job.":"Using the profile of \"{0}\": matches {1}/{2} labels of the job.","Đang dừng quét, sẽ soạn nháp từ các ảnh đã quét…":"Stopping the scan; the draft will use the images scanned so far…","Đang dừng sau frame hiện tại…":"Stopping after the current frame…","Đang dựng cuboid cho {0} frame…":"Building cuboids for {0} frames…","Đang dựng cuboid từ point cloud của frame này…":"Building cuboids from this frame's point cloud…","Đang dựng cuboid: {0}/{1} frame. Còn khoảng {2} giây.":"Building cuboids: {0}/{1} frames. About {2} seconds left.","Đang dựng profile từ label của task…":"Building the profile from the task's labels…","Đang ghi cuboid vào CVAT…":"Saving cuboids to CVAT…","Đang ghi nhãn của cả job…":"Saving labels for the whole job…","Đang ghi nhãn vào CVAT…":"Saving labels to CVAT…","Đang ghi nhận…":"Recording…","Đang ghi track vào CVAT…":"Saving tracks to CVAT…","Đang gỡ…":"Removing…","Đang gợi ý cho {0} frame…":"Suggesting for {0} frames…","Đang hoàn tác…":"Undoing…","Đang huấn luyện":"Training","Đang huấn luyện model riêng (chạy nền).":"Training the custom model (in the background).","Đang kiểm tra":"Checking","Đang kiểm tra annotation của frame…":"Checking the frame's annotations…","Đang kiểm tra backend…":"Checking the backend…","Đang lưu guideline vào tool…":"Saving the guideline to the tool…","Đang lưu profile cho project…":"Saving the project profile…","Đang lấy ảnh frame…":"Getting the frame image…","Đang nạp bản nháp guideline…":"Loading the draft guideline…","Đang nạp lại profile…":"Reloading profiles…","Đang nối ID và chọn keyframe…":"Linking IDs and choosing keyframes…","Đang nối track, khoá kích thước, chọn keyframe…":"Linking tracks, locking sizes, choosing keyframes…","Đang phân tích frame: {0}/{1}…":"Analysing frames: {0}/{1}…","Đang phân tích {0} frame…":"Analysing {0} frames…","Đang quét {0} ảnh mẫu…":"Scanning {0} sample images…","Đang rà cả job…":"Checking the whole job…","Đang so job {0} với job {1}…":"Comparing job {0} with job {1}…","Đang soạn bản nháp và tự kiểm tra…":"Writing the draft and self-checking…","Đang theo dõi {0} frame…":"Tracking {0} frames…","Đang thu thập ảnh + hộp đã duyệt của job…":"Collecting reviewed images + boxes from the job…","Đang thêm label vào CVAT…":"Adding labels to CVAT…","Đang thử profile mới trên frame này…":"Trying the new profile on this frame…","Đang tìm label chưa có trong job…":"Looking for labels not yet used in the job…","Đang tìm đối tượng có thể bị sót: {0}/{1} frame. Còn khoảng {2} giây.":"Looking for possibly missed objects: {0}/{1} frames. About {2} seconds left.","Đang tìm đối tượng: {0}/{1} frame. Còn khoảng {2} giây.":"Looking for objects: {0}/{1} frames. About {2} seconds left.","Đang tạo Issue…":"Creating Issues…","Đang tạo JSON label…":"Creating label JSON…","Đang tạo profile từ bản nháp…":"Creating a profile from the draft…","Đang tải danh sách profile…":"Loading profile list…","Đang xoá…":"Deleting…","Đang áp profile…":"Applying profile…","Đang đọc annotation của job…":"Reading the job's annotations…","Đang đọc job và label từ CVAT…":"Reading job and labels from CVAT…","Đang đọc {0} và label của task…":"Reading {0} and the task's labels…","Đang đọc {0}…":"Reading {0}…","Đang đối chiếu…":"Comparing…","Đang đổi source của {0} nhãn…":"Changing the source of {0} labels…","Đang đợi gợi ý đã chạy sẵn cho frame này…":"Waiting for the pre-computed suggestions for this frame…","Đang ẩn class này: bấm để hiện":"This class is hidden: click to show","Điểm?":"Point?","Đánh dấu nhãn do tool ghi là source = \"semi-auto\"":"Mark tool labels as source = \"semi-auto\"","Đây là frame cuối của job.":"This is the last frame of the job.","Đây là giả thuyết của tool, không phải kết luận. Xem rồi sửa bản nháp nếu đúng.":"These are the tool's hypotheses, not conclusions. Review them and fix the draft if they are right.","Đã bật":"Turned on","Đã bỏ kết quả gợi ý của cả job.":"Discarded the whole-job suggestions.","Đã bỏ kết quả theo dõi.":"Discarded the tracking results.","Đã chép JSON của {0} label. Khi tạo task mới, dán vào tab Raw ở phần label.":"Copied JSON for {0} labels. When creating a new task, paste it into the Raw tab of the labels section.","Đã chép JSON của {0} label. Khi tạo task mới, dán vào tab Raw ở phần label.{1}":"Copied JSON for {0} labels. When creating a new task, paste it into the Raw tab of the labels section.{1}","Đã chọn P{0} ở frame {1}. Chọn thêm người khác, hoặc bấm \"Theo dõi\" để tool chỉ theo dõi những người đã chọn (cả trước và sau frame này).":"Chose P{0} at frame {1}. Choose more people, or press \"Track\" so the tool follows only the chosen people (before and after this frame).","Đã chọn {0} label chưa có nhãn nào trong job.":"Selected {0} labels that have no annotations in the job.","Đã chọn: {0}":"Chosen: {0}","Đã chốt {0} · Bỏ qua {1} · Còn {2}":"Answered {0} · Skipped {1} · Left {2}","Đã cập nhật bản nháp theo lựa chọn của bạn.":"Updated the draft with your choices.","Đã duyệt":"Approved","Đã dừng ghi để bạn sửa các lỗi kiểm tra.":"Saving stopped so you can fix the check errors.","Đã dừng ở frame {0}. ":"Stopped at frame {0}. ","Đã dừng. ":"Stopped. ","Đã dựng profile cho {0} label{1}. Bấm \"Thử trên frame này\" rồi \"Lưu cho project\".":"Built a profile for {0} labels{1}. Press \"Try on this frame\", then \"Save for project\".","Đã ghi nhận. Bài học này sẽ được dùng ở các lần soạn sau.":"Recorded. This lesson will be used in future drafts.","Đã ghi {0} cuboid. Tải lại trang (F5) để thấy trong cửa sổ 3D.":"Saved {0} cuboids. Reload the page (F5) to see them in the 3D view.","Đã ghi {0} nhãn.{1}":"Saved {0} labels.{1}","Đã ghi {0} nhãn{1}. Đang tải lại trang{2}…":"Saved {0} labels{1}. Reloading the page{2}…","Đã ghi {0} nhãn{1}.{2}":"Saved {0} labels{1}.{2}","Đã ghi {0} track.{1}":"Saved {0} tracks.{1}","Đã ghi {0}/{1} nhãn…":"Saved {0}/{1} labels…","Đã ghép {0} label mới và cập nhật {1} label từ {2} vào guideline \"{3}\". Kiểm tra rồi bấm Lưu.":"Merged {0} new labels and updated {1} labels from {2} into guideline \"{3}\". Check, then press Save.","Đã giữ vật vừa tách. Duyệt rồi ghi như các đề xuất khác.":"Kept the segmented object. Review and save it like other suggestions.","Đã gỡ \"{0}\".":"Removed \"{0}\".","Đã gửi {0}/{1} frame cho model riêng…":"Sent {0}/{1} frames to the custom model…","Đã hiện lại":"Shown again","Đã huỷ bấm điểm.":"Cancelled point clicking.","Đã huỷ vẽ hộp.":"Box drawing cancelled.","Đã huỷ.":"Cancelled.","Đã học cho profile đang dùng ({0} label)":"Learned for the current profile ({0} labels)","Đã kiểm tra {0} annotation: {1} lỗi, {2} cảnh báo.":"Checked {0} annotations: {1} errors, {2} warnings.","Đã lưu profile {0}. Mọi job của {1} này tự dùng profile này.":"Saved profile {0}. Every job of this {1} uses it automatically.","Đã lấy {0} label từ task đang mở ({1} label đã có trong bản xem trước).":"Took {0} labels from the open task ({1} labels were already in the preview).","Đã nạp văn bản, định nghĩa và checklist ({0} label). Guideline skeleton chưa có profile gợi ý tự động.":"Imported text, definitions and checklist ({0} labels). Skeleton guidelines do not get an automatic suggestion profile yet.","Đã nạp {0} label. Profile \"{1}\" đã có trong ô chọn profile; bấm \"Dùng cho job này\" ở danh sách bên dưới nếu job đang mở thuộc guideline này.":"Imported {0} labels. Profile \"{1}\" is now in the profile selector; press \"Use for this job\" in the list below if the open job belongs to this guideline.","Đã phân tích {0} frame: {1} keyframe theo chuyển động. Xem danh sách \"Nên làm trước\".":"Analysed {0} frames: {1} motion keyframes. See the \"Do first\" list.","Đã quét {0}/{1} ảnh, thấy {2} loại đối tượng. Còn khoảng {3} giây.":"Scanned {0}/{1} images, found {2} kinds of objects. About {3} seconds left.","Đã quên \"{0}\".":"Forgot \"{0}\".","Đã soạn bản nháp từ {0} ảnh: {1} câu hỏi cần chốt, {2} lỗ hổng tool tự thấy.":"Drafted from {0} images: {1} questions to decide, {2} gaps the tool found.","Đã thêm vùng bỏ qua thứ {0}. Mọi phát hiện có tâm nằm trong vùng này bị bỏ (cả gợi ý từng frame và theo dõi) cho mọi job của task.":"Added ignore zone {0}. Every detection whose centre is inside it is dropped (per-frame suggestions and tracking) for all jobs of the task.","Đã thêm {0} label.{1}":"Added {0} labels.{1}","Đã thêm {0} label.{1} Tải lại trang (F5) để CVAT nhận label mới.":"Added {0} labels.{1} Reload the page (F5) so CVAT picks up the new labels.","Đã tách vật ({0}%). Bấm thêm điểm để sửa, Enter để giữ.":"Object segmented ({0}%). Click more points to correct, Enter to keep.","Đã tạm dừng ({0}/{1} frame). Bấm \"Tiếp tục\" để chạy nốt. ":"Paused ({0}/{1} frames). Press \"Continue\" to finish. ","Đã tạo Issue trên frame này.":"Created an Issue on this frame.","Đã tạo {0} Issue. Tải lại trang (F5) để thấy chúng trong CVAT.":"Created {0} Issues. Reload the page (F5) to see them in CVAT.","Đã tạo {0}/{1} Issue…":"Created {0}/{1} Issues…","Đã tắt":"Turned off","Đã xoá":"Deleted","Đã xoá mọi điều tool đã học.":"Deleted everything the tool learned.","Đã xoá. Đang tải lại trang…":"Deleted. Reloading the page…","Đã đọc \"{0}\": {1} label, {2} mục checklist.{3} Kiểm tra bảng bên dưới rồi bấm Lưu.":"Read \"{0}\": {1} labels, {2} checklist items.{3} Check the table below, then press Save.","Đã đọc {0} label từ CVAT nhưng chưa nối được backend. Kiểm tra ở Cài đặt panel (nút bánh răng).":"Read {0} labels from CVAT but cannot reach the backend yet. Check Panel settings (gear button).","Đã đọc {0} label từ {1}. Nếu có file guideline (.docx), chọn nó ngay sau đây: tool sẽ ghép label này với văn bản và checklist của guideline.":"Read {0} labels from {1}. If you have a guideline file (.docx), choose it next: the tool will merge these labels with the guideline's text and checklist.","Đã đối chiếu {0} đề xuất của job này với nhãn hiện tại và học lại.":"Compared {0} suggestions of this job with the current labels and re-learned.","Đã đổi {0} nhãn sang manual. Đang tải lại trang…":"Changed {0} labels to manual. Reloading the page…","Đã ẩn":"Hidden","Đóng lưới ảnh":"Close thumbnail grid","Đóng quản lý profile":"Close profile manager","Đúng":"Precision","Đạt":"Passed","Đề xuất này lấy từ lượt gợi ý cho cả job (tab Cả job).":"This suggestion comes from the whole-job run (Whole job tab).","Đề xuất thuộc frame khác. Hãy chạy lại gợi ý cho frame này.":"These suggestions belong to another frame. Run suggestions again for this frame.","Để sau: tool tạm dùng lựa chọn đề xuất":"Later: the tool uses the suggested choice for now","Để thấy ngay nhãn mới trong CVAT":"To see new labels in CVAT right away","Để tool tự nhận":"Let the tool detect it","Để tool tự tính theo độ dài và độ đa dạng của job":"Let the tool decide from the job's length and variety","Địa chỉ backend SAM3":"SAM3 backend address","Đọc lại các file YAML trong thư mục profiles/ của backend":"Re-read the YAML files in the backend's profiles/ folder","Đọc lại label từ CVAT":"Reload labels from CVAT","Đối chiếu annotation đã lưu của frame với checklist trong guideline. Hãy lưu (Ctrl+S) trước khi kiểm tra.":"Compares the frame's saved annotations with the guideline checklist. Save (Ctrl+S) before checking.","Đối chiếu job này ngay":"Review this job now","Đồng thuận":"Agreement","Đồng thuận chung {0}% trên {1} frame chung.":"Overall agreement {0}% over {1} shared frames.","Đồng ý":"OK","Đổi ID?":"ID switch?","Đổi class":"Change class","Đổi nhãn semi-auto đã lưu thành manual":"Change saved semi-auto labels to manual","Đổi source của {0} nhãn trong {1} từ \"semi-auto\" sang \"manual\"?\nGồm cả nhãn tạo bằng công cụ AI có sẵn của CVAT, nếu có.":"Change the source of {0} labels in {1} from \"semi-auto\" to \"manual\"?\nIncludes labels made with CVAT's built-in AI tools, if any.","Độ đậm vùng tô":"Fill opacity","Độ đồng thuận giữa hai người gán":"Agreement between two annotators","Đứt ID?":"ID split?","đã có nhãn":"already labelled","đã có đủ các label đã chọn":"already has all selected labels","đã có đủ label":"already has all labels","đúng {0}% · tìm được {1}%":"precision {0}% · recall {1}%","Ẩn":"Hide","Ẩn / hiện panel":"Hide / show panel","Ẩn = chuyển file vào thư mục profiles/archive/ của backend; profile biến khỏi ô chọn và khỏi \"Tự chọn profile\", hiện lại được. Xoá = xoá hẳn file. Hai profile dự phòng (generic, generic_track) luôn có.":"Hide = move the file into the backend's profiles/archive/ folder; the profile disappears from the selector and from \"Auto-select profile\" and can be shown again. Delete = delete the file permanently. The two fallback profiles (generic, generic_track) are always present.","Ẩn đề xuất có điểm thấp hơn":"Hide suggestions with a lower score","… và {0} frame nữa.":"… and {0} more frames.","‹ Trước":"‹ Previous"}};
   // Bộ máy dịch dùng chung cho panel và bảng điều khiển của app. Cách khớp giống hệt backend/i18n/__init__.py.
   // makeI18n({strings: {vi: en}, codes: {vi: 'E_...'}}) -> { tr(text), code(text, status), withCode(msg, code) }
   function makeI18n(data) {

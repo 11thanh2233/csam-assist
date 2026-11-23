@@ -3,6 +3,52 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.4 (2026-11-23)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.4.md`.
+
+- **Profile cho project** (tab Guideline, mục đầu tiên): tool dựng cách gợi ý riêng cho project từ chính label của task,
+  không cần file taxonomy, không cần có label trước:
+  - một job gộp được nhiều loại: box, polygon, polyline, mask, **skeleton** (thân 17 điểm, mặt 13 điểm…), **tag ảnh**;
+  - skeleton ghép từng điểm theo tên điểm (vd `left_eye_outer`, `mouth_left`), theo quy ước trái/phải của guideline;
+  - thuộc tính tự điền khi đo được từ ảnh (chạm mép, bị che, vùng rìa fisheye, màu đèn), còn lại để bạn chọn;
+  - kích thước tối thiểu đọc từ guideline (vd người dưới 60 px không gợi ý);
+  - **Thử trên frame này** trước khi **Lưu cho project**; mọi job của project tự dùng.
+- **Tag ảnh** (camera, timeofday, weather, modality…): tool đoán giá trị đo được (ảnh hồng ngoại, độ sáng, fisheye,
+  camera bị che), đánh dấu giá trị bạn phải chọn.
+- **Cuboid 3D trên job CVAT 3D (LiDAR):** dựng cuboid từ point cloud (tách mặt đường, gom cụm, đoán class theo bảng
+  kích thước của guideline), dựng track cả job với kích thước khoá, yaw theo hướng đi, nội suy khi bị che tối đa 6 frame.
+  Không cần cài thêm gì.
+- **Theo dõi (tracking) tốt hơn:**
+  - **chọn người cần theo dõi** (P1, P2…) ở frame họ rõ nhất: tool chỉ theo dõi những người đó, cả trước và sau;
+  - **vùng bỏ qua**: khoanh gương, kính, biển quảng cáo, màn hình;
+  - người đứng yên suốt job (poster, phản chiếu) bị đánh cờ và bỏ chọn sẵn;
+  - nối khoảng model bỏ sót, đặt `occluded` / `outside` theo khoảng khuất và mép ảnh;
+  - SAM3 Video: hết `E_BACKEND_TIMEOUT` với job dài, có nút dừng, dọn mask nhiễu;
+  - "Dữ liệu thông minh" trên job video có nút **Theo dõi cả job (ra track)**.
+- **Soạn guideline nháp:**
+  - không cần label trước, tool tự tính số ảnh mẫu;
+  - câu hỏi có tiến độ, bỏ qua được, sửa lại được, xem trước câu trả lời sẽ đổi gì trong bản nháp;
+  - vật có trong mục đích bạn ghi thì mặc định **Thêm class**; hai tên cùng một vật (`person` / `pedestrian`) hỏi một lần.
+- **Nạp guideline** đọc được: skeleton theo mục kèm bảng tên điểm, dòng "Tag ảnh" thành từng tag, cột thuộc tính, cột
+  "Dạng CVAT", checklist dạng ô tick.
+- **Tự học:** học cả track, điểm skeleton hay bị kéo lệch, thuộc tính tự điền bạn hay đổi.
+  **Model riêng** không còn ra 0%: thêm thành phần **Trọng số khởi đầu cho model riêng**, huấn luyện đủ số bước dù ít
+  ảnh, giải thích lý do khi class chưa dùng được; học được cả polygon và mask.
+- **Panel:**
+  - kéo mép trái / mép dưới để đổi cỡ, hoặc chọn Gọn / Vừa / Rộng;
+  - cờ thành chip ngắn, cờ cùng loại gom một chip có số đếm; đoạn giải thích dài gập lại;
+  - danh sách "Nên làm trước" gom frame cùng lý do; track không chọn ẩn bớt;
+  - profile chọn tay nhớ theo task; thanh trạng thái không còn bị cắt chữ.
+- **App và bộ cài:**
+  - trang **Hỗ trợ** và bước 1 của trình cài kiểm tra máy: Windows, ổ đĩa, RAM, Visual C++, WebView2, WSL2, Docker;
+  - bộ cài tự cài WebView2 khi máy thiếu, có tuỳ chọn cài WSL2 (cho CVAT local);
+  - GPU lỗi CUDA (`illegal memory access`): backend tự bật lại khi bật "Tự khởi động lại backend".
+- **Sửa:**
+  - nút chép nhật ký vẫn báo "Không chép được": chép thẳng trong trình duyệt của app, dự phòng bằng `clip.exe`;
+  - chuyển job trong CVAT có thể giữ khoảng frame của job trước (nút "Quét 13 ảnh" dù đặt 50);
+  - bỏ dòng thông báo `kernels library is not installed` lặp lại trong nhật ký.
+
 ## 0.9.3 (2026-11-22)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.3.md`.

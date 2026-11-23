@@ -34,6 +34,8 @@ PY_SIGNER = ("thomas@python.org", "https://accounts.google.com")      # người
 TORCH_INDEXES = ["cu126", "cu128", "cu129", "cu130"]
 NEED_ARCH = "sm_75"                                                  # RTX 20xx / GTX 16xx
 FACE_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+# 0.9.4: trọng số khởi đầu (COCO) cho model riêng ở tab Tự học; torchvision, giấy phép BSD-3-Clause
+DETECTOR_URL = "https://download.pytorch.org/models/fasterrcnn_mobilenet_v3_large_fpn-fb6a3cc7.pth"
 PLATFORM = ["--platform", "win_amd64", "--python-version", "3.12", "--implementation", "cp", "--abi", "cp312",
             "--only-binary=:all:"]
 HEAVY = {"torch", "torchvision"}
@@ -282,6 +284,9 @@ def main() -> None:
 
     log(f"PyTorch {t_cuda['version']} ({tag}), CUDA/arch: {arch}")
     face = fetch(FACE_URL, tmp / "face_landmarker.task")
+    detector = fetch(DETECTOR_URL, tmp / "fasterrcnn_mobilenet_v3_large_fpn_coco.pth")
+    # torchvision ghi 8 ký tự đầu của mã băm sha256 vào tên file: kiểm khớp trước khi ghi vào manifest
+    assert sha256(detector).startswith(DETECTOR_URL.rsplit("-", 1)[1].split(".")[0]), "mã băm trọng số khởi đầu không khớp tên file"
 
     app = copy_app(out)
     clean = lambda ws: [{k: v for k, v in w.items() if not k.startswith("_")} for w in ws]  # noqa: E731
@@ -292,6 +297,7 @@ def main() -> None:
             "sam3": {"repo": "facebook/sam3", "revision": "main", "gated": True, "approx_size": 3_450_000_000},
             "vitpose": {"repo": "usyd-community/vitpose-base-simple", "revision": "main", "approx_size": 360_000_000},
             "face": {"url": FACE_URL, "sha256": sha256(face), "size": face.stat().st_size},
+            "detector": {"url": DETECTOR_URL, "sha256": sha256(detector), "size": detector.stat().st_size},
         },
     }
     (app / "desktop" / "manifest.lock.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

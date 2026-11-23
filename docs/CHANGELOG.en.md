@@ -3,6 +3,56 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.4 (2026-11-23)
+
+Details and test results are in `docs/CHECKLIST_0.9.4.md` (Vietnamese).
+
+- **Project profile** (Guideline tab, first section): the tool builds project-specific suggestions from the task's own
+  labels, with no taxonomy file and no labels needed beforehand:
+  - one job can mix boxes, polygons, polylines, masks, **skeletons** (17-point body, 13-point face…) and **image tags**;
+  - skeleton points are matched by point name (e.g. `left_eye_outer`, `mouth_left`), following the guideline's
+    left/right convention;
+  - attributes are auto-filled when measurable from the image (touches border, occluded, fisheye edge, light colour);
+    the rest are left for you;
+  - minimum size is read from the guideline (e.g. people under 60 px are not suggested);
+  - **Try on this frame** before **Save for project**; every job of the project then uses it.
+- **Image tags** (camera, timeofday, weather, modality…): the tool guesses measurable values (infrared, brightness,
+  fisheye, blocked camera) and marks the values you must choose.
+- **3D cuboids on CVAT 3D (LiDAR) jobs:** cuboids built from the point cloud (road removal, clustering, class from the
+  guideline's size table), whole-job tracks with locked size, yaw from motion, interpolation through up to 6 hidden
+  frames. Nothing extra to install.
+- **Better tracking:**
+  - **choose the people to follow** (P1, P2…) on the frame where they are clearest: only they are tracked, before and after;
+  - **ignore zones**: outline mirrors, glass, billboards, screens;
+  - people standing still for the whole job (posters, reflections) are flagged and unticked;
+  - bridges frames the model missed and sets `occluded` / `outside` from the gap and the image border;
+  - SAM3 Video: no more `E_BACKEND_TIMEOUT` on long jobs, a Stop button, noisy masks cleaned up;
+  - "Smart data" on video jobs has **Track the whole job (as tracks)**.
+- **Guideline drafting:**
+  - works without labels; the number of sample images is chosen automatically;
+  - questions show progress, can be skipped and edited, and preview what each answer changes in the draft;
+  - objects named in your dataset purpose default to **Add as a new class**; two names for one object
+    (`person` / `pedestrian`) are asked once.
+- **Guideline import** now reads skeleton sections with point-name tables, an "image tags" row as separate tags, attribute
+  columns, "CVAT type" columns and tick-box checklists.
+- **Learning:** learns from tracks, from skeleton points you keep dragging, and from auto-filled attributes you keep
+  changing. The **custom model** no longer scores 0%: a new **Starting weights for the custom model** component, enough
+  training steps even with few images, reasons shown when a class is not usable yet; polygons and masks are used too.
+- **Panel:**
+  - drag the left / bottom edge to resize, or pick Compact / Medium / Wide;
+  - flags are short chips, same-type flags grouped with a count; long explanations fold away;
+  - "Do first" groups frames with the same reason; unticked tracks are hidden;
+  - a manually chosen profile is remembered per task; the status bar no longer cuts text off.
+- **App and installer:**
+  - the **Support** page and installer step 1 check the computer: Windows, disk, RAM, Visual C++, WebView2, WSL2, Docker;
+  - the installer installs WebView2 when missing and offers to install WSL2 (for local CVAT);
+  - CUDA GPU errors (`illegal memory access`): the backend restarts itself when "Restart the backend automatically" is on.
+- **Fixed:**
+  - the copy log button still said "Could not copy": it now copies directly in the app's browser, falling back to
+    `clip.exe`;
+  - switching jobs in CVAT could keep the previous job's frame range ("Scan 13 images" although 50 was set);
+  - the repeated `kernels library is not installed` notice is removed from the log.
+
 ## 0.9.3 (2026-11-22)
 
 Details and test results are in `docs/CHECKLIST_0.9.3.md` (Vietnamese).

@@ -9,6 +9,8 @@ Nguyên tắc thiết kế:
 """
 from __future__ import annotations
 
+import re
+
 from typing import Optional
 
 from ..i18n import tr
@@ -77,7 +79,7 @@ def placeholder_labels(labels: list[dict], summary: dict) -> bool:
 
 # ------------------------------------------------------------ câu hỏi ------
 def build_questions(summary: dict, labels: list[dict], job_mode: str, lib: Library,
-                    task_override: Optional[str] = None) -> list[dict]:
+                    task_override: Optional[str] = None, purpose: str = "") -> list[dict]:
     inferred = infer_task(labels, job_mode, summary)
     task = task_override if task_override in TASKS else inferred
     questions: list[dict] = []
@@ -155,19 +157,37 @@ def build_questions(summary: dict, labels: list[dict], job_mode: str, lib: Libra
         return (no_taxonomy and other in extra_names and concepts[other]["instances"] > c["instances"]
                 and not lib.definition(c["name"]))
 
+    # 0.9.4: hai vật gần như luôn trùng nhau (vd 'person' và 'pedestrian') chỉ hỏi một lần, ở tên guideline mẫu có định nghĩa.
+    same_as: dict = {}
+    for p in summary["pairs"]:
+        a, b = norm(p["a"]), norm(p["b"])
+        if a in extra_names and b in extra_names and p["share_pct"] >= 80 and a not in same_as and b not in same_as:
+            keep = a if (lib.definition(a) and not lib.definition(b)) or \
+                (bool(lib.definition(a)) == bool(lib.definition(b)) and concepts[a]["instances"] >= concepts[b]["instances"]) else b
+            same_as[b if keep == a else a] = keep
+    purpose_words = set(re.findall(r"[a-z]+", norm(purpose)))
+
     for c in extra[:10]:
+        if norm(c["name"]) in same_as:
+            continue
+        twins = [concepts[d]["name"] for d, k in same_as.items() if k == norm(c["name"])]
         partner = next((p for p in summary["pairs"]
                         if norm(c["name"]) in (norm(p["a"]), norm(p["b"])) and p["share_pct"] >= 50
                         and all(absorbs(o, c) for o in {norm(p["a"]), norm(p["b"])} - {norm(c["name"])})), None)
         options = [("out", "Ghi rõ là ngoài phạm vi (không gán)"), ("add", "Thêm thành class mới")]
         default, reason = ("add", "Task chưa có taxonomy; vật này xuất hiện thường xuyên.") if no_taxonomy else \
             ("out", "Guideline mẫu: chỉ annotate class trong taxonomy, không tự tạo class mới.")
+        # Mục đích bộ dữ liệu (hoặc từ khoá thêm) có nhắc tới vật này: nên thêm class, không loại khỏi phạm vi
+        names = [c["name"]] + twins
+        if not no_taxonomy and any(set(norm(x).split()) <= purpose_words for x in names):
+            default, reason = "add", "Mục đích bộ dữ liệu bạn ghi có nhắc tới vật này."
         if partner:
             other = partner["b"] if norm(partner["a"]) == norm(c["name"]) else partner["a"]
             options.append((f"merge:{other}", f"Tính vào class '{other}'"))
             default, reason = f"merge:{other}", f"{partner['share_pct']:.0f}% trường hợp trùng với '{other}'."
+        twin_note = (" Tool nhận '" + "', '".join(twins) + "' là cùng loại vật (trùng trên 80% số vật) nên hỏi chung.") if twins else ""
         ask(f"scope:{c['name']}", f"'{c['name']}' có trong {c['image_pct']:.0f}% ảnh nhưng task không có label này. Xử lý thế nào?",
-            options, default, reason, f"{c['instances']} lần xuất hiện trên {c['images']}/{n} ảnh.", c["examples"])
+            options, default, reason, f"{c['instances']} lần xuất hiện trên {c['images']}/{n} ảnh.{twin_note}", c["examples"])
 
     # Cặp class dễ nhầm
     # Khái niệm đã được đề xuất gộp vào một class thì không hỏi lại dưới dạng "cặp dễ nhầm".

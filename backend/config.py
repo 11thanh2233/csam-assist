@@ -48,6 +48,9 @@ class Settings:
         # Ngưỡng tin cậy thấp nhất mà model trả về; từng label lọc tiếp theo ngưỡng riêng.
         self.min_conf = float(os.getenv("SAM3_MIN_CONF", "0.25"))
         self.cache_size = int(os.getenv("SAM3_CACHE_SIZE", "4"))
+        # GPU lỗi CUDA không phục hồi (illegal memory access...): thoát để được bật lại. Chỉ bật khi có người bật lại
+        # (app desktop đặt 1); chạy tay bằng python -m backend thì giữ 0 để không tự tắt.
+        self.auto_restart_on_gpu_fault = os.getenv("SAM3_RESTART_ON_GPU_FAULT", "0") in ("1", "true", "yes")
         # Nhả model khỏi VRAM sau N phút không dùng (0 = không nhả). Bản desktop đặt 15.
         self.idle_unload_min = float(os.getenv("SAM3_IDLE_UNLOAD_MIN", "0") or 0)
         # Chạy thử một lượt ngay sau khi nạp model để lần gợi ý đầu tiên không phải chờ khởi tạo.

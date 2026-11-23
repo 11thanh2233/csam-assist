@@ -35,11 +35,12 @@ SHAPES = [  # (từ khoá, shape của CVAT). Thứ tự quan trọng: "polyline
     (r"\bpoints?\b", "points"),
     (r"\bcuboid\b", "cuboid"),
     (r"\bellipse\b", "ellipse"),
+    (r"^tag\b|\btag \(", "tag"),      # "tag (nhãn cho cả ảnh)" trong cột dạng CVAT
 ]
 # Cột tên label, theo thứ tự ưu tiên. "Nhóm nhãn" là cột nhóm, không phải tên label.
 NAME_HEADS = [r"class|áp dụng", r"sub-?category", r"skeleton|label|keypoint", r"^(?!.*nhóm).*(nhãn|lớp|đối tượng|tên)"]
 DEF_HEAD = r"khái niệm|định nghĩa|definition|mô tả|description|nguyên tắc"
-SHAPE_HEAD = r"shape|loại|kiểu|type"
+SHAPE_HEAD = r"shape|loại|kiểu|type|dạng"
 
 
 # ------------------------------------------------------------- đọc file ---
@@ -134,7 +135,7 @@ def read_document(filename: str, data: bytes) -> str:
 
 # ------------------------------------------------------------ đọc bảng ----
 def _clean(cell: str) -> str:
-    return re.sub(r"\s+", " ", cell.replace("**", "").replace("__", "")).strip()
+    return re.sub(r"\s+", " ", cell.replace("**", "").replace("__", "").replace("`", "")).strip()
 
 
 def tables(markdown: str) -> list[list[list[str]]]:
@@ -174,9 +175,73 @@ def _split_names(cell: str) -> list[str]:
     parts = re.split(r"[,;\n]|\s+và\s+|\s+and\s+", cell)
     out = []
     for p in parts:
-        p = p.strip(" .:-–")
+        p = re.sub(r"^tag\s+", "", p.strip(" .:-–"), flags=re.I)
         if 1 < len(p) <= 40 and not re.match(r"\d", p) and len(p.split()) <= 5:   # "2 / 3 – Eye" là số hiệu điểm, không phải label
             out.append(p)
+    return out
+
+
+def _attributes(cell: str) -> list[dict]:
+    """"color red, yellow · type vehicle, pedestrian · edge_zone (ô tick)" -> [{name, values, checkbox?}]."""
+    cell = _clean(cell or "")
+    if not cell or re.fullmatch(r"(không có|none|-|—)", cell.lower()):
+        return []
+    out = []
+    for part in re.split(r"\s+·\s+|;\s*", cell):
+        part = part.strip()
+        if ":" in part:     # "eye_left, eye_right: open, closed" -> hai thuộc tính cùng bộ giá trị
+            head, rest = part.split(":", 1)
+            names = re.findall(r"[A-Za-z][A-Za-z0-9_]*", head)
+        else:
+            m = re.match(r"([A-Za-z][A-Za-z0-9_]*)\s*(.*)$", part)
+            if not m:
+                continue
+            names, rest = [m.group(1)], m.group(2)
+        rest = rest.strip()
+        if not names:
+            continue
+        if re.search(r"ô tick|checkbox|tick", rest.lower()) or not rest:
+            out += [{"name": n, "values": ["false", "true"], "checkbox": True} for n in names]
+            continue
+        rest = re.sub(r"\(.*?\)", "", rest)
+        values = [v.strip() for v in rest.split(",") if v.strip() and re.match(r"^[A-Za-z0-9_\-]+$", v.strip())]
+        if values:
+            out += [{"name": n, "values": values} for n in names]
+    return out
+
+
+SKELETON_NAMES = [(r"người|body|pose|person|thân", "person"), (r"mặt|face", "face"), (r"tay|hand", "hand")]
+
+
+def skeleton_sections(markdown: str) -> list[dict]:
+    """Mục "## Skeleton <tên>: N điểm" kèm bảng tên điểm (ô có `ten_diem`). Tên label: `x` trong câu "Mẫu `x`"
+    của mục, nếu không thì theo chữ trong tiêu đề (người → person, mặt → face)."""
+    out = []
+    parts = re.split(r"^(#{2,4}\s+.*)$", markdown, flags=re.M)
+    for i in range(1, len(parts) - 1, 2):
+        head, body = parts[i], parts[i + 1]
+        if not re.search(r"skeleton|keypoint|điểm", head.lower()):
+            continue
+        points = []
+        for tbl in tables(body):
+            hdr = [h.lower() for h in tbl[0]]
+            cols = [k for k, h in enumerate(hdr) if re.search(r"tên|name", h)]
+            for r in tbl[1:]:
+                for k in cols:
+                    if k < len(r):
+                        m = re.fullmatch(r"([a-z][a-z0-9_]{1,40})", r[k].strip())
+                        if m:
+                            points.append(m.group(1))
+            if points:
+                break
+        if len(points) < 3:
+            continue
+        m = re.search(r"(?:mẫu|label|nhãn)\s+`([A-Za-z][\w\-]{1,30})`", body, re.I)
+        name = m.group(1) if m and m.group(1) not in points else None
+        if not name:
+            name = next((n for pat, n in SKELETON_NAMES if re.search(pat, head.lower())), None)
+        if name:
+            out.append({"name": name, "points": points})
     return out
 
 
@@ -228,11 +293,12 @@ def analyze(markdown: str, filename: str, prompt_lookup: Callable[[str], Optiona
             continue
         name_col = next((c for c in (_col(header, pattern) for pattern in NAME_HEADS) if c is not None), None)
         def_col = _col(header, DEF_HEAD, exclude=name_col)
-        shape_col = _col(header, r"cvat shape|shape", exclude=name_col)
+        shape_col = _col(header, r"cvat shape|shape|dạng( trong)? cvat", exclude=name_col)
         if shape_col is None:
             shape_col = _col(header, SHAPE_HEAD, exclude=name_col)
         if name_col is None:
             continue
+        attr_col = _col(header, r"thuộc tính|attribute", exclude=name_col)
         header_shape = _shape_in(header[name_col])   # "Skeleton (CVAT shape)": cột tên kiêm luôn shape
         last_shape = None
         for r in rows:
@@ -246,17 +312,39 @@ def analyze(markdown: str, filename: str, prompt_lookup: Callable[[str], Optiona
             if def_col is not None and def_col < len(r) and r[def_col]:
                 for name in names:   # "longmaytrai (0–4), longmayphai (5–9)" dùng chung một định nghĩa
                     definitions.setdefault(norm(name), r[def_col])
+            attrs = _attributes(r[attr_col]) if attr_col is not None and attr_col < len(r) else []
+            if shape == "tag" and len(attrs) >= 2 and not any(re.fullmatch(r"[A-Za-z][\w\-/]*", n) for n in names):
+                # 0.9.4: một dòng "Tag ảnh | tag | ... | camera front, fisheye_front · timeofday day, dusk, night · ..."
+                # là nhiều tag (mỗi nhóm một label tag, giống task CVAT thật), không phải một tag tên "ảnh"
+                for a in attrs:
+                    found.setdefault(norm(a["name"]), {"name": a["name"], "shape": "tag", "attributes": [dict(a, name="value")]})
+                    if def_col is not None and def_col < len(r) and r[def_col]:
+                        definitions.setdefault(norm(a["name"]), r[def_col])
+                continue
             if shape:
                 for name in names:
-                    found.setdefault(norm(name), {"name": name, "shape": shape})
+                    item = found.setdefault(norm(name), {"name": name, "shape": shape})
+                    if attrs and "attributes" not in item:
+                        item["attributes"] = attrs
 
+    # Checklist viết bằng ô tick markdown ("- [ ] Mọi ảnh đủ bốn tag")
+    for m in re.finditer(r"^\s*[-*]\s*\[[ xX]\]\s+(.+)$", markdown, re.M):
+        item = _clean(m.group(1))
+        if item and item not in checklist:
+            checklist.append(item)
+    for sk in skeleton_sections(markdown):    # 0.9.4: "## Skeleton người: 17 điểm" + bảng tên điểm
+        item = found.setdefault(norm(sk["name"]), {"name": sk["name"], "shape": "skeleton"})
+        if item["shape"] == "skeleton" and not item.get("points"):
+            item["points"] = sk["points"]
     labels = list(found.values())
     if not labels:
-        # Không có bảng taxonomy: tìm câu kiểu "Chỉ dùng label person và 17 sublabel".
-        for m in re.finditer(r"\b(?:label|class)\s+([A-Za-z][A-Za-z0-9_/\-]{1,30})\b", markdown):
+        # Không có bảng taxonomy: tìm câu kiểu "Chỉ dùng label person và 17 sublabel" hoặc "Nhãn: `person`, công cụ Rectangle".
+        has_skeleton = re.search(r"skeleton|keypoint", markdown.lower())
+        for m in re.finditer(r"(?:\b(?:label|class)\s+|\b[Nn]hãn\s*:\s*)`?([A-Za-z][A-Za-z0-9_/\-]{1,30})\b`?", markdown):
             name = m.group(1)
             if name.lower() not in ("type", "name", "new", "attribute", "and", "or", "set", "list") and norm(name) not in found:
-                found[norm(name)] = {"name": name, "shape": "skeleton" if re.search(r"skeleton|keypoint", markdown.lower()) else "rectangle"}
+                line = markdown[markdown.rfind("\n", 0, m.start()) + 1:markdown.find("\n", m.end()) if markdown.find("\n", m.end()) >= 0 else None]
+                found[norm(name)] = {"name": name, "shape": _shape_in(line) or ("skeleton" if has_skeleton else "rectangle")}
         labels = list(found.values())
         if labels:
             warnings.append(f"Không có bảng taxonomy; tool đoán label từ câu chữ: {', '.join(l['name'] for l in labels)}. Kiểm tra lại.")
@@ -269,14 +357,13 @@ def analyze(markdown: str, filename: str, prompt_lookup: Callable[[str], Optiona
     if not labels:
         warnings.append("Không tìm thấy bảng taxonomy (bảng có cột class/label/nhãn và cột shape). "
                         "Thêm label bằng tay ở bảng bên dưới, mỗi dòng một label.")
-    missing = [l["name"] for l in labels if not l["prompts"] and l["shape"] != "skeleton"]
+    missing = [l["name"] for l in labels if not l["prompts"] and l["shape"] not in ("skeleton", "tag")]
     if missing:
         warnings.append(f"{len(missing)} label chưa có prompt tiếng Anh cho SAM3 ({', '.join(missing[:6])}): điền vào cột Prompt, "
                         "không thì tool sẽ không tự tìm được các label này.")
     if task == "keypoints":
-        warnings.append("Guideline skeleton: tool cần biết từng điểm lấy từ model nào nên chưa tự sinh profile gợi ý được. "
-                        "Văn bản, định nghĩa và checklist vẫn được nạp. Người/mặt: dùng profile driver_pose17_face50_v1; "
-                        "loại khác: viết profile theo docs/PROFILES.md.")
+        warnings.append("Guideline có skeleton: dùng mục 'Profile cho project' ở tab Guideline để tool ghép từng điểm với "
+                        "model (thân người, mặt) theo label của task. Văn bản, định nghĩa và checklist vẫn được nạp ở đây.")
     title = ""
     for line in markdown.splitlines():   # tên guideline: dòng ngắn đầu tiên trước bảng/mục đầu tiên, bỏ các dòng chung chung
         text = re.sub(r"^#+\s*", "", line).strip().strip("*").strip()
@@ -431,7 +518,7 @@ def analyze_taxonomy(data: bytes, filename: str, prompt_lookup: Callable[[str], 
     lines = [f"# Taxonomy: {stem}", "", "| Label | CVAT shape | Định nghĩa |", "|---|---|---|"]
     lines += [f"| {l['name']} | {l['shape']} | {l.get('definition', '')} |" for l in labels]
     warnings = []
-    missing = [l["name"] for l in labels if not l["prompts"] and l["shape"] != "skeleton"]
+    missing = [l["name"] for l in labels if not l["prompts"] and l["shape"] not in ("skeleton", "tag")]
     if missing:
         warnings.append(f"{len(missing)} label chưa có prompt tiếng Anh cho SAM3 ({', '.join(missing[:6])}): điền vào cột Prompt.")
     if task == "keypoints":

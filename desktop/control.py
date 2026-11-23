@@ -117,7 +117,7 @@ class Installer:
         if self.thread and self.thread.is_alive():
             return False
         self.cancel.clear()
-        order = [k for k in ("torch", "sam3", "vitpose", "face") if k in keys]
+        order = [k for k in ("torch", "sam3", "vitpose", "face", "detector") if k in keys]
         # Trạng thái từng thành phần cho trang tải: wait | active | skip (đã có) | done | error
         self.p.update(running=True, finished=False, error="", step="Chuẩn bị...", file="", done=0, total=None, log=[], results={},
                       order=order, items={k: "wait" for k in order}, rate=0.0)
@@ -140,7 +140,7 @@ class Installer:
         self.p.update({k: v for k, v in kw.items() if k in ("step", "file", "done", "total")})
 
     def _run(self, keys, gpu, token) -> None:
-        order = [k for k in ("torch", "sam3", "vitpose", "face") if k in keys]
+        order = [k for k in ("torch", "sam3", "vitpose", "face", "detector") if k in keys]
         try:
             self._progress(step="Quét máy: tìm file đã có, so với bản cần dùng...")
             plan = self.comps.plan(order, gpu, token)
@@ -193,6 +193,38 @@ def _win_clipboard_api(ctypes):
     return u32, k32
 
 
+def win_copy(text: str) -> bool:
+    """Chép vào clipboard của Windows: API Windows trước, không được thì qua clip.exe có sẵn trong Windows.
+
+    0.9.3 vẫn báo "Không chép được" trên máy thật: mở clipboard không có cửa sổ chủ (OpenClipboard(NULL)) thì Windows
+    có thể từ chối SetClipboardData. clip.exe là đường dự phòng chắc chắn.
+    """
+    import ctypes
+
+    try:
+        if _win_set_clipboard(ctypes, text):
+            return True
+        log.warning("Clipboard API refused (error %s), using clip.exe", ctypes.get_last_error())
+    except Exception:  # noqa: BLE001 - chép lỗi không được làm hỏng app
+        log.exception("Clipboard API failed, using clip.exe")
+    return _clip_exe(text)
+
+
+def _clip_exe(text: str, run=None) -> bool:
+    import subprocess
+
+    exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "clip.exe")
+    run = run or subprocess.run
+    try:
+        # clip.exe đọc UTF-16 có BOM thì giữ đúng tiếng Việt
+        r = run([exe], input=b"\xff\xfe" + text.encode("utf-16-le"), capture_output=True, timeout=10,
+                creationflags=0x08000000)
+        return r.returncode == 0
+    except Exception:  # noqa: BLE001
+        log.exception("clip.exe failed")
+        return False
+
+
 def _win_set_clipboard(ctypes, text: str) -> bool:
     u32, k32 = _win_clipboard_api(ctypes)
     data = text.encode("utf-16-le") + b"\x00\x00"
@@ -230,6 +262,8 @@ class ControlApi:
         comps.extra_dirs = [Path(d) for d in self._settings.data["scan_dirs"]]
         backend.extra_env = {"SAM3_IDLE_UNLOAD_MIN": str(self._settings.data["idle_unload_min"])}
         backend.auto_restart = bool(self._settings.data["auto_restart_backend"])
+        # 0.9.4: GPU lỗi CUDA (illegal memory access) thì backend tự thoát để app bật lại, chỉ khi app được phép bật lại
+        backend.extra_env["SAM3_RESTART_ON_GPU_FAULT"] = "1" if backend.auto_restart else "0"
         backend.extra_env.update(self._llm_env())
         self._installer = Installer(comps)
         self._updater = U.Updater(paths.downloads / "update")
@@ -570,9 +604,7 @@ class ControlApi:
         text = str(text or "")
         if sys.platform != "win32":
             return False
-        import ctypes
-
-        return _win_set_clipboard(ctypes, text)
+        return win_copy(text)
 
     # ------------------------------------------------------ CVAT trên máy này ---
     def cvat_local_check(self, url):
@@ -863,6 +895,7 @@ class ControlApi:
             value = bool(value)
             if key == "auto_restart_backend":
                 self._backend.auto_restart = value
+                self._backend.extra_env["SAM3_RESTART_ON_GPU_FAULT"] = "1" if value else "0"
         elif allowed[key] and value not in allowed[key]:
             return False
         self._settings.data[key] = value
@@ -880,6 +913,20 @@ class ControlApi:
         else:
             subprocess.Popen(["xdg-open", str(target)])
         return True
+
+    def machine_check(self):
+        """Kiểm tra máy: Windows, ổ đĩa, RAM, Visual C++, WebView2, WSL2/Docker (0.9.4). Chỉ đọc."""
+        from . import machine
+
+        return machine.check(self._paths.data)
+
+    def machine_fix(self, key):
+        """Nút sửa của một mục kiểm tra máy: mở trang tải, hoặc cài WSL2 (Windows hỏi quyền admin)."""
+        from . import machine
+
+        if key == "wsl_install":
+            return {"ok": machine.install_wsl(), "restart": True}
+        return {"ok": self.open_link(key)}
 
     def open_link(self, which):
         """Mở trang hướng dẫn trong trình duyệt của máy. Chỉ các trang cố định, trang không tự chọn được địa chỉ."""

@@ -271,7 +271,10 @@ class ProfileStore:
 
     @staticmethod
     def fits(profile: dict, purpose: str) -> bool:
-        """Profile tracking chỉ dùng cho việc theo dõi; các profile khác cho từng frame."""
+        """Profile tracking chỉ dùng cho việc theo dõi; các profile khác cho từng frame.
+        Profile của project (mode mixed) dùng cho cả hai."""
+        if profile.get("mode") == "mixed":
+            return True
         return (profile.get("mode") == "tracking") == (purpose == "track")
 
     def pick(self, label_names: list[str], purpose: str = "frame", label_types: Optional[list[str]] = None,
@@ -286,6 +289,8 @@ class ProfileStore:
         skeleton = purpose == "frame" and "skeleton" in (label_types or [])
         best, best_score = fallback, 0.0
         for profile in self.profiles.values():
+            if profile.get("auto_project"):
+                continue  # profile của một project: chỉ dùng cho đúng project đó (xem get)
             if not profile["labels"] or not names or not self.fits(profile, purpose) or profile.get("auto_pick") is False:
                 continue  # auto_pick: false = chỉ dùng khi được chọn đích danh
             if skeleton != (profile.get("mode") == "keypoints"):
@@ -301,47 +306,84 @@ class ProfileStore:
                 best, best_score = profile, coverage + bonus
         return best if best_score >= 0.5 else fallback
 
+    def for_project(self, project_id: Optional[int] = None, task_id: Optional[int] = None) -> Optional[dict]:
+        """Profile đã tạo riêng cho project (hoặc cho task, khi task không thuộc project nào)."""
+        for profile in self.profiles.values():
+            if not profile.get("auto_project"):
+                continue
+            if project_id and profile.get("cvat_project") == project_id:
+                return profile
+            if task_id and not profile.get("cvat_project") and profile.get("cvat_task") == task_id:
+                return profile
+        return None
+
     def get(
         self, profile_id: Optional[str], label_names: list[str], purpose: str = "frame",
         label_types: Optional[list[str]] = None, labels: Optional[list[dict]] = None,
+        project_id: Optional[int] = None, task_id: Optional[int] = None,
     ) -> dict:
         chosen = self.profiles.get(profile_id or "")
         if chosen and profile_id != "auto" and self.fits(chosen, purpose):
             return chosen
+        own = self.for_project(project_id, task_id)
+        if own is not None:
+            return own
         return self.pick(label_names, purpose, label_types, labels)
 
 
-def resolve_labels(profile: dict, cvat_labels: list[dict], overrides: Optional[dict] = None) -> list[dict]:
-    """Ghép label của task CVAT với profile, áp các chỉnh sửa người dùng nhập trên panel."""
+def resolve_labels(profile: dict, cvat_labels: list[dict], overrides: Optional[dict] = None, purpose: str = "frame") -> list[dict]:
+    """Ghép label của task CVAT với profile, áp các chỉnh sửa người dùng nhập trên panel.
+
+    Profile của project (mode mixed, 0.9.4): mỗi label theo kiểu của nó: skeleton dùng model tư thế / mặt, tag dùng
+    luật tag ảnh, còn lại như instance. Khi theo dõi (purpose track) thì như profile tracking.
+    """
     overrides = overrides or {}
     defaults = profile.get("defaults", {})
     mode = profile.get("mode", "instance")
+    mixed = mode == "mixed"
+    if mixed and purpose == "track":
+        mode = "tracking"
     semantic = mode == "semantic"
     sem_shape = (profile.get("rules", {}).get("semantic", {}) or {}).get("output_shape", "mask")
     resolved = []
     # Profile keypoints: ghép label với skeleton của profile theo tên, và khi tên khác thì theo cấu trúc (xem match_skeletons).
     assigned: dict[int, tuple[dict, str]] = {}
-    if mode == "keypoints":
+    kp_mode = mode in ("keypoints", "mixed")
+    if kp_mode:
         forced = {i: str(overrides[str(l["id"])]["entry"]) for i, l in enumerate(cvat_labels)
                   if (overrides.get(str(l["id"])) or {}).get("entry")}
-        assigned = match_skeletons(cvat_labels, profile["labels"], forced)
+        skel = [e for e in profile["labels"] if e.get("shape") == "skeleton"]
+        assigned = match_skeletons(cvat_labels, skel, forced) if skel else {}
     for position, label in enumerate(cvat_labels):
-        entry, how = assigned.get(position, (None if mode == "keypoints" else profile["_index"].get(norm(label["name"])), "exact"))
         cvat_type = (label.get("type") or "any").lower()
+        default_entry = None if mode == "keypoints" or (mixed and cvat_type == "skeleton") else profile["_index"].get(norm(label["name"]))
+        entry, how = assigned.get(position, (default_entry, "exact"))
         note = ""
-        if cvat_type == "skeleton" or (mode == "keypoints" and (entry or {}).get("shape") == "skeleton"):
+        if mixed and cvat_type == "tag":
+            shape, supported = "tag", mode != "tracking"
+            if not supported:
+                note = "Tag ảnh không dùng khi theo dõi."
+        elif cvat_type == "tag":
+            # 0.9.4: tag chỉ gợi ý được bằng profile cho project (gợi ý theo từng label của task)
+            shape, supported = "tag", False
+            note = "Tag ảnh: profile này không gợi ý tag. Tạo 'Profile cho project' ở tab Guideline để tool gợi ý cả tag."
+        elif mixed and cvat_type in ("cuboid", "points", "ellipse"):
+            shape, supported = cvat_type, False
+            note = f"Kiểu '{cvat_type}' trên ảnh 2D chưa được hỗ trợ: đánh tay."
+        elif cvat_type == "skeleton" or (kp_mode and (entry or {}).get("shape") == "skeleton"):
             shape = "skeleton"
-            supported = mode == "keypoints" and cvat_type in ("skeleton", "any") and entry is not None
-            if mode != "keypoints":
+            supported = kp_mode and cvat_type in ("skeleton", "any") and entry is not None
+            if not kp_mode:
                 note = "Label skeleton: chọn profile keypoints để tool gợi ý được."
             elif entry is None:
                 note = ("Tool chưa nhận ra skeleton này là skeleton nào của guideline (tên label và số điểm đều không khớp). "
-                        "Chọn ở ô bên dưới.")
+                        "Chọn ở ô bên dưới, hoặc tạo 'Profile cho project' ở tab Guideline: tool ghép từng điểm theo tên điểm.")
             elif how != "exact":
                 note = f"Tool coi label này là '{entry['name']}' của guideline ({MATCH_HOW[how]})."
         elif mode == "keypoints":
             shape, supported = cvat_type, False
-            note = "Profile keypoints chỉ gợi ý label skeleton."
+            note = ("Profile keypoints chỉ gợi ý label skeleton. Job gộp box và skeleton: tạo profile cho project ở tab "
+                    "Guideline để tool gợi ý được cả hai.")
         elif mode == "tracking":
             shape = "rectangle"
             supported = cvat_type in ("any", "rectangle")
@@ -366,6 +408,10 @@ def resolve_labels(profile: dict, cvat_labels: list[dict], overrides: Optional[d
         )
         if shape == "skeleton":
             role = (entry or {}).get("kind", "body")
+        elif shape == "tag":
+            role = "tag"
+        elif shape in ("cuboid", "points", "ellipse"):
+            role = "none"
         cfg: dict[str, Any] = {
             "label_id": label["id"],
             "name": label["name"],
@@ -389,6 +435,11 @@ def resolve_labels(profile: dict, cvat_labels: list[dict], overrides: Optional[d
             "merge_px": (entry or {}).get("merge_px"),
             "join_dashes": (entry or {}).get("join_dashes", defaults.get("join_dashes", True)),
             "min_area_px": float((entry or {}).get("min_area_px", defaults.get("min_area_px", 30))),
+            "min_side_px": (entry or {}).get("min_side_px"),
+            "attr_rules": dict((entry or {}).get("attr_rules") or {}),
+            "tag_rules": dict((entry or {}).get("tag_rules") or {}),
+            "label_attributes": [{"name": a.get("name"), "values": a.get("values") or [], "default": a.get("default_value"),
+                                  "input_type": a.get("input_type")} for a in label.get("attributes", [])],
             "note": note,
         }
         if shape == "skeleton":

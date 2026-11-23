@@ -15,7 +15,7 @@ def test_installer_bundles_and_installs_vcredist():
     assert 'Source: "{#BuildDir}\\vc_redist.x64.exe"; Flags: dontcopy' in ISS
     assert "ExtractTemporaryFile('vc_redist.x64.exe')" in ISS
     assert "ShellExec('runas', exe, '/install /quiet /norestart'" in ISS
-    assert re.search(r"if \(CurStep = ssInstall\) and not IsUpdate\(\) then\s+InstallVcRedist\(\);", ISS)
+    assert re.search(r"if \(CurStep = ssInstall\) and not IsUpdate\(\) then\s+(begin\s+)?InstallVcRedist\(\);", ISS)
     # không còn báo "thiếu" ngay khi mở bộ cài: chỉ báo khi cài không được
     init = ISS[ISS.index("function InitializeSetup"):ISS.index("procedure InstallVcRedist")]
     assert "NoVcRedist" not in init

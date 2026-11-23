@@ -36,6 +36,7 @@ class Paths:
         self.sam3 = self.models / "sam3"
         self.vitpose = self.models / "vitpose"
         self.face = self.models / "face_landmarker.task"
+        self.detector = self.models / "fasterrcnn_mobilenet_v3_large_fpn_coco.pth"   # trọng số khởi đầu cho model riêng (0.9.4)
         self.downloads = self.data / "downloads"
         self.profiles = self.data / "profiles"
         self.library = self.data / "guideline_library"

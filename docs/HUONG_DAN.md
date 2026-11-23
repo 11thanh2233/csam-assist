@@ -110,7 +110,46 @@ Tab **Cả job** của panel:
 
 ![Tab Cả job](images/guide/panel-ca-job.png)
 
+**Theo dõi đúng người (video):** ở tab **Cả job**, mục theo dõi:
+
+1. **Chọn người ở frame này:** tua tới frame người cần theo dõi rõ nhất, kéo hộp quanh người đó. Panel đặt tên P1, P2…
+   Chọn đủ người rồi bấm **Theo dõi**: tool chỉ theo dõi những người này, cả trước và sau frame bạn chọn.
+2. **Khoanh vùng bỏ qua:** kéo hộp quanh gương, kính xe, biển quảng cáo, màn hình. Mọi phát hiện có tâm trong vùng bị
+   bỏ, cho mọi job của task.
+3. Duyệt danh sách track: chip **ID?**, **Che?**, **Nhầm?** là chỗ cần xem (bấm chip để đọc giải thích). Track
+   không chọn (thường chỉ 1–2 frame) được ẩn; tick **Hiện cả … track không chọn** để xem.
+
+Tool tự đặt `occluded` khi người bị che ngắn và `outside` khi người ra khỏi khung, nhưng bạn vẫn kiểm lại.
+
 Tab **Kiểm tra** đối chiếu nhãn đã lưu với checklist trong guideline. Nên lưu (`Ctrl+S`) trước khi kiểm tra.
+
+### Job có nhiều loại label: Profile cho project
+
+Job có cả box, skeleton, tag (ví dụ cabin: `person`, `face`, `face13`, tag `frame_meta`), hoặc tab **Label** báo
+"profile này chưa gợi ý được", thì tạo **Profile cho project**:
+
+1. Tab **Guideline** → mục **Profile cho project**.
+2. Chọn file guideline (`.docx`, `.md`), không bắt buộc. Có guideline thì tool hiểu định nghĩa, kích thước tối thiểu,
+   quy ước trái/phải.
+3. Bấm **Tạo profile cho project**. Bảng hiện từng label: **Tool gợi ý được**, **Gợi ý được một phần**, **Bạn đánh
+   tay**. Mở **Chi tiết** để xem từng điểm skeleton, từng thuộc tính tool tự điền hay để bạn chọn.
+4. Bấm **Thử trên frame này**, xem đề xuất. Ổn thì bấm **Lưu cho project**. Mọi job của project tự dùng profile này.
+
+Tag ảnh (camera, timeofday, weather…) hiện ở đầu danh sách đề xuất: giá trị tool đoán có dòng "tự đoán, kiểm lại",
+giá trị bạn phải chọn có dòng "Bạn chọn".
+
+### Job CVAT 3D (cuboid trên point cloud)
+
+Mở job 3D, tab **Gợi ý** đổi thành mục cuboid:
+
+- **Gợi ý cuboid cho frame này:** tool tách mặt đường, gom cụm điểm, đoán class theo bảng kích thước trong guideline.
+- **Dựng track cả job:** mỗi vật một track, kích thước khoá theo frame nhiều điểm nhất, bị che tối đa 6 frame thì
+  nội suy và bật `occluded`.
+
+Panel không vẽ được lên cửa sổ 3D. Ghi xong, tải lại trang (F5) rồi kiểm tra ở Top / Side / Front và ảnh camera.
+
+**Cỡ panel:** kéo mép trái panel để đổi độ rộng, mép dưới để đổi chiều cao (bấm đúp mép để về mặc định), hoặc chọn
+**Gọn / Vừa / Rộng** trong Cài đặt của panel.
 
 Các tab dài (Cả job, Kiểm tra, Guideline, Tự học) chia thành từng mục: bấm tiêu đề để mở hoặc gập. Panel nhớ mục bạn mở.
 
@@ -160,9 +199,11 @@ Thanh bên trái có 6 trang:
   - số nhãn bạn đã ghi hôm nay và thời gian tiết kiệm ước tính;
   - nút **Xuất CSV** để báo cáo với nhóm.
 - **Trang gán nhãn:** danh sách trang CVAT; thêm hoặc xoá trang (xoá nhầm thì bấm **Hoàn tác**).
-- **Thành phần:** PyTorch, SAM 3… đã cài bản nào, tải hoặc cập nhật.
+- **Thành phần:** PyTorch, SAM 3… đã cài bản nào, tải hoặc cập nhật. **Trọng số khởi đầu cho model riêng** (tuỳ chọn,
+  khoảng 75 MB) giúp model riêng ở tab Tự học học nhanh, không ra 0%.
 - **Dùng chung nhóm:** một máy có GPU chia sẻ backend cho các máy khác trong mạng nội bộ.
-- **Hỗ trợ:** kiểm tra nhanh, gửi báo lỗi, xem nhật ký, sao lưu.
+- **Hỗ trợ:** kiểm tra máy (Windows, ổ đĩa, RAM, Visual C++, WebView2, WSL2, Docker; thiếu thì có nút tải hoặc cài),
+  kiểm tra nhanh, gửi báo lỗi, xem nhật ký, sao lưu.
 - **Cài đặt:** ngôn ngữ, giao diện sáng hoặc tối, tự chạy cùng Windows, cập nhật, AI soạn guideline.
 
 ![Trang Tổng quan](images/guide/tong-quan.png)
