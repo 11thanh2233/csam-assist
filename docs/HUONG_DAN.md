@@ -135,7 +135,14 @@ Tab **Cả job** của panel:
 3. Duyệt danh sách track: chip **ID?**, **Che?**, **Nhầm?** là chỗ cần xem (bấm chip để đọc giải thích). Track
    không chọn (thường chỉ 1–2 frame) được ẩn; tick **Hiện cả … track không chọn** để xem.
 
-Tool tự đặt `occluded` khi người bị che ngắn và `outside` khi người ra khỏi khung, nhưng bạn vẫn kiểm lại.
+**Ngưỡng che khuất (0.9.6):** tool tính phần trăm diện tích **toàn thân** bị che ở từng frame (cả phần bị che, ước
+lượng từ các frame thấy rõ). Từ ngưỡng occluded (mặc định 35%) thì đặt `occluded`, từ ngưỡng outside (mặc định 60%) thì
+đặt `outside`; người hiện lại vẫn giữ ID cũ. Guideline có ghi ngưỡng thì tool dùng ngưỡng đó. Sửa ngay ở mục **Ngưỡng
+che khuất**, tool nhớ theo task. Bạn vẫn kiểm lại.
+
+![Ngưỡng che khuất](images/guide/panel-nguong-che.png)
+
+**Chạy dở:** theo dõi dừng giữa chừng (bấm Dừng, mất mạng, hết giờ) thì lần sau bấm **Theo dõi** chạy tiếp từ chỗ dở.
 
 **Chạy SAM3 trên:** **Thông minh** (mặc định) chạy SAM3 trên keyframe rồi kiểm tra ở giữa mỗi khoảng; chỗ nội suy lệch
 thì tool chạy từng frame, nên đoạn chuyển động phức tạp vẫn đủ chính xác. Chọn **Mọi frame** nếu muốn chạy như bản cũ.
@@ -165,9 +172,20 @@ giá trị bạn phải chọn có dòng "Bạn chọn".
 
 Mở job 3D, tab **Gợi ý** đổi thành mục cuboid:
 
-- **Gợi ý cuboid cho frame này:** tool tách mặt đường, gom cụm điểm, đoán class theo bảng kích thước trong guideline.
+- **Gợi ý cuboid frame này:** tool tách mặt đất (theo từng ô 8 m), gom cụm điểm, đoán class theo bảng kích thước.
+  Chiều cao phải khớp bảng; cụm không khớp class nào bị bỏ. Có ảnh camera thì SAM3 đối chiếu thêm.
+- Dưới nút là **bản đồ nhìn từ trên** (hướng trước của xe ở trên); bấm một hộp để chọn đề xuất. Đề xuất nhóm theo
+  class, xếp theo độ tin; đề xuất yếu ẩn sẵn, bấm **Hiện … đề xuất yếu** để xem.
 - **Dựng track cả job:** mỗi vật một track, kích thước khoá theo frame nhiều điểm nhất, bị che tối đa 6 frame thì
   nội suy và bật `occluded`.
+- **Công cụ job 3D:**
+  - **Kiểm tra dữ liệu job 3D:** số điểm, hệ toạ độ, ảnh camera, vì sao các cụm bị bỏ, việc nên làm;
+  - **Tự chỉnh theo cuboid bạn đã đánh:** đánh tay vài frame trước, tool so với cuboid của bạn rồi đề nghị chỉnh số
+    điểm, phạm vi, bảng cỡ. Bấm **Áp dụng** mới đổi.
+- Tab **Label** của job 3D: sửa bảng cỡ, phạm vi, số điểm tối thiểu, prompt camera cho từng label.
+- Cuboid bạn bỏ tick khi ghi được nhớ: lần sau gặp vật cùng class, cùng cỡ thì tool bỏ tick sẵn.
+
+![Job 3D: bản đồ nhìn từ trên và đề xuất theo class](images/guide/panel-3d.png)
 
 Panel không vẽ được lên cửa sổ 3D. Ghi xong, tải lại trang (F5) rồi kiểm tra ở Top / Side / Front và ảnh camera.
 
@@ -175,6 +193,11 @@ Panel không vẽ được lên cửa sổ 3D. Ghi xong, tải lại trang (F5) 
 **Gọn / Vừa / Rộng** trong Cài đặt của panel.
 
 Các tab dài (Cả job, Kiểm tra, Guideline, Tự học) chia thành từng mục: bấm tiêu đề để mở hoặc gập. Panel nhớ mục bạn mở.
+
+**Mức cấu hình (0.9.6):** trong Cài đặt của panel chọn **Tự động / Nhẹ / Cân bằng / Chất lượng / Tối đa**, giống chỉnh
+đồ hoạ trong game. Tự động chọn theo VRAM của máy chạy backend. Dưới đó có dòng VRAM đang dùng và các model đang nạp.
+
+![Mức cấu hình](images/guide/panel-muc-cau-hinh.png)
 
 **Cài đặt của panel:** bấm nút bánh răng ở góc trên panel. Các tuỳ chọn chia theo nhóm (Kết nối, Khi duyệt, Khi ghi vào
 CVAT, Hiển thị), bật tắt bằng công tắc. API key, phím tắt và các tuỳ chọn ít dùng nằm ở mục **Nâng cao**.

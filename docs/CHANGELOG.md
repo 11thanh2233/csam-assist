@@ -3,6 +3,41 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.6 (2026-11-24)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.6.md`. Bản này làm cho job cuboid 3D dùng được thật, backend chạy lâu
+không chậm dần, theo dõi không còn đứt vì hết giờ, occluded / outside theo % thân bị che.
+
+- **Mức cấu hình** (Cài đặt panel, như chỉnh đồ hoạ trong game): Tự động / Nhẹ / Cân bằng / Chất lượng / Tối đa.
+  Tự động chọn theo VRAM của GPU. Mức quyết định số prompt mỗi label, độ dày khi theo dõi, model phụ nào được dùng.
+- **Backend không chậm dần:** thiếu VRAM thì nhả model phụ lâu không dùng trước khi nạp model mới; sau lượt nặng thì
+  trả bộ nhớ thừa; rảnh thì dọn theo mức cấu hình. Cài đặt panel hiện VRAM đang dùng và model đang nạp.
+- **Theo dõi không đứt vì hết giờ:** kết quả từng frame được lưu; dừng hay lỗi thì lần sau chạy tiếp từ chỗ dở.
+  Một lượt quá 5 phút thì backend được báo dừng lượt đó, panel thử lại từng frame.
+- **occluded / outside theo % diện tích toàn thân bị che**, đổi theo từng frame:
+  - ngưỡng lấy từ guideline (vd "che hơn 35% thì occluded, trên 60% thì outside"), không có thì mặc định 35% / 60%;
+  - sửa ngay ở mục "Ngưỡng che khuất" của tab Cả job (nhớ theo task);
+  - có trễ giữa các trạng thái, một frame lẻ không làm đổi trạng thái;
+  - người hiện lại sau outside vẫn giữ ID cũ (trước đây outside kéo tới hết video);
+  - frame model bỏ sót người: SAM3 tìm lại đúng chỗ dự đoán; thấy thì tính % bị che, không thấy mới outside.
+- **Model phụ mới** (tuỳ chọn, cài ở mục Thành phần của app):
+  - nhận lại người DINOv2-small: nối ID theo ngoại hình, ít nhầm giữa hai người mặc giống nhau;
+  - độ sâu Depth Anything V2 Small: biết ai đứng trước, chỉ người đứng sau mới bị tính là bị che;
+  - pose toàn thân RTMW (133 điểm, chạy CPU): skeleton có điểm tay / bàn chân; điền thuộc tính tay trái / phải cho
+    hộp bàn tay.
+- **Job cuboid 3D làm lại:**
+  - chiều cao phải khớp bảng cỡ; dài / rộng được nhỏ hơn (vật bị che) nhưng không lớn hơn; cụm không khớp class nào
+    thì bỏ, không gán bừa;
+  - chỉ thấy đuôi / một phần vật: xoay đúng hướng, kéo cỡ theo bảng, dời tâm ra phía khuất;
+  - phạm vi theo class (xe ≤ 50 m, người / xe hai bánh ≤ 40 m, rào chắn ≤ 30 m, hoặc theo guideline);
+  - số điểm tối thiểu theo khoảng cách; mặt đất theo từng ô 8 m; bỏ cụm lơ lửng (biển, tán cây); tách dãy rào chắn;
+  - đối chiếu ảnh camera đi kèm (CAM_FRONT, CAM_BACK…): tự dò hướng camera, SAM3 xác nhận vật, thấy thùng rác / nhà
+    vệ sinh di động thì bỏ tick;
+  - nhớ vật bạn bỏ khi ghi, lần sau bỏ tick sẵn vật cùng kiểu;
+  - bản đồ nhỏ nhìn từ trên, đề xuất nhóm theo class, xếp theo độ tin, đề xuất yếu ẩn sẵn;
+  - "Kiểm tra dữ liệu job 3D" và "Tự chỉnh theo cuboid bạn đã đánh";
+  - tab Label của job 3D: sửa bảng cỡ, phạm vi, số điểm, prompt camera cho từng label.
+
 ## 0.9.5 (2026-11-24)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.5.md`. Hướng chung của bản này: tool thích nghi theo guideline và

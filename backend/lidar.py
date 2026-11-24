@@ -373,7 +373,7 @@ def classify(size: list[float], table: dict[str, list], allowed: dict[str, int],
     length, width, height = size
     scored = []
     for key, label_id in allowed.items():
-        best = 0.0
+        best, partial = 0.0, False
         for ranges in table.get(key) or []:
             (llo, lhi), (wlo, whi), (hlo, hhi) = ranges
             if (wlo + whi) > (llo + lhi):                 # bảng ghi rộng > dài (người): so theo cạnh lớn / nhỏ
@@ -393,13 +393,18 @@ def classify(size: list[float], table: dict[str, list], allowed: dict[str, int],
                 for v, (lo, hi) in ((a, (llo, lhi)), (b, (wlo, whi)), (height, (hlo, hhi))):
                     mid, half = (lo + hi) / 2, max((hi - lo) / 2, 1e-3)
                     spec.append(max(0.0, 1 - abs(v - mid) / half) / (1 + (hi - lo) / mid))
-                best = max(best, 0.5 * hs + 0.25 * ls + 0.25 * ws + 0.08 * float(np.mean(spec)))
+                val = 0.5 * hs + 0.25 * ls + 0.25 * ws + 0.2 * float(np.mean(spec))
+                if val > best:
+                    best, partial = val, min(ls, ws) < 1.0
         if best > 0:
-            scored.append((best, key, label_id))
+            scored.append((best, key, label_id, partial))
     scored.sort(reverse=True)
     if not scored or scored[0][0] < 0.6:
         return None, [], 0.0
-    close = [k for s, k, _ in scored if s >= scored[0][0] - 0.15]      # gần bằng nhau: gắn cờ để xem ảnh camera
+    # gần bằng nhau thì gắn cờ để xem ảnh camera; vật thấy trọn và khớp hẳn một class thì không gắn
+    # (một bên chỉ khớp một phần: có thể là vật lớn hơn bị che -> nới khoảng so sánh)
+    top, top_partial = scored[0][0], scored[0][3]
+    close = [k for s, k, _, p in scored if s >= top - (0.15 if (p or top_partial) else 0.03)]
     return scored[0][2], close, min(1.0, scored[0][0])
 
 

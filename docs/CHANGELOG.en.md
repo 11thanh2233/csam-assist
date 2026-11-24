@@ -3,6 +3,43 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.6 (2026-11-24)
+
+Details and test results are in `docs/CHECKLIST_0.9.6.md` (Vietnamese). This release makes cuboid 3D jobs usable,
+keeps the backend from slowing down over time, stops tracking from failing on timeouts, and sets occluded / outside
+from the share of the body that is hidden.
+
+- **Quality levels** (panel Settings, like game graphics settings): Auto / Light / Balanced / Quality / Max. Auto picks
+  from the GPU's VRAM. The level sets prompts per label, tracking density and which extra models run.
+- **No slowdown over time:** when VRAM is short the backend releases the least recently used extra model before loading
+  another; it returns spare memory after heavy runs and cleans up when idle. Settings show VRAM use and loaded models.
+- **Tracking survives timeouts:** per-frame results are saved, so a stopped or failed run resumes where it left off. A
+  run over 5 minutes is cancelled on the backend and retried frame by frame.
+- **occluded / outside from the % of the full body hidden**, per frame:
+  - thresholds come from the guideline (e.g. "over 35% hidden is occluded, over 60% is outside"), else 35% / 60%;
+  - edit them under "Occlusion thresholds" in the Whole job tab (remembered per task);
+  - hysteresis between states; a single odd frame does not flip the state;
+  - a person who reappears after outside keeps the same ID (before, outside lasted to the end of the video);
+  - frames where the model missed someone: SAM3 looks again at the predicted spot; found means % hidden is computed,
+    not found means outside.
+- **New optional models** (install under Components in the app):
+  - DINOv2-small re-identification: IDs follow appearance, fewer swaps between similarly dressed people;
+  - Depth Anything V2 Small: knows who stands in front, so only the person behind counts as occluded;
+  - RTMW whole-body pose (133 points, CPU): skeletons with hand / foot points; fills the left / right attribute of
+    hand boxes.
+- **Cuboid 3D jobs reworked:**
+  - height must match the size table; length / width may be smaller (occlusion) but not larger; clusters matching no
+    class are dropped instead of forced into one;
+  - only the rear / part of an object seen: heading fixed, size extended to the table, centre moved to the hidden side;
+  - ranges per class (vehicles ≤ 50 m, pedestrians / two-wheelers ≤ 40 m, barriers ≤ 30 m, or from the guideline);
+  - minimum points by distance; ground per 8 m cell; floating clusters (signs, tree crowns) dropped; barrier rows split;
+  - camera images (CAM_FRONT, CAM_BACK…): camera heading detected automatically, SAM3 confirms objects, dumpsters /
+    portable toilets get unticked;
+  - objects you drop when saving are remembered and unticked next time;
+  - top-view minimap, suggestions grouped by class, sorted by confidence, weak ones hidden by default;
+  - "Check 3D job data" and "Tune from your cuboids";
+  - Label tab for 3D jobs: edit size table, range, minimum points, camera prompt per label.
+
 ## 0.9.5 (2026-11-24)
 
 Details and test results are in `docs/CHECKLIST_0.9.5.md` (Vietnamese). The direction of this release: the tool adapts
