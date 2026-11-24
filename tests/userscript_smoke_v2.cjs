@@ -61,6 +61,10 @@ function fakeCvat(win, opts, frameBytes) {
     if (u.pathname === '/api/issues' && method === 'POST') { (store.issues = store.issues || []).push(body); return json({ id: 700 + store.issues.length, ...body }); }
     if (u.pathname === `${job}/data/meta`) return json(Object.assign({ start_frame: 0, stop_frame: opts.stop, frame_filter: '', deleted_frames: [], included_frames: null }, opts.meta || {}));
     if (u.pathname === `${job}/data`) {
+      if (u.searchParams.get('type') === 'context_image') {        // 0.9.6: ảnh camera của job 3D
+        if (!opts.context) return { ok: false, status: 404, json: async () => ({}), text: async () => 'not found' };
+        return { ok: true, status: 200, blob: async () => new win.Blob([opts.context], { type: 'application/zip' }) };
+      }
       store.frames = (store.frames || 0) + 1;
       if (opts.cloud) return { ok: true, status: 200, blob: async () => new win.Blob([opts.cloud], { type: 'application/octet-stream' }) };
       return { ok: true, status: 200, blob: async () => new win.Blob([frameBytes], { type: 'image/jpeg' }) };
@@ -654,12 +658,38 @@ async function lidarScenario(frameBytes) {
     { id: 801, name: 'Car', type: 'cuboid', color: '#33aa55', attributes: [], parent_id: null, has_parent: false },
     { id: 802, name: 'Pedestrian', type: 'cuboid', color: '#aa3355', attributes: [], parent_id: null, has_parent: false },
   ];
-  const page = openPage({ jobId: 81, frame: 0, stop: 3, mode: 'interpolation', labels, dimension: '3d', cloud }, frameBytes);
+  // 0.9.6: kèm ảnh camera (zip context image của CVAT) để đi qua bước đối chiếu camera
+  const context = execFileSync('python3', ['-c', 'import io, sys, zipfile, numpy, cv2; b = io.BytesIO(); z = zipfile.ZipFile(b, "w"); '
+    + 'z.writestr("CAM_FRONT.jpg", cv2.imencode(".jpg", numpy.full((90, 160, 3), 80, numpy.uint8))[1].tobytes()); z.close(); sys.stdout.buffer.write(b.getvalue())'], { cwd: ROOT });
+  const page = openPage({ jobId: 81, frame: 0, stop: 3, mode: 'interpolation', labels, dimension: '3d', cloud, context }, frameBytes);
   const { root, store, button, status } = page;
-  await until(() => button('Gợi ý cuboid cho frame này') && !button('Gợi ý cuboid cho frame này').disabled, 'panel 3D sẵn sàng: ' + status());
-  button('Gợi ý cuboid cho frame này').click();
-  await until(() => root.querySelectorAll('li.item').length === 2, 'cuboid đề xuất: ' + status());
-  assert.match(root.querySelector('ul').textContent, /4\.\d × 1\.\d × 1\.\d m/);
+  await until(() => button('Gợi ý cuboid frame này') && !button('Gợi ý cuboid frame này').disabled, 'panel 3D sẵn sàng: ' + status());
+  button('Gợi ý cuboid frame này').click();
+  // engine giả vẽ "dumpster" đúng chỗ chiếc xe trên ảnh camera: xe bị bỏ tick, nằm trong nhóm đề xuất yếu (ẩn sẵn)
+  await until(() => button('Hiện 1 đề xuất yếu'), 'cuboid đề xuất: ' + status());
+  assert.strictEqual(root.querySelectorAll('li.item').length, 1, 'đề xuất yếu ẩn sẵn');
+  button('Hiện 1 đề xuất yếu').click();
+  await until(() => root.querySelectorAll('li.item').length === 2, 'hiện đề xuất yếu: ' + status());
+  assert.match(root.querySelector('.body').textContent, /camera: dumpster/);
+  const carBox = [...root.querySelectorAll('li.item')].find((li) => /camera: dumpster/.test(li.textContent)).querySelector('input[type=checkbox]');
+  carBox.checked = true; carBox.dispatchEvent(new page.dom.window.Event('change'));
+  const body = root.querySelector('.body').textContent;
+  assert.match(body, /4\.\d × 1\.\d × 1\.\d m/);
+  assert.match(body, /car \(1\)/, 'nhóm theo class');
+  assert.match(body, /1 camera/, 'đã đối chiếu ảnh camera');
+  assert.ok(root.querySelector('canvas[aria-label="Bản đồ nhìn từ trên"]'), 'bản đồ nhỏ nhìn từ trên');
+  // tab Label của job 3D: bảng cỡ, phạm vi, số điểm, prompt camera; không còn chữ "chưa hỗ trợ"
+  button('Label').click();
+  await until(() => /Prompt camera/.test(root.querySelector('.body').textContent), 'tab Label 3D: ' + status());
+  assert.doesNotMatch(root.querySelector('.body').textContent, /chưa được hỗ trợ|chưa hỗ trợ/);
+  const rangeInput = root.querySelector('.body input[title^="Phạm vi gán"]');
+  rangeInput.value = '45'; rangeInput.dispatchEvent(new page.dom.window.Event('change'));
+  button('Gợi ý').click();
+  button('Kiểm tra dữ liệu job 3D').click();
+  await until(() => /Kiểm tra dữ liệu · frame 0/.test(root.querySelector('.body').textContent), 'kiểm tra dữ liệu: ' + status());
+  await until(() => root.querySelectorAll('li.item').length === 2, 'đề xuất sau kiểm tra: ' + status());
+  const again = [...root.querySelectorAll('li.item')].find((li) => /camera: dumpster/.test(li.textContent)).querySelector('input[type=checkbox]');
+  again.checked = true; again.dispatchEvent(new page.dom.window.Event('change'));
   button('Ghi 2 cuboid').click();
   const patch = await until(() => store.calls.find((c) => c.method === 'PATCH' && c.path.includes('create')), 'ghi cuboid: ' + status());
   assert.ok(patch.body.shapes.every((s) => s.type === 'cuboid' && s.points.length === 16));
@@ -695,7 +725,7 @@ async function main() {
     const errors = [...(await skeletonScenario(frameBytes)), ...(await trackingScenario(frameBytes)), ...(await guidelineScenario(frameBytes)),
       ...(await importScenario(frameBytes)), ...(await newLabelBatchScenario(frameBytes)),
       ...(await learnScenario(frameBytes)), ...(await videoScenario(frameBytes)), ...(await projectProfileScenario(frameBytes)), ...(await lidarScenario(frameBytes))];
-    const real = errors.filter((e) => !/Not implemented: navigation/.test(e));
+    const real = errors.filter((e) => !/Not implemented: (navigation|HTMLCanvasElement's getContext)/.test(e));   // jsdom không có canvas
     assert.deepStrictEqual(real, [], 'lỗi console: ' + real.join(' | '));
     console.log('SMOKE TEST V2: PASS');
   } finally {

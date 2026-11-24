@@ -283,16 +283,64 @@
   }
   function cuboidLabels() { return S.labels.filter((l) => (l.type || 'any') === 'cuboid' || ((l.type || 'any') === 'any' && is3d())); }
 
+  // 0.9.6: chỉnh của bạn cho job 3D, nhớ theo task: bảng cỡ, phạm vi, số điểm, prompt camera, hướng camera
+  function l3() { cfg.lidar3d = cfg.lidar3d || {}; return cfg.lidar3d[(S.job && S.job.task_id) || 'local'] || {}; }
+  function saveL3(patch) {
+    cfg.lidar3d = cfg.lidar3d || {};
+    const key = (S.job && S.job.task_id) || 'local';
+    cfg.lidar3d[key] = Object.assign({}, l3(), patch);
+    saveCfg();
+  }
+  function lidarBody(extra) {
+    const m = l3();
+    const lidar = {};
+    for (const k of ['sizes', 'ranges', 'min_points_scale', 'prompts', 'max_base_gap_m', 'offset_deg', 'cameras']) if (m[k] !== undefined && m[k] !== null) lidar[k] = m[k];
+    return Object.assign(baseBody(), { lidar }, extra || {});
+  }
+  const CAM_STEP = { light: 0, balanced: 4, quality: 1, max: 1 };     // dựng track: đối chiếu camera mỗi N frame
+  async function fetchContext(number) {
+    if (S.noContext === S.jobId || l3().camera === false) return '';
+    try {
+      const blob = await cvat('GET', `/api/jobs/${S.jobId}/data?type=context_image&quality=original&number=${number}`, undefined, true);
+      if (!blob || !blob.size) return '';
+      return await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1]);
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+      });
+    } catch (e) {
+      S.noContext = S.jobId;            // job không có ảnh camera: không hỏi lại mỗi frame
+      return '';
+    }
+  }
+  async function loadLidarCfg() {
+    if (!S.health || !S.health.ok || !cuboidLabels().length) return;
+    S.lidarCfg = await backend('POST', '/lidar/config', lidarBody());
+  }
+  function rememberCamera(cam) {
+    if (!cam) return;
+    S.lidarCamera = cam;
+    if (cam.offset_source === 'estimated' && l3().offset_deg === undefined) saveL3({ offset_deg: cam.offset });
+  }
+
   async function lidarFrame() {
     await run('Đang dựng cuboid từ point cloud của frame này…', async () => {
       const frame = S.frame;
-      const res = await backend('POST', '/lidar/detect', Object.assign(baseBody(), { frames: [await fetchCloud(frame)] }));
+      const [cloud, ctx] = await Promise.all([fetchCloud(frame), fetchContext(frame)]);
+      const res = await backend('POST', '/lidar/detect', lidarBody({ debug: true, frames: [Object.assign(cloud, { context_b64: ctx })] }), { timeout: 600000 });
       if (frame !== S.frame) return;
-      const objs = (res.frames[0] || { objects: [] }).objects;
-      S.cuboids = { frame, list: objs.map((o, i) => Object.assign(o, { id: i + 1, checked: !o.flags.some((f) => f.code === 'LOW_VISIBILITY') })), warnings: res.warnings || [] };
-      setStatus(`${objs.length} cuboid đề xuất ở frame ${frame}. Kiểm tra trong cửa sổ 3D của CVAT sau khi ghi (Top / Side / Front).`, 'ok');
+      const fr = res.frames[0] || { objects: [] };
+      rememberCamera(res.camera);
+      S.cuboids = { frame, list: fr.objects.map((o) => Object.assign(o, { wasChecked: o.checked !== false, checked: o.checked !== false })),
+        warnings: res.warnings || [], bev: fr.bev, rejected: fr.rejected || [], stats: fr.stats || {}, info: fr.info, reasons: res.reasons || {} };
+      S.cubSel = null;
+      const shown = S.cuboids.list.filter((o) => !weakCuboid(o)).length;
+      setStatus(`${fr.objects.length} cuboid đề xuất ở frame ${frame} (${shown} rõ, ${fr.objects.length - shown} yếu đang ẩn). `
+        + 'Ghi xong kiểm tra trong cửa sổ 3D của CVAT (Top / Side / Front).', 'ok');
     });
   }
+  function weakCuboid(o) { return !o.checked || (o.confidence !== undefined && o.confidence < 0.45); }
 
   async function applyCuboids() {
     const c = S.cuboids;
@@ -307,14 +355,19 @@
       });
       const res = await cvat('PATCH', `/api/jobs/${S.jobId}/annotations?action=create`, { version: 0, tags: [], shapes, tracks: [] });
       pushUndo({ jobId: S.jobId, frame: c.frame, shapes: (res && res.shapes) || [], tracks: [], at: Date.now() });
+      // tool nhớ vật bạn bỏ (thùng rác, nhà vệ sinh di động… bị đoán là xe) để lần sau bỏ tick sẵn
+      const dropped = c.list.filter((o) => o.wasChecked && !o.checked).map((o) => ({ cls: o.cls, size: o.size }));
+      const kept = c.list.filter((o) => !o.wasChecked && o.checked).map((o) => ({ cls: o.cls, size: o.size }));
+      if (dropped.length || kept.length) { try { await backend('POST', '/lidar/feedback', lidarBody({ dropped, kept })); } catch (e) { /* bỏ qua */ } }
       S.cuboids = null;
-      setStatus(`Đã ghi ${shapes.length} cuboid. Tải lại trang (F5) để thấy trong cửa sổ 3D.`, 'ok');
+      setStatus(`Đã ghi ${shapes.length} cuboid.${dropped.length ? ` Tool nhớ ${dropped.length} vật bạn bỏ.` : ''} Tải lại trang (F5) để thấy trong cửa sổ 3D.`, 'ok');
     });
   }
 
   async function lidarTrack() {
     const r = jobRange();
     const frames = jobFrames(r.from, r.to);
+    const camStep = CAM_STEP[qualityLevel()] || 0;
     S.stopRequested = false; S.longTask = 'track';
     await run(`Đang dựng cuboid cho ${frames.length} frame…`, async () => {
       const detected = [];
@@ -322,8 +375,13 @@
       const started = Date.now();
       for (let i = 0; i < frames.length; i += 2) {
         if (S.stopRequested) break;
-        const part = await Promise.all(frames.slice(i, i + 2).map((f) => fetchCloud(f)));
-        const res = await backend('POST', '/lidar/detect', Object.assign(baseBody(), { frames: part }));
+        const part = await Promise.all(frames.slice(i, i + 2).map(async (f, k) => {
+          const cloud = await fetchCloud(f);
+          if (camStep && (i + k) % camStep === 0) cloud.context_b64 = await fetchContext(f);
+          return cloud;
+        }));
+        const res = await backend('POST', '/lidar/detect', lidarBody({ frames: part }), { timeout: 600000 });
+        rememberCamera(res.camera);
         for (const fr of res.frames) detected.push({ frame: fr.frame, objects: fr.objects });
         warnings = warnings.concat((res.warnings || []).filter((w) => !warnings.includes(w)));
         const per = (Date.now() - started) / detected.length / 1000;
@@ -331,8 +389,9 @@
       }
       if (!detected.length) return;
       setStatus('Đang nối track, khoá kích thước, chọn keyframe…', 'busy');
-      const built = await backend('POST', '/lidar/track', Object.assign(baseBody(), { frames: detected }));
-      S.tracks = (built.tracks || []).map((t) => Object.assign(t, { shapes: t.shapes.map((s) => Object.assign(s, { type: 'cuboid' })) }));
+      const built = await backend('POST', '/lidar/track', lidarBody({ frames: detected }));
+      S.tracks = (built.tracks || []).map((t) => Object.assign(t, { shapes: t.shapes.map((s) => Object.assign(s, { type: 'cuboid' })) }))
+        .sort((a, b) => (b.checked - a.checked) || ((b.confidence || 0) - (a.confidence || 0)));
       S.trackMeta = { from: r.from, to: detected[detected.length - 1].frame, warnings: warnings.concat(built.warnings || []), title: 'Cuboid 3D', lidar: true };
       persist('tracks');
       const flagged = S.tracks.filter((t) => t.flags.length).length;
@@ -342,34 +401,323 @@
     S.longTask = ''; render();
   }
 
+  // ---- 0.9.6: Kiểm tra dữ liệu job 3D (frame đang xem) ----
+  async function lidarDiagnose() {
+    await run('Đang kiểm tra dữ liệu point cloud và ảnh camera của frame này…', async () => {
+      const frame = S.frame;
+      const [cloud, ctx] = await Promise.all([fetchCloud(frame), fetchContext(frame)]);
+      const res = await backend('POST', '/lidar/detect', lidarBody({ debug: true, frames: [Object.assign(cloud, { context_b64: ctx })] }), { timeout: 600000 });
+      const fr = res.frames[0] || {};
+      rememberCamera(res.camera);
+      if (!S.lidarCfg) await loadLidarCfg();
+      S.lidarDiag = { frame, info: fr.info || {}, stats: fr.stats || {}, reasons: res.reasons || {}, camera: res.camera, hasContext: !!ctx,
+        found: (fr.objects || []).length, rule: res.rule || {}, missing: ((S.lidarCfg && S.lidarCfg.labels) || []).filter((l) => !l.in_table).map((l) => l.name) };
+      S.cuboids = { frame, list: (fr.objects || []).map((o) => Object.assign(o, { wasChecked: o.checked !== false, checked: o.checked !== false })),
+        warnings: res.warnings || [], bev: fr.bev, rejected: fr.rejected || [], stats: fr.stats || {}, info: fr.info, reasons: res.reasons || {} };
+      setStatus('Đã kiểm tra dữ liệu. Xem kết quả ngay dưới các nút.', 'ok');
+    });
+  }
+  function renderDiag() {
+    const d = S.lidarDiag;
+    if (!d) return null;
+    const i = d.info, lines = [];
+    lines.push(['Point cloud', `${(i.points || 0).toLocaleString()} điểm, xa nhất ${i.max_range_m || '?'} m, mặt đất cục bộ ${i.ground_cells || 0} ô`]);
+    lines.push(['Hệ toạ độ', i.ego_hole ? 'quanh xe (gốc toạ độ là xe, có vùng trống quanh cảm biến)' : 'có thể là toạ độ thế giới: phạm vi gán tính từ gốc, có thể lệch']);
+    const cam = d.camera;
+    lines.push(['Ảnh camera', !d.hasContext ? 'job không có ảnh camera đi kèm (hoặc CVAT không trả về)'
+      : cam && cam.cameras && cam.cameras.length ? `${cam.cameras.length} camera (${cam.cameras.slice(0, 6).join(', ')}); hướng: ${({ estimated: `tự dò, lệch ${cam.offset}°`, panel: `bạn đặt ${cam.offset}°`, calibration: 'theo hiệu chỉnh', default: 'chưa dò được (cần frame có ≥ 2 xe rõ)' })[cam.offset_source] || cam.offset_source}`
+        : (cam && cam.note) || 'không nhận ra tên camera']);
+    const st = d.stats || {};
+    const rej = Object.entries(st).filter(([, n]) => n).map(([k, n]) => `${n} ${d.reasons[k] || k}`);
+    lines.push(['Cụm điểm', `${d.found} thành đề xuất${rej.length ? '; bỏ: ' + rej.join('; ') : ''}`]);
+    if (d.missing.length) lines.push(['Label chưa có cỡ', `${d.missing.join(', ')}: thêm cỡ ở tab Label để tool gợi ý`]);
+    const tips = [];
+    if ((st.no_class || 0) > d.found * 2 && d.found) tips.push('Nhiều cụm không khớp class: kiểm tra bảng cỡ ở tab Label (chiều cao phải đúng).');
+    if ((st.few_points || 0) > 3) tips.push('Nhiều cụm bị bỏ vì ít điểm: dùng "Tự chỉnh theo cuboid bạn đã đánh" để hạ ngưỡng.');
+    if (!i.ego_hole) tips.push('Point cloud không xoay quanh xe: phạm vi 50 / 40 / 30 m có thể không đúng chỗ.');
+    if (d.hasContext && cam && cam.offset_source === 'default') tips.push('Chưa dò được hướng camera: thử lại ở frame có vài xe gần.');
+    return h('div', { class: 'group', style: 'gap:4px' },
+      h('h4', { text: `Kiểm tra dữ liệu · frame ${d.frame}` }),
+      h('table', { class: 'kv small-text' }, h('tbody', {}, lines.map(([k, v]) => h('tr', {}, h('th', { text: k, style: 'text-align:left;white-space:nowrap;padding-right:8px;vertical-align:top' }), h('td', { text: v }))))),
+      tips.length ? h('ul', { class: 'small-text', style: 'margin:2px 0 0 16px;padding:0' }, tips.map((t) => h('li', { text: t }))) : null,
+      h('button', { class: 'small link', type: 'button', text: 'Đóng', onclick: () => { S.lidarDiag = null; render(); } }));
+  }
+
+  // ---- 0.9.6: tự chỉnh theo cuboid bạn đã đánh trong job ----
+  async function lidarEvaluate() {
+    await run('Đang so tool với các cuboid bạn đã đánh…', async () => {
+      const ann = await cvat('GET', `/api/jobs/${S.jobId}/annotations`);
+      const ids = new Set(cuboidLabels().map((l) => l.id));
+      const truth = [];
+      for (const sh of ann.shapes || []) if (sh.type === 'cuboid' && ids.has(sh.label_id)) truth.push({ frame: sh.frame, label_id: sh.label_id, points: sh.points });
+      for (const tr of ann.tracks || []) {
+        if (!ids.has(tr.label_id)) continue;
+        for (const sh of tr.shapes || []) if (!sh.outside && (sh.type || 'cuboid') === 'cuboid') truth.push({ frame: sh.frame, label_id: tr.label_id, points: sh.points });
+      }
+      if (!truth.length) throw new Error('Chưa có cuboid nào bạn đã đánh trong job này. Đánh tay vài frame rồi bấm lại.');
+      const count = {};
+      for (const t of truth) count[t.frame] = (count[t.frame] || 0) + 1;
+      const frames = Object.keys(count).map(Number).sort((a, b) => count[b] - count[a]).slice(0, 6).sort((a, b) => a - b);
+      const clouds = [];
+      for (const f of frames) clouds.push(await fetchCloud(f));
+      const res = await backend('POST', '/lidar/evaluate', lidarBody({ frames: clouds, truth: truth.filter((t) => frames.includes(t.frame)) }), { timeout: 600000 });
+      S.lidarEval = res;
+      setStatus(`So trên ${res.frames} frame, ${res.truth} cuboid của bạn: tool tìm đúng ${Math.round((res.recall || 0) * 100)}%.`, 'ok');
+    });
+  }
+  function applyTune() {
+    const sug = (S.lidarEval && S.lidarEval.suggest) || {};
+    const m = l3();
+    const patch = {};
+    if (sug.ranges) patch.ranges = Object.assign({}, m.ranges, sug.ranges);
+    if (sug.min_points_scale) patch.min_points_scale = Object.assign({}, m.min_points_scale, sug.min_points_scale);
+    if (sug.max_base_gap_m) patch.max_base_gap_m = sug.max_base_gap_m;
+    if (sug.sizes) {
+      const byCls = {};
+      for (const l of (S.lidarCfg && S.lidarCfg.labels) || []) byCls[l.cls] = l.name;
+      patch.sizes = Object.assign({}, m.sizes);
+      for (const [cls, rows] of Object.entries(sug.sizes)) patch.sizes[byCls[cls] || cls] = rows;
+    }
+    saveL3(patch);
+    S.lidarEval = null; S.lidarCfg = null;
+    run('Đang cập nhật…', loadLidarCfg);
+    setStatus('Đã áp dụng. Bấm "Gợi ý cuboid" để xem kết quả mới; về mặc định ở tab Label.', 'ok');
+  }
+  function renderEval() {
+    const e = S.lidarEval;
+    if (!e) return null;
+    const sug = e.suggest || {};
+    const lines = [];
+    if (sug.min_points_scale) lines.push('Số điểm tối thiểu: ' + Object.entries(sug.min_points_scale).map(([k, v]) => `${k} ×${v}`).join(', '));
+    if (sug.ranges) lines.push('Phạm vi: ' + Object.entries(sug.ranges).map(([k, v]) => `${k} ${v} m`).join(', ') + ' (vượt phạm vi của guideline: chỉ áp nếu guideline cho phép)');
+    if (sug.max_base_gap_m) lines.push(`Đáy cách đất tối đa: ${sug.max_base_gap_m} m`);
+    if (sug.sizes) lines.push('Bảng cỡ: thêm dòng theo cuboid của bạn cho ' + Object.keys(sug.sizes).join(', '));
+    return h('div', { class: 'group', style: 'gap:4px' },
+      h('h4', { text: `Tự chỉnh · tìm đúng ${Math.round((e.recall || 0) * 100)}% · đúng trong số tool đề xuất ${e.precision === null ? '–' : Math.round(e.precision * 100) + '%'}` }),
+      h('table', { class: 'small-text' }, h('thead', {}, h('tr', {}, ['Class', 'Của bạn', 'Tool tìm đúng', 'Sai class', 'Thừa', 'Sót vì'].map((t) => h('th', { text: t })))),
+        h('tbody', {}, (e.rows || []).map((r) => h('tr', {}, h('td', { text: r.class }), h('td', { text: String(r.truth) }), h('td', { text: String(r.found) }),
+          h('td', { text: String(r.wrong_class) }), h('td', { text: String(r.extra) }),
+          h('td', { text: Object.entries(r.missed || {}).map(([k, n]) => `${n} ${k === 'no_cluster' ? 'không có cụm điểm' : (e.reasons[k] || k)}`).join('; ') || '–' }))))),
+      lines.length ? h('ul', { class: 'small-text', style: 'margin:2px 0 0 16px;padding:0' }, lines.map((t) => h('li', { text: t })))
+        : h('div', { class: 'muted small-text', text: 'Không có gì cần chỉnh.' }),
+      h('div', { class: 'row' },
+        lines.length ? h('button', { class: 'primary small', type: 'button', text: 'Áp dụng', onclick: applyTune }) : null,
+        h('button', { class: 'small', type: 'button', text: 'Đóng', onclick: () => { S.lidarEval = null; render(); } })));
+  }
+
+  // ---- 0.9.6: bản đồ nhỏ nhìn từ trên (BEV) ----
+  const CLS_COLOR = { car: '#4363d8', truck: '#f58231', bus: '#911eb4', trailer: '#9a6324', 'construction vehicle': '#808000',
+    pedestrian: '#e6194b', 'two wheels': '#3cb44b', barrier: '#f032e6' };
+  function clsColor(cls) { return CLS_COLOR[cls] || PALETTE[(String(cls).length * 7) % PALETTE.length]; }
+  function renderBev(c) {
+    if (!c || !c.bev) return null;
+    const size = 300, half = size / 2;
+    const range = (c.bev.range || 50) + 2;
+    const scale = half / range;
+    const off = ((l3().offset_deg !== undefined ? l3().offset_deg : (S.lidarCamera && S.lidarCamera.offset)) || 0) * Math.PI / 180;
+    const toScr = (x, y) => {           // trục xe: hướng trước lên trên, bên trái sang trái
+      const vx = x * Math.cos(off) - y * Math.sin(off), vy = x * Math.sin(off) + y * Math.cos(off);
+      return [half - vy * scale, half - vx * scale];
+    };
+    const corners = (o) => {
+      const [l, w] = o.size, cs = Math.cos(o.yaw), sn = Math.sin(o.yaw);
+      return [[l, w], [l, -w], [-l, -w], [-l, w]].map(([a, b]) => toScr(o.center[0] + (a / 2) * cs - (b / 2) * sn, o.center[1] + (a / 2) * sn + (b / 2) * cs));
+    };
+    const cv = h('canvas', { width: size * 2, height: size * 2, style: `width:${size}px;height:${size}px;max-width:100%;border-radius:8px;background:#11151c;cursor:pointer`,
+      title: 'Nhìn từ trên: hướng trước của xe ở trên. Bấm vào một hộp để chọn đề xuất đó.', 'aria-label': 'Bản đồ nhìn từ trên' });
+    const ctx = cv.getContext && cv.getContext('2d');
+    if (ctx) {
+      ctx.scale(2, 2);
+      ctx.strokeStyle = '#2a3140'; ctx.lineWidth = 1;
+      for (const rr of [10, 20, 30, 40, 50].filter((v) => v < range)) { ctx.beginPath(); ctx.arc(half, half, rr * scale, 0, 2 * Math.PI); ctx.stroke(); }
+      ctx.fillStyle = '#5b6578'; ctx.font = '9px sans-serif';
+      for (const rr of [10, 30, 50].filter((v) => v < range)) ctx.fillText(`${rr} m`, half + 2, half - rr * scale + 10);
+      for (const [x, y, up] of c.bev.points) {
+        const [sx, sy] = toScr(x, y);
+        ctx.fillStyle = up ? '#aab4c4' : '#3b4352';
+        ctx.fillRect(sx, sy, up ? 1.4 : 1, up ? 1.4 : 1);
+      }
+      if (S.cubShowRejected) for (const r of c.rejected || []) {
+        const p = corners(r); ctx.strokeStyle = '#6b7280'; ctx.setLineDash([2, 2]); ctx.beginPath();
+        p.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+      }
+      for (const o of c.list) {
+        const p = corners(o), sel = S.cubSel === o.id;
+        ctx.strokeStyle = clsColor(o.cls); ctx.lineWidth = sel ? 2.5 : 1.4;
+        ctx.setLineDash(o.checked ? [] : [3, 2]);
+        ctx.beginPath(); p.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.stroke();
+        if (sel) { ctx.fillStyle = clsColor(o.cls) + '55'; ctx.fill(); }
+      }
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ffd166'; ctx.beginPath(); ctx.moveTo(half, half - 6); ctx.lineTo(half - 4, half + 4); ctx.lineTo(half + 4, half + 4); ctx.closePath(); ctx.fill();
+    }
+    cv.addEventListener('click', (ev) => {
+      const rect = cv.getBoundingClientRect();
+      const mx = (ev.clientX - rect.left) * size / rect.width, my = (ev.clientY - rect.top) * size / rect.height;
+      let best = null, bd = 14;
+      for (const o of c.list) {
+        const [sx, sy] = toScr(o.center[0], o.center[1]);
+        const d = Math.hypot(sx - mx, sy - my);
+        if (d < bd) { bd = d; best = o; }
+      }
+      S.cubSel = best ? best.id : null;
+      if (best && weakCuboid(best)) S.cubShowWeak = true;
+      render();
+      const el = best && document.querySelector(`[data-cub="${best.id}"]`);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+    });
+    const legend = [...new Set(c.list.map((o) => o.cls))].map((k) => h('span', { class: 'small-text', style: 'display:inline-flex;align-items:center;gap:3px' },
+      h('span', { class: 'swatch', style: `background:${clsColor(k)}` }), k));
+    return h('div', { class: 'group', style: 'gap:4px;align-items:center' }, cv,
+      h('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px;justify-content:center' }, legend,
+        h('label', { class: 'check small-text' }, h('input', { type: 'checkbox', checked: !!S.cubShowRejected, onchange: (ev) => { S.cubShowRejected = ev.target.checked; render(); } }),
+          h('span', { text: `cụm bị bỏ (${(c.rejected || []).length})` }))));
+  }
+
+  function cuboidItem(o, labels) {
+    const sel = h('select', { title: 'Đổi class', onchange: (ev) => { o.label_id = Number(ev.target.value); } }, labels.map((l) => h('option', { value: String(l.id), text: l.name })));
+    sel.value = String(o.label_id);
+    const conf = Math.round((o.confidence !== undefined ? o.confidence : o.score || 0) * 100);
+    const cam = o.camera && o.camera.verdict;
+    const camChip = cam === 'confirmed' ? h('span', { class: 'chip small ok', title: `Ảnh ${o.camera.camera}: thấy ${o.camera.prompt}`, text: 'camera ✓' })
+      : cam === 'contradicted' ? h('span', { class: 'chip small bad', title: `Ảnh ${o.camera.camera}: giống ${o.camera.seen}`, text: `camera: ${o.camera.seen}` })
+        : cam === 'unknown' ? h('span', { class: 'chip small', title: `Ảnh ${o.camera.camera}: SAM3 không thấy rõ`, text: 'camera ?' }) : null;
+    const li = h('li', { class: 'item' + (S.cubSel === o.id ? ' hot' : ''), 'data-cub': String(o.id) },
+      h('div', { class: 'row' },
+        h('input', { type: 'checkbox', checked: o.checked, title: 'Ghi cuboid này', onchange: (ev) => { o.checked = ev.target.checked; render(); } }),
+        h('span', { class: 'swatch', style: `background:${clsColor(o.cls)}` }),
+        sel,
+        h('span', { class: 'grow' }),
+        h('span', { class: 'small-text', title: 'Độ tin của tool (cỡ khớp bảng, số điểm, ảnh camera)', text: `${conf}%` })),
+      h('div', { class: 'row muted small-text', style: 'gap:6px;flex-wrap:wrap' },
+        h('span', { text: `${o.size.map((v) => v.toFixed(1)).join(' × ')} m` }),
+        h('span', { text: `${(o.distance !== undefined ? o.distance : Math.hypot(o.center[0], o.center[1])).toFixed(0)} m` }),
+        h('span', { text: `${o.points} điểm` }), camChip),
+      o.flags.length ? h('div', { class: 'row fchips' }, flagBadges(o.flags, 'c' + o.id)) : null,
+      o.flags.length ? flagDetails(o.flags, 'c' + o.id) : null);
+    li.addEventListener('click', (ev) => { if (ev.target.tagName === 'LI' || ev.target.classList.contains('row')) { S.cubSel = o.id; render(); } });
+    return li;
+  }
+
   function renderLidar() {
     const busy = !!S.busy;
     const labels = cuboidLabels();
-    const out = [h('div', { class: 'note', text: 'Job CVAT 3D: tool dựng cuboid từ point cloud (tách mặt đường, gom cụm điểm, đoán class theo bảng kích thước của guideline). '
-      + 'Không vẽ được lên cửa sổ 3D: ghi xong, kiểm tra ở Top / Side / Front và ảnh camera.' })];
+    const ok = !!(S.health && S.health.ok);
+    const out = [];
     if (!labels.length) { out.push(h('div', { class: 'note', text: 'Task không có label kiểu cuboid.' })); return out; }
+    if (!S.lidarCfg && ok && !S.lidarCfgLoading) {
+      S.lidarCfgLoading = true;
+      loadLidarCfg().then(() => render()).catch(() => {}).finally(() => { S.lidarCfgLoading = false; });
+    }
+    out.push(h('p', { class: 'muted small-text', style: 'margin:0', text: 'Tool tách mặt đất, gom cụm điểm, đoán class theo bảng cỡ (chiều cao phải khớp), '
+      + 'đối chiếu ảnh camera nếu có. Ghi xong kiểm tra ở Top / Side / Front của CVAT.' }));
     out.push(h('div', { class: 'row' },
-      h('button', { class: 'primary grow', type: 'button', disabled: busy || !(S.health && S.health.ok), onclick: lidarFrame, text: 'Gợi ý cuboid cho frame này' }),
-      h('button', { type: 'button', disabled: busy || !(S.health && S.health.ok), onclick: lidarTrack, text: 'Dựng track cả job' }),
+      h('button', { class: 'primary grow', type: 'button', disabled: busy || !ok, onclick: lidarFrame }, ico('spark', 's'), h('span', { text: 'Gợi ý cuboid frame này' })),
+      h('button', { type: 'button', disabled: busy || !ok, onclick: lidarTrack, text: 'Dựng track cả job' }),
       S.longTask === 'track' ? h('button', { type: 'button', text: 'Dừng', onclick: () => { S.stopRequested = true; } }) : null));
+    const cam = S.lidarCamera;
+    out.push(h('label', { class: 'check small-text' },
+      h('input', { type: 'checkbox', checked: l3().camera !== false, disabled: busy, onchange: (ev) => { saveL3({ camera: ev.target.checked }); S.noContext = null; render(); } }),
+      h('span', { text: 'Đối chiếu ảnh camera' + (S.noContext === S.jobId ? ' (job này không có ảnh camera)'
+        : cam && cam.cameras && cam.cameras.length ? ` · ${cam.cameras.length} camera, hướng ${({ estimated: 'tự dò', panel: 'đã lưu', calibration: 'theo hiệu chỉnh', default: 'chưa dò được' })[cam.offset_source] || ''}` : '') })));
     const c = S.cuboids;
     if (c && c.frame === S.frame) {
       for (const w of c.warnings) out.push(h('div', { class: 'note', text: w }));
-      out.push(h('ul', {}, c.list.map((o) => {
-        const sel = h('select', { title: 'Đổi class', onchange: (ev) => { o.label_id = Number(ev.target.value); } }, labels.map((l) => h('option', { value: String(l.id), text: l.name })));
-        sel.value = String(o.label_id);
-        return h('li', { class: 'item' }, h('div', { class: 'row' },
-          h('input', { type: 'checkbox', checked: o.checked, onchange: (ev) => { o.checked = ev.target.checked; render(); } }),
-          sel, h('span', { class: 'grow muted small-text', text: `${o.size.map((v) => v.toFixed(1)).join(' × ')} m · ${o.points} điểm · cách xe ${Math.hypot(o.center[0], o.center[1]).toFixed(0)} m` })),
-        o.flags.length ? h('div', { class: 'row' }, flagBadges(o.flags)) : null);
-      })));
-      out.push(h('button', { class: 'primary', type: 'button', disabled: busy, onclick: applyCuboids, text: `Ghi ${c.list.filter((o) => o.checked).length} cuboid` }));
+      out.push(renderBev(c));
+      const strong = c.list.filter((o) => !weakCuboid(o)), weak = c.list.filter((o) => weakCuboid(o));
+      const listed = S.cubShowWeak ? c.list : strong;
+      const groups = {};
+      for (const o of listed) (groups[o.cls] = groups[o.cls] || []).push(o);
+      const checked = c.list.filter((o) => o.checked).length;
+      out.push(h('div', { class: 'row' },
+        h('span', { class: 'grow small-text', text: `${c.list.length} đề xuất · ${checked} đã tick` }),
+        weak.length ? h('button', { class: 'small link', type: 'button', text: S.cubShowWeak ? 'Ẩn đề xuất yếu' : `Hiện ${weak.length} đề xuất yếu`,
+          onclick: () => { S.cubShowWeak = !S.cubShowWeak; render(); } }) : null));
+      for (const [cls, items] of Object.entries(groups).sort((a, b) => b[1].length - a[1].length)) {
+        items.sort((a, b) => (b.checked - a.checked) || ((b.confidence || 0) - (a.confidence || 0)));
+        const allOn = items.every((o) => o.checked);
+        out.push(h('div', { class: 'row', style: 'margin-top:4px' },
+          h('span', { class: 'swatch', style: `background:${clsColor(cls)}` }), h('b', { class: 'grow', text: `${cls} (${items.length})` }),
+          h('button', { class: 'small link', type: 'button', text: allOn ? 'Bỏ tick cả nhóm' : 'Tick cả nhóm', onclick: () => { items.forEach((o) => { o.checked = !allOn; }); render(); } })));
+        out.push(h('ul', {}, items.map((o) => cuboidItem(o, labels))));
+      }
+      if (!listed.length && weak.length) out.push(h('div', { class: 'muted small-text', text: 'Chỉ có đề xuất yếu ở frame này.' }));
+      out.push(h('button', { class: 'primary', type: 'button', disabled: busy || !checked, onclick: applyCuboids, text: `Ghi ${checked} cuboid` }));
     }
     if (S.tracks.length && S.trackMeta && S.trackMeta.lidar) {
-      out.push(h('div', { class: 'muted small-text', text: `${S.tracks.length} track cuboid (frame ${S.trackMeta.from}–${S.trackMeta.to}). Duyệt ở tab Cả job rồi bấm Ghi.` }));
-      out.push(h('button', { type: 'button', text: 'Sang tab Cả job', onclick: () => { S.tab = 'job'; render(); } }));
+      out.push(h('div', { class: 'row' }, h('span', { class: 'grow muted small-text', text: `${S.tracks.length} track cuboid (frame ${S.trackMeta.from}–${S.trackMeta.to}). Duyệt ở tab Cả job rồi bấm Ghi.` }),
+        h('button', { class: 'small', type: 'button', text: 'Sang tab Cả job', onclick: () => { S.tab = 'job'; render(); } })));
     }
+    const remembered = S.lidarCfg ? S.lidarCfg.remembered : 0;
+    out.push(h('div', { class: 'group', style: 'gap:6px' },
+      h('h4', { text: 'Công cụ job 3D' }),
+      h('div', { class: 'row', style: 'flex-wrap:wrap' },
+        h('button', { class: 'small', type: 'button', disabled: busy || !ok, onclick: lidarDiagnose, text: 'Kiểm tra dữ liệu job 3D' }),
+        h('button', { class: 'small', type: 'button', disabled: busy || !ok, onclick: lidarEvaluate, text: 'Tự chỉnh theo cuboid bạn đã đánh' }),
+        h('button', { class: 'small', type: 'button', disabled: busy, onclick: () => { S.tab = 'labels'; render(); }, text: 'Bảng cỡ, phạm vi…' })),
+      remembered ? h('div', { class: 'row small-text' }, h('span', { class: 'grow muted', text: `Tool nhớ ${remembered} kiểu vật bạn hay bỏ (bỏ tick sẵn khi gặp lại).` }),
+        h('button', { class: 'small link', type: 'button', disabled: busy, text: 'Quên hết',
+          onclick: () => run('Đang xoá…', async () => { await backend('POST', '/lidar/feedback', lidarBody({ clear: true })); await loadLidarCfg(); }) })) : null,
+      renderDiag(), renderEval()));
     return out;
+  }
+
+  // ---- 0.9.6: tab Label của job 3D ----
+  function rangeText(r) { return `${r[0]}–${r[1]}`; }
+  function parseRange(text) {
+    const m = String(text).replace(/,/g, '.').match(/(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)/);
+    if (!m) return null;
+    const a = Number(m[1]), b = Number(m[2]);
+    return a > 0 && b >= a ? [a, b] : null;
+  }
+  function renderLabels3d() {
+    const lc = S.lidarCfg;
+    if (!lc) {
+      if (S.health && S.health.ok && !S.lidarCfgLoading) { S.lidarCfgLoading = true; loadLidarCfg().then(() => render()).catch((e) => setStatus(e.message, 'error')).finally(() => { S.lidarCfgLoading = false; }); }
+      return [h('p', { class: 'muted', text: S.health && S.health.ok ? 'Đang đọc cấu hình cuboid…' : 'Chưa nối được backend.' })];
+    }
+    const m = l3();
+    const setSizes = (l, rows) => { saveL3({ sizes: Object.assign({}, m.sizes, { [l.name]: rows }) }); S.lidarCfg = null; render(); };
+    const rows = lc.labels.map((l) => {
+      const sizeRows = (l.sizes || []).map((row, ri) => h('div', { class: 'row small-text', style: 'gap:4px;flex-wrap:nowrap' },
+        ['D', 'R', 'C'].map((k, di) => h('label', { style: 'display:inline-flex;align-items:center;gap:2px', title: ['Dài (m)', 'Rộng (m)', 'Cao (m): phải khớp, tool bỏ cụm sai chiều cao'][di] },
+          h('span', { class: 'muted', text: k }),
+          h('input', { type: 'text', value: rangeText(row[di]), style: 'width:5.2em', onchange: (ev) => {
+            const v = parseRange(ev.target.value);
+            if (!v) { ev.target.value = rangeText(row[di]); return setStatus('Nhập dạng 3.8–5.0', 'error'); }
+            const next = l.sizes.map((r) => r.map((x) => x.slice()));
+            next[ri][di] = v; setSizes(l, next);
+          } }))),
+        h('button', { class: 'x', type: 'button', text: '✕', title: 'Bỏ dòng cỡ này', onclick: () => setSizes(l, l.sizes.filter((_, k) => k !== ri)) })));
+      return h('tr', {},
+        h('td', {}, h('div', { text: l.name }), h('div', { class: 'muted small-text', text: l.in_table ? `class: ${l.cls}` : 'chưa có cỡ: thêm cỡ để tool gợi ý label này' })),
+        h('td', {}, sizeRows, h('button', { class: 'small link', type: 'button', text: '+ thêm cỡ', onclick: () => setSizes(l, (l.sizes || []).concat([[[1, 2], [0.5, 1], [0.8, 1.5]]])) })),
+        h('td', {}, h('input', { type: 'number', min: '5', max: '150', step: '5', value: String(l.range), style: 'width:4.5em', title: 'Phạm vi gán (m), tính từ xe',
+          onchange: (ev) => { saveL3({ ranges: Object.assign({}, m.ranges, { [l.cls]: Number(ev.target.value) }) }); S.lidarCfg = null; render(); } })),
+        h('td', {}, (() => {
+          const sel = h('select', { title: 'Số điểm tối thiểu so với mặc định', onchange: (ev) => { saveL3({ min_points_scale: Object.assign({}, m.min_points_scale, { [l.cls]: Number(ev.target.value) }) }); S.lidarCfg = null; render(); } },
+            [[0.5, '×0.5 (nhận cả vật thưa)'], [0.75, '×0.75'], [1, '×1 mặc định'], [1.5, '×1.5'], [2, '×2 (chặt)']].map(([v, t]) => h('option', { value: String(v), text: t })));
+          const cur = [0.5, 0.75, 1, 1.5, 2].reduce((a, b) => (Math.abs(b - l.min_points_scale) < Math.abs(a - l.min_points_scale) ? b : a), 1);
+          sel.value = String(cur); return sel;
+        })()),
+        h('td', {}, h('input', { type: 'text', value: l.prompt, style: 'width:8em', title: 'Prompt tiếng Anh để SAM3 tìm vật này trên ảnh camera',
+          onchange: (ev) => { saveL3({ prompts: Object.assign({}, m.prompts, { [String(l.id)]: ev.target.value.trim() }) }); S.lidarCfg = null; } })));
+    });
+    const mp = lc.min_points_by_range || [];
+    const mpText = mp.map(([d, n], i) => (i === mp.length - 1 ? `xa hơn: ${n}` : `≤ ${d} m: ${n}`)).join(' · ');
+    return [
+      h('p', { class: 'muted small-text', style: 'margin:0', text: `Job cuboid 3D. Bảng cỡ ${lc.sizes_source === 'guideline' ? 'lấy từ guideline' : 'mặc định (guideline 3D Cuboid V1)'}; `
+        + 'sửa ô nào thì tool dùng số của bạn cho task này. Chiều cao phải khớp bảng; dài / rộng được nhỏ hơn (vật bị che) nhưng không lớn hơn.' }),
+      h('table', {}, h('thead', {}, h('tr', {}, ['Label', 'Cỡ (m)', 'Phạm vi', 'Số điểm', 'Prompt camera'].map((t) => h('th', { text: t })))), h('tbody', {}, rows)),
+      h('div', { class: 'small-text muted', text: `Số điểm tối thiểu mặc định: ${mpText} (người, xe hai bánh: một nửa).` }),
+      h('label', { class: 'row small-text' }, h('span', { class: 'grow', text: 'Đáy cụm cách mặt đất tối đa (m): cao hơn là vật lơ lửng (biển, tán cây), bỏ' }),
+        h('input', { type: 'number', min: '0.1', max: '2', step: '0.1', value: String(m.max_base_gap_m || lc.max_base_gap_m), style: 'width:4.5em',
+          onchange: (ev) => { saveL3({ max_base_gap_m: Number(ev.target.value) }); S.lidarCfg = null; } })),
+      m.offset_deg !== undefined ? h('div', { class: 'row small-text' }, h('span', { class: 'grow', text: `Hướng camera đã dò: lệch ${m.offset_deg}° so với trục point cloud.` }),
+        h('button', { class: 'small link', type: 'button', text: 'Dò lại', onclick: () => { const n = Object.assign({}, l3()); delete n.offset_deg; cfg.lidar3d[(S.job && S.job.task_id) || 'local'] = n; saveCfg(); render(); } })) : null,
+      h('div', { class: 'row' },
+        h('button', { type: 'button', disabled: !!S.busy, text: 'Về mặc định của profile', onclick: () => { cfg.lidar3d[(S.job && S.job.task_id) || 'local'] = {}; saveCfg(); S.lidarCfg = null; render(); } })),
+    ];
   }
 
   async function getFrame() {
@@ -2601,6 +2949,10 @@
     .qopt small { color: var(--muted); font-weight: 400; white-space: normal; }
     .qopt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .chip .x { border: 0; background: none; padding: 0 2px; font-size: 11px; color: var(--muted); }
+    .chip.small { padding: 0 6px; border-radius: 9px; font-size: 11px; border: 1px solid var(--line); }
+    .chip.ok { color: #2e9d5b; border-color: #2e9d5b66; } .chip.bad { color: var(--err); border-color: currentColor; }
+    table.kv th, table.kv td { border: 0; padding: 2px 0; font-weight: normal; } table.kv th { color: var(--muted); }
+    li.item.hot { outline: 2px solid var(--accent, #4a90d9); outline-offset: -2px; }
     .chip .link { border: 0; background: none; padding: 0; color: inherit; font-size: 12px; }
     .fchips { gap: 4px; flex-wrap: wrap; }
     .fchip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px 1px 3px; border-radius: 10px; font-size: 11.5px;
@@ -2995,6 +3347,7 @@
   }
 
   function renderLabels() {
+    if (is3d() && cuboidLabels().length && S.health && S.health.ok) return renderLabels3d();
     if (!S.resolved) {
       const reload = h('button', { type: 'button', disabled: !!S.busy, text: 'Đọc lại label từ CVAT', onclick: loadJob });
       if (S.labels.length) {

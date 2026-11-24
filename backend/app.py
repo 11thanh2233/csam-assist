@@ -1342,6 +1342,30 @@ def _read_cloud(item: LidarFrame):
         raise HTTPException(status_code=400, detail=f"Không đọc được point cloud của frame {item.frame}: {exc}") from exc
 
 
+@app.post("/lidar/config", dependencies=[Depends(require_key)])
+def lidar_config(req: ResolveReq) -> dict:
+    """0.9.6: tab Label của job 3D: bảng cỡ, phạm vi, số điểm, prompt camera của từng label cuboid (đã gồm chỉnh của bạn)."""
+    from . import lidar, lidar_assist
+
+    profile, rule, table, info = _lidar_setup(req)
+    from_guide = bool(((profile.get("rules") or {}).get("lidar") or {}).get("sizes"))
+    ranges = dict(lidar.DEFAULT_RANGES, **(rule.get("ranges") or {}))
+    scale = rule.get("min_points_scale") or {}
+    rows = []
+    for l in req.labels:
+        if (l.type or "any").lower() not in ("cuboid", "any"):
+            continue
+        key = lidar.class_key(l.name)
+        rows.append({"id": l.id, "name": l.name, "cls": key, "in_table": key in table,
+                     "sizes": [[list(r) for r in row] for row in table.get(key) or []],
+                     "range": ranges.get(key, 60.0), "min_points_scale": float(scale.get(key, 1.0)),
+                     "prompt": info["prompts"].get(l.id) or lidar_assist.CLASS_PROMPTS.get(key, key)})
+    return {"profile_id": profile["id"], "labels": rows, "sizes_source": "guideline" if from_guide else "default",
+            "min_points_by_range": rule.get("min_points_by_range") or lidar.DEFAULT_MIN_POINTS,
+            "max_base_gap_m": float(rule.get("max_base_gap_m", 0.5)), "remembered": len(rule.get("dropped") or []),
+            "lookalikes": lidar_assist.LOOKALIKES}
+
+
 @app.post("/lidar/detect", dependencies=[Depends(require_key)])
 def lidar_detect(req: LidarDetectReq) -> dict:
     """Cuboid đề xuất cho từng frame point cloud (CVAT 3D). Có ảnh camera thì đối chiếu thêm bằng SAM3 (0.9.6)."""
