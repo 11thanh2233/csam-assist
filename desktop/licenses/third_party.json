@@ -42,6 +42,32 @@
       "use_en": "Starting weights for the project model (Learning tab)",
       "note": "Tải khi bạn chọn cài thành phần này.",
       "note_en": "Downloaded only if you install this component."
+    },
+    {
+      "name": "DINOv2 small (Meta)",
+      "use": "Nhận lại người khi theo dõi",
+      "license": "Apache-2.0",
+      "url": "https://huggingface.co/facebook/dinov2-small",
+      "bundled": false,
+      "use_en": "Re-identifying people when tracking"
+    },
+    {
+      "name": "Depth Anything V2 Small",
+      "use": "Độ sâu: ai đứng trước ai khi theo dõi",
+      "license": "Apache-2.0",
+      "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf",
+      "bundled": false,
+      "use_en": "Depth: who stands in front when tracking"
+    },
+    {
+      "name": "RTMW whole-body (OpenMMLab RTMPose)",
+      "use": "Pose toàn thân: tay, bàn chân, tay trái / phải",
+      "license": "Apache-2.0",
+      "url": "https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
+      "bundled": false,
+      "note": "Model huấn luyện trên nhiều bộ dữ liệu công khai; điều khoản của từng bộ dữ liệu có thể giới hạn dùng thương mại.",
+      "use_en": "Whole-body pose: hands, feet, left / right hand",
+      "note_en": "Trained on several public datasets; some dataset terms may restrict commercial use."
     }
   ],
   "software": [
@@ -188,6 +214,14 @@
       "url": "https://jrsoftware.org/isinfo.php",
       "bundled": true,
       "use_en": "Installer"
+    },
+    {
+      "name": "ONNX Runtime",
+      "license": "MIT",
+      "url": "https://github.com/microsoft/onnxruntime",
+      "use": "Chạy model pose toàn thân (CPU)",
+      "bundled": true,
+      "use_en": "Runs the whole-body pose model (CPU)"
     }
   ]
 }

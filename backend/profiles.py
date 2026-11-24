@@ -24,6 +24,41 @@ COCO17 = [
     "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hip", "right_hip",
     "left_knee", "right_knee", "left_ankle", "right_ankle",
 ]
+# 0.9.6: COCO-WholeBody 133 điểm (pose toàn thân RTMW): COCO17 + bàn chân + 68 điểm mặt + 2 bàn tay
+from .engines.extras import WHOLEBODY_EXTRA  # noqa: E402
+
+WHOLEBODY = COCO17 + WHOLEBODY_EXTRA
+_FINGER_WORDS = {"thumb": "thumb", "index": "index_finger", "fore": "index_finger", "middle": "middle_finger",
+                 "ring": "ring_finger", "pinky": "pinky_finger", "little": "pinky_finger", "small": "pinky_finger"}
+_JOINT_NUM = {"mcp": 1, "cmc": 1, "pip": 2, "mp": 2, "dip": 3, "ip": 3, "tip": 4}
+
+
+def wholebody_source(name: str) -> Optional[str]:
+    """Tên điểm tay / chân thường gặp -> tên điểm COCO-WholeBody. 'L_thumb_tip' -> 'left_thumb4',
+    'right index finger 2' -> 'right_index_finger2', 'left big toe' -> 'left_big_toe', 'R wrist root' -> 'right_hand_root'."""
+    name = re.sub(r"^([LR])([A-Z])", r"\1 \2", re.sub(r"([a-z])([A-Z])", r"\1 \2", str(name)))   # LThumb4, leftBigToe
+    low = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", re.sub(r"(\d+)", r" \1 ", name.lower()))).strip()
+    words = low.split()
+    side = next(({"l": "left", "left": "left", "r": "right", "right": "right", "trai": "left", "phai": "right"}[w]
+                 for w in words if w in ("l", "left", "r", "right", "trai", "phai")), None)
+    if not side:
+        return None
+    rest = [w for w in words if w not in ("l", "left", "r", "right", "trai", "phai", "hand", "finger", "foot")]
+    text = " ".join(rest)
+    if "big toe" in low or "bigtoe" in text:
+        return f"{side}_big_toe"
+    if "small toe" in low or "little toe" in low or "smalltoe" in text:
+        return f"{side}_small_toe"
+    if "heel" in text:
+        return f"{side}_heel"
+    if re.search(r"\b(root|palm)\b", text) or (("hand" in low) and "wrist" in text):
+        return f"{side}_hand_root"
+    for word, finger in _FINGER_WORDS.items():
+        if re.search(rf"\b{word}", text):
+            m = re.search(r"\b([1-4])\b", text)
+            k = int(m.group(1)) if m else next((v for j, v in _JOINT_NUM.items() if re.search(rf"\b{j}\b", text)), None)
+            return f"{side}_{finger}{k}" if k else None
+    return None
 
 # Profile dự phòng cho từng mục đích khi task không khớp profile nào.
 FALLBACK = {"frame": "generic", "track": "generic_track"}
@@ -497,13 +532,16 @@ def skeleton_config(entry: dict, label: dict) -> dict:
             item = {"name": item}
         item = dict(item)
         item.setdefault("name", str(item.get("id", i)))
-        source = item.get("source") or (item["name"] if item["name"] in COCO17 else None)
-        item["index"] = COCO17.index(source) if source in COCO17 else item.get("index")
+        source = item.get("source") or (item["name"] if item["name"] in WHOLEBODY else None)
+        if source is None and entry.get("role", "body") == "body" and not item.get("path"):
+            source = wholebody_source(item["name"])
+        item["index"] = WHOLEBODY.index(source) if source in WHOLEBODY else item.get("index")
         names = {_plain(item["name"])} | {_plain(a) for a in item.get("aliases", [])}
         if source in COCO17:
             names |= _body_aliases(source)
             item.setdefault("side", {"left": "L", "right": "R"}.get(source.split("_")[0]))
         item["_names"] = {n for n in names if n}
+        item["_source"] = source
         item["_pos"] = i
         specs.append(item)
 
@@ -516,6 +554,9 @@ def skeleton_config(entry: dict, label: dict) -> dict:
             continue  # tên chỉ là số: để bước 2 xử lý cả bộ một lượt
         letters = re.sub(r"\d", "", plain)
         hit = next((sp for sp in specs if sp["_pos"] not in taken and (plain in sp["_names"] or (letters and letters in sp["_names"]))), None)
+        if hit is None:      # 0.9.6: điểm tay / bàn chân viết kiểu khác ('L thumb tip' = left_thumb4)
+            wb = wholebody_source(sub["name"])
+            hit = next((sp for sp in specs if wb and sp["_pos"] not in taken and sp.get("_source") == wb), None)
         if hit:
             matched[si] = hit
             taken.add(hit["_pos"])

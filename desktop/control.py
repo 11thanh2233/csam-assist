@@ -23,7 +23,7 @@ from .bridge import is_local, normalize_site
 from . import changelog
 from . import cvat_local
 from . import updater as U
-from .components import COMPONENTS, Components, Gpu, detect_gpu, human, seed_user_files
+from .components import ORDER, COMPONENTS, Components, Gpu, detect_gpu, human, seed_user_files
 from .paths import Paths
 
 DEFAULT_SITES = [
@@ -117,7 +117,7 @@ class Installer:
         if self.thread and self.thread.is_alive():
             return False
         self.cancel.clear()
-        order = [k for k in ("torch", "sam3", "vitpose", "face", "detector") if k in keys]
+        order = [k for k in ORDER if k in keys]
         # Trạng thái từng thành phần cho trang tải: wait | active | skip (đã có) | done | error
         self.p.update(running=True, finished=False, error="", step="Chuẩn bị...", file="", done=0, total=None, log=[], results={},
                       order=order, items={k: "wait" for k in order}, rate=0.0)
@@ -140,7 +140,7 @@ class Installer:
         self.p.update({k: v for k, v in kw.items() if k in ("step", "file", "done", "total")})
 
     def _run(self, keys, gpu, token) -> None:
-        order = [k for k in ("torch", "sam3", "vitpose", "face", "detector") if k in keys]
+        order = [k for k in ORDER if k in keys]
         try:
             self._progress(step="Quét máy: tìm file đã có, so với bản cần dùng...")
             plan = self.comps.plan(order, gpu, token)

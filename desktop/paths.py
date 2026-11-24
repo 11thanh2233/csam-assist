@@ -37,6 +37,9 @@ class Paths:
         self.vitpose = self.models / "vitpose"
         self.face = self.models / "face_landmarker.task"
         self.detector = self.models / "fasterrcnn_mobilenet_v3_large_fpn_coco.pth"   # trọng số khởi đầu cho model riêng (0.9.4)
+        self.reid = self.models / "dinov2-small"                 # 0.9.6: nhận lại người
+        self.depth = self.models / "depth-anything-v2-small"     # 0.9.6: độ sâu
+        self.wholebody = self.models / "rtmw-wholebody.onnx"     # 0.9.6: pose toàn thân
         self.downloads = self.data / "downloads"
         self.profiles = self.data / "profiles"
         self.library = self.data / "guideline_library"

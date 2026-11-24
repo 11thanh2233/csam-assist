@@ -112,6 +112,7 @@ class _Track:
         self.reids: list[tuple[int, int, float]] = []  # (frame hiện lại, số frame khuất, độ giống)
         self.hidden: dict[int, float] = {}
         self.emb = np.asarray(det["emb"], float) if det.get("emb") is not None else None
+        self.near: dict[int, float] = {frame: det["near"]} if det.get("near") is not None else {}
 
     def predict(self, frame: int) -> np.ndarray:
         """Vị trí dự đoán: tâm đi theo vận tốc gần đây, kích thước lấy trung vị gần đây.
@@ -134,6 +135,8 @@ class _Track:
     def add(self, frame: int, det: dict) -> None:
         self.obs[frame] = np.asarray(det["box"], float)
         self.fill[frame] = float(det.get("fill") or 0.0)
+        if det.get("near") is not None:
+            self.near[frame] = float(det["near"])
         self.scores.append(det["score"])
         mixed = 0.85 * self.hist + 0.15 * np.asarray(det["hist"], float)
         self.hist = mixed / (mixed.sum() or 1.0)
@@ -463,6 +466,13 @@ def build_tracks(frames: list[dict], cfgs: list[dict], profile: dict, width: int
     if zone_drop:
         warnings.append(f"Bỏ {zone_drop} phát hiện nằm trong vùng bỏ qua.")
 
+    # 0.9.6: có độ sâu thì biết ai đứng trước: phần thân bị một người / vật ĐỨNG TRƯỚC phủ lên là bị che,
+    # kể cả khi mask SAM3 vẫn "đoán" ra phần đó (hộp không co lại). Người đứng trước không bị tính là bị che.
+    front_of: dict[int, list[tuple[np.ndarray, float]]] = {}
+    for t in tracks:
+        for f, near in t.near.items():
+            front_of.setdefault(f, []).append((t.obs[f], near, t.tid))
+
     built = []
     for t in tracks:
         frames_seen = sorted(t.obs)
@@ -479,7 +489,18 @@ def build_tracks(frames: list[dict], cfgs: list[dict], profile: dict, width: int
         # đo trên hộp gốc (chưa làm mượt) để frame bị che rõ không bị trung bình hoá; phần thân ra ngoài mép ảnh là
         # "ra khỏi khung" (guideline: outside khi không còn thấy), không tính là bị che
         seen_raw = np.array([G.clamp_box(list(bx), width, height) for bx in raw])
-        hidden = hidden_fraction(seen_raw, amodal(frames_seen, seen_raw, width, height, rule, None)[0], fills, width, height)
+        full_boxes = amodal(frames_seen, seen_raw, width, height, rule, None)[0]
+        hidden = hidden_fraction(seen_raw, full_boxes, fills, width, height)
+        if t.near:
+            for i, f in enumerate(frames_seen):
+                mine = t.near.get(f)
+                if mine is None:
+                    continue
+                full = list(full_boxes[i])
+                area = max(G.box_area(full), 1.0)
+                cover = sum(G.box_inter(full, list(ob)) for ob, near, tid in front_of.get(f, [])
+                            if tid != t.tid and near > mine + 0.05)
+                hidden[i] = round(max(hidden[i], min(1.0, cover / area)), 3)
         states = visibility_states(hidden, occ_thr, out_thr)
         occ = [s_ == 1 for s_ in states]
         frames_seen, boxes, occ, bridged = bridge_gaps(frames_seen, boxes, occ, width, height, miss_gap, hidden_gap)

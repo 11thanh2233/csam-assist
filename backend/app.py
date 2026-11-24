@@ -56,6 +56,9 @@ class Runtime:
     memory: Any = None                   # trí nhớ của từng project (0.9.5)
     judge: Any = None                    # Claude xem ảnh (0.9.5)
     res: Any = None                      # quản lý VRAM (0.9.6)
+    reid: Optional[LazyEngine] = None    # nhận lại người (0.9.6)
+    depth: Optional[LazyEngine] = None   # độ sâu: ai đứng trước ai (0.9.6)
+    wholebody: Optional[LazyEngine] = None   # pose toàn thân 133 điểm (0.9.6)
 
 
 rt = Runtime()
@@ -69,7 +72,7 @@ async def lifespan(_: FastAPI):
 
     def on_unload() -> None:          # model vừa được nhả: bỏ cả ảnh/embedding đang giữ và các model phụ
         rt.cache.clear()
-        for lazy in (rt.body, rt.face, rt.video):
+        for lazy in (rt.body, rt.face, rt.video, rt.reid, rt.depth, rt.wholebody):
             if lazy is not None:
                 lazy.reset()
 
@@ -110,6 +113,14 @@ async def lifespan(_: FastAPI):
                                                  "tư thế người (ViTPose)" if not mock else "tư thế người (giả lập)", 800))
     rt.face = rt.res.register("face", LazyEngine(lambda: create_face(mock, settings.face_model),
                                                  "khuôn mặt (MediaPipe)" if not mock else "khuôn mặt (giả lập)", 200))
+    from .engines.extras import create_depth, create_reid, create_wholebody
+
+    rt.reid = rt.res.register("reid", LazyEngine(lambda: create_reid(mock, settings.reid_model, settings.device),
+                                                 "nhận lại người (DINOv2)" if not mock else "nhận lại người (giả lập)", 400))
+    rt.depth = rt.res.register("depth", LazyEngine(lambda: create_depth(mock, settings.depth_model, settings.device),
+                                                   "độ sâu (Depth Anything V2)" if not mock else "độ sâu (giả lập)", 600))
+    rt.wholebody = rt.res.register("wholebody", LazyEngine(lambda: create_wholebody(mock, settings.wholebody_model),
+                                                           "pose toàn thân (RTMW)" if not mock else "pose toàn thân (giả lập)", 0))
     if settings.host not in ("127.0.0.1", "localhost") and not settings.api_key:
         log.warning("Backend mở ra ngoài máy này nhưng chưa đặt SAM3_API_KEY. Hãy đặt API key.")
     yield
@@ -736,7 +747,7 @@ def propose(req: ProposeReq) -> dict:
     profile, _, cfgs = context(req)
     image, state = image_state(req.image_b64)
     if profile.get("mode") == "keypoints":
-        result = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face)
+        result = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face, rt.wholebody)
     elif profile.get("mode") == "mixed":
         result = propose_mixed(req, profile, cfgs, image, state)
     else:
@@ -750,6 +761,9 @@ def propose(req: ProposeReq) -> dict:
             result["custom_labels"] = sorted(custom["names"])
         else:
             result = pipeline.propose(rt.engine, state, image, profile, cfgs, req.existing)
+    if req.quality in REID_QUALITY and profile.get("mode") != "keypoints":
+        # 0.9.6: hộp bàn tay có thuộc tính trái / phải: điền theo pose toàn thân (Claude xem sau vẫn sửa được)
+        keypoints.hand_sides(rt.engine, state, image, result["proposals"], cfgs, rt.wholebody, result.setdefault("warnings", []))
     if req.use_llm:
         llm_review(req, profile, cfgs, image, state, result)
     if req.ignore_zones:
@@ -779,7 +793,7 @@ def propose_mixed(req: ProposeReq, profile: dict, cfgs: list[dict], image: np.nd
         result["warnings"] = result.get("warnings", []) + custom["warnings"]
         result["custom_labels"] = sorted(custom["names"])
     if any(c["enabled"] and c["supported"] for c in skel):
-        kp = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face)
+        kp = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face, rt.wholebody)
         result["proposals"] += kp["proposals"]
         result["warnings"] = result.get("warnings", []) + kp["warnings"]
     mem = rt.memory.load(profile["id"]) if rt.memory else None
@@ -1038,7 +1052,7 @@ def interactive(req: InteractiveReq) -> dict:
     if len(req.box) != 4 or req.box[2] <= req.box[0] or req.box[3] <= req.box[1]:
         raise HTTPException(status_code=400, detail="Hộp không hợp lệ.")
     if cfg["shape"] == "skeleton":
-        return keypoints.interactive(decode_image(req.image_b64), profile, cfg, cfgs, req.box, rt.body, rt.face)
+        return keypoints.interactive(decode_image(req.image_b64), profile, cfg, cfgs, req.box, rt.body, rt.face, rt.wholebody)
     if profile.get("mode") == "semantic" or cfg["role"] in ("drivable_direct", "drivable_alt"):
         cfg = dict(cfg, role="object")
     image, state = image_state(req.image_b64)
@@ -1056,6 +1070,7 @@ def track_detect(req: TrackDetectReq) -> dict:
             break
         image = decode_image(item.image_b64)
         dets = tracking.detect_frame(rt.engine, image, cfgs, warnings)
+        enrich_dets(image, dets, req.quality, warnings)
         out.append({"frame": item.frame, "width": image.shape[1], "height": image.shape[0], "dets": dets})
     rt.res.after_heavy()
     return {"profile_id": profile["id"], "frames": out, "warnings": sorted(set(warnings)), "cancelled": len(out) < len(req.frames)}
@@ -1109,9 +1124,38 @@ def track_rescue(req: TrackRescueReq) -> dict:
             dets.append({"label_id": cfg["label_id"], "box": [round(v, 2) for v in mb], "score": round(float(inst.score), 3),
                          "hist": tracking.appearance(image, mb), "rescued": True,
                          "fill": round(float(np.count_nonzero(inst.mask)) / max(G.box_area(mb), 1.0), 3)})
+        enrich_dets(image, dets, req.quality, [])
         out.append({"frame": item.frame, "dets": dets})
     rt.res.after_heavy()
     return {"frames": out}
+
+
+REID_QUALITY = ("balanced", "quality", "max")     # mức có véc-tơ ngoại hình DINOv2
+DEPTH_QUALITY = ("quality", "max")                # mức có độ sâu (ai đứng trước ai)
+
+
+def enrich_dets(image: np.ndarray, dets: list[dict], quality: Optional[str], warnings: list[str]) -> None:
+    """0.9.6: thêm véc-tơ ngoại hình (nhận lại người sau khi khuất) và độ gần camera (ai che ai) cho mỗi phát hiện,
+    theo mức cấu hình. Model chưa cài thì bỏ qua, báo một dòng; tool vẫn nối ID bằng màu như cũ."""
+    if not dets or not quality:
+        return
+    if quality in REID_QUALITY and rt.reid is not None:
+        model = rt.reid.get()
+        if model is None:
+            warnings.append("Chưa có model nhận lại người (DINOv2): nối ID theo màu áo. Cài ở mục Thành phần của app.")
+        else:
+            for d, emb in zip(dets, model.embed(image, [d["box"] for d in dets])):
+                d["emb"] = emb
+    if quality in DEPTH_QUALITY and rt.depth is not None and len(dets) > 1:
+        model = rt.depth.get()
+        if model is None:
+            warnings.append("Chưa có model độ sâu (Depth Anything V2): không xét ai đứng trước ai. Cài ở mục Thành phần của app.")
+        else:
+            from .engines.extras import box_closeness
+
+            depth = model.depth(image)
+            for d in dets:
+                d["near"] = box_closeness(depth, d["box"])
 
 
 class TrackVideoStartReq(ResolveReq):

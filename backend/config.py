@@ -66,6 +66,10 @@ class Settings:
         # Model phụ cho skeleton (chỉ nạp khi job có label skeleton).
         self.pose_model = os.getenv("SAM3_POSE_MODEL", "usyd-community/vitpose-base-simple")
         self.face_model = Path(os.getenv("SAM3_FACE_MODEL") or str(ROOT / "models" / "face_landmarker.task"))
+        # 0.9.6: model phụ tuỳ chọn: nhận lại người, độ sâu, pose toàn thân (tay, chân)
+        self.reid_model = os.getenv("SAM3_REID_MODEL", "facebook/dinov2-small")
+        self.depth_model = os.getenv("SAM3_DEPTH_MODEL", "depth-anything/Depth-Anything-V2-Small-hf")
+        self.wholebody_model = Path(os.getenv("SAM3_WHOLEBODY_MODEL") or str(ROOT / "models" / "rtmw-wholebody.onnx"))
 
 
 settings = Settings()

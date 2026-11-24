@@ -7,3 +7,4 @@ opencv-python-headless>=4.9
 pillow>=10.0
 pyyaml>=6.0
 scipy>=1.11   # ViTPose (skeleton người) của transformers cần scipy để cắt ảnh theo hộp
+onnxruntime>=1.17   # 0.9.6: pose toàn thân RTMW (ONNX, chạy CPU)

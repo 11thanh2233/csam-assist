@@ -863,7 +863,7 @@ const api = () => window.pywebview.api;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S = null, SCAN = null, step = 1, tokenOk = false, skipSam = false, polling = null, upoll = null;
-const KEYS = ['torch', 'sam3', 'vitpose', 'face', 'detector'];
+const KEYS = ['torch', 'sam3', 'vitpose', 'face', 'detector', 'reid', 'depth', 'wholebody'];
 const CHOICE = {};       // lựa chọn của người dùng ở bước 4
 
 // Markdown đơn giản cho ghi chú: tiêu đề, danh sách, **đậm**, `mã`.
@@ -1058,7 +1058,7 @@ async function renderPick() {
     if (blocked) on = false;
     if (p.required && p.action !== 'none' && !blocked) on = true;
     CHOICE[k] = on;
-    const note = blocked ? 'nhập token sau trong app' : ({torch: S.gpu.ok ? 'bản CUDA' : 'bản CPU', sam3: 'bắt buộc', vitpose: 'cho job skeleton người', face: 'cho job 50 điểm mặt', detector: 'cho model riêng của dự án'}[k]);
+    const note = blocked ? 'nhập token sau trong app' : ({torch: S.gpu.ok ? 'bản CUDA' : 'bản CPU', sam3: 'bắt buộc', vitpose: 'cho job skeleton người', face: 'cho job 50 điểm mặt', detector: 'cho model riêng của dự án', reid: 'theo dõi: nhận lại đúng người', depth: 'theo dõi: ai che ai', wholebody: 'skeleton có tay, bàn chân; tay trái / phải'}[k]);
     return `<tr><td style="width:28px"><input type="checkbox" data-k="${k}" ${on ? 'checked' : ''} ${locked ? 'disabled' : ''}
         onchange="CHOICE['${k}']=this.checked;estimate()"></td>${compLine(k, p).replace(/^<tr>|<\/tr>$/g, '').replace('</b>', '</b> <span class="mut small-text">' + esc(note) + '</span>')}</tr>`;
   }).join('');
@@ -1334,7 +1334,10 @@ function renderComps() {
   const c = S.components, plan = SCAN ? SCAN.plan : null;
   const DESC = { torch: 'Bắt buộc · nền tảng chạy model trên GPU', sam3: 'Bắt buộc · gợi ý nhãn, bấm điểm, theo dõi video',
     vitpose: 'Tuỳ chọn · cho job skeleton người', face: 'Tuỳ chọn · cho job 50 điểm mặt',
-    detector: 'Tuỳ chọn · để model riêng ở tab Tự học học nhanh, không ra 0%' };
+    detector: 'Tuỳ chọn · để model riêng ở tab Tự học học nhanh, không ra 0%',
+    reid: 'Tuỳ chọn · theo dõi video: nhận lại đúng người sau khi khuất (~90 MB)',
+    depth: 'Tuỳ chọn · theo dõi video: biết ai đứng trước ai khi chồng hộp (~100 MB)',
+    wholebody: 'Tuỳ chọn · skeleton có điểm tay / bàn chân; đoán tay trái / phải (~200 MB, chạy CPU)' };
   let ready = 0, updates = 0;
   $('comps').innerHTML = KEYS.map((k) => {
     const x = c[k], p = plan && plan[k];

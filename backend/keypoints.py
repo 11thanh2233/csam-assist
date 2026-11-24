@@ -21,6 +21,9 @@ from .pipeline import add_flag, detect, run_prompt, shape_bbox, suppress
 
 # Chỉ số COCO của các cặp khớp trái/phải (đầu ra của model tư thế là trái/phải THEO NGƯỜI).
 HEAD, ARMS, LEGS = [(1, 2), (3, 4)], [(5, 6), (7, 8), (9, 10)], [(11, 12), (13, 14), (15, 16)]
+# 0.9.6: COCO-WholeBody: bàn chân đi theo chân, bàn tay đi theo tay khi đổi phía
+FEET_PAIRS = [(17 + i, 20 + i) for i in range(3)]
+HAND_PAIRS = [(91 + i, 112 + i) for i in range(21)]
 
 
 def _proposal(cfg: dict, elements: list[dict], score: float, flags: list[dict], box: list[float]) -> dict:
@@ -94,7 +97,8 @@ def to_image_sides(coords: np.ndarray, scores: np.ndarray, min_score: float,
     legs = arms if legs is None else legs
     head = arms if head is None else head
     coords, scores = coords.copy(), scores.copy()
-    for swap, pairs in ((head, HEAD), (arms, ARMS), (legs, LEGS)):
+    wb = len(coords) >= 133
+    for swap, pairs in ((head, HEAD), (arms, ARMS + (HAND_PAIRS if wb else [])), (legs, LEGS + (FEET_PAIRS if wb else []))):
         if swap:  # trái của người đang ở bên phải ảnh -> đổi chỗ để 'left' là trái ảnh
             for l, r in pairs:
                 coords[[l, r]] = coords[[r, l]]
@@ -135,9 +139,28 @@ def body_checks(elements: list[dict], rule: dict, flags: list[dict]) -> None:
                     add_flag(flags, "ATTRIBUTE_CHECK", f"Hai điểm Visible trùng toạ độ ({a['name']} và {b['name']}): tách đúng vị trí, hoặc đánh lại trạng thái cho điểm không thực sự thấy.")
 
 
+from .engines.extras import WHOLEBODY_EXTRA  # noqa: E402
+
 SOURCE_OF_INDEX = ["nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder", "right_shoulder",
                    "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hip", "right_hip",
-                   "left_knee", "right_knee", "left_ankle", "right_ankle"]
+                   "left_knee", "right_knee", "left_ankle", "right_ankle"] + WHOLEBODY_EXTRA
+
+
+def needs_wholebody(cfg: dict) -> bool:
+    """Skeleton có điểm tay / bàn chân / mặt chi tiết (ngoài 17 điểm COCO): cần pose toàn thân."""
+    return any((kp.get("index") or 0) >= 17 for kp in cfg.get("keypoints") or [])
+
+
+def pick_body_model(cfg: dict, body_engine, wholebody_engine, warnings: list[str]):
+    """Model tư thế cho một skeleton người: có điểm tay / chân thì dùng pose toàn thân (RTMW, 133 điểm); chưa cài
+    thì dùng ViTPose 17 điểm và để các điểm tay / chân là outside, kèm một dòng nhắc."""
+    if needs_wholebody(cfg) and wholebody_engine is not None:
+        model = wholebody_engine.get()
+        if model is not None:
+            return model, wholebody_engine
+        warnings.append("Skeleton có điểm tay / bàn chân nhưng chưa có model pose toàn thân: các điểm đó để outside. "
+                        f"Cài 'Pose toàn thân (tay, chân)' ở mục Thành phần của app. {wholebody_engine.error or ''}".strip())
+    return body_engine.get(), body_engine
 
 
 def body_skeleton(cfg: dict, coords: np.ndarray, scores: np.ndarray, box: list[float], score: float,
@@ -451,7 +474,7 @@ def _split(cfgs: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 def propose(engine: Engine, state: Any, image: np.ndarray, profile: dict, cfgs: list[dict],
-            existing: list[dict], body_engine, face_engine) -> dict:
+            existing: list[dict], body_engine, face_engine, wholebody_engine=None) -> dict:
     """body_engine / face_engine là LazyEngine: chỉ nạp khi job có skeleton tương ứng."""
     started = time.time()
     height, width = image.shape[:2]
@@ -459,13 +482,12 @@ def propose(engine: Engine, state: Any, image: np.ndarray, profile: dict, cfgs: 
     warnings: list[str] = []
     proposals: list[dict] = []
     bodies, faces = _split(cfgs)
-    if bodies:
-        model = body_engine.get()
+    for cfg in bodies:
+        model, lazy = pick_body_model(cfg, body_engine, wholebody_engine, warnings)
         if model is None:
-            warnings.append(f"Chưa gợi ý được skeleton người: không nạp được model {body_engine.what}. {body_engine.error or ''}")
+            warnings.append(f"Chưa gợi ý được skeleton người: không nạp được model {lazy.what}. {lazy.error or ''}")
         else:
-            for cfg in bodies:
-                proposals += body_proposals(engine, state, image, cfg, rules, model, warnings)
+            proposals += body_proposals(engine, state, image, cfg, rules, model, warnings)
     if faces:
         model = face_engine.get()
         if model is None:
@@ -485,7 +507,8 @@ def propose(engine: Engine, state: Any, image: np.ndarray, profile: dict, cfgs: 
     }
 
 
-def interactive(image: np.ndarray, profile: dict, cfg: dict, cfgs: list[dict], box: list[float], body_engine, face_engine) -> dict:
+def interactive(image: np.ndarray, profile: dict, cfg: dict, cfgs: list[dict], box: list[float], body_engine, face_engine,
+                wholebody_engine=None) -> dict:
     """Người dùng vẽ hộp quanh người lái (hoặc khuôn mặt người lái): đặt skeleton cho đúng đối tượng đó.
 
     Với mặt, một hộp cho ra mọi skeleton mặt đang bật (cả 7 skeleton), không chỉ label đang chọn.
@@ -493,8 +516,11 @@ def interactive(image: np.ndarray, profile: dict, cfg: dict, cfgs: list[dict], b
     height, width = image.shape[:2]
     rules = profile.get("rules", {})
     warnings: list[str] = []
-    lazy = body_engine if cfg["role"] == "body" else face_engine
-    model = lazy.get()
+    if cfg["role"] == "body":
+        model, lazy = pick_body_model(cfg, body_engine, wholebody_engine, warnings)
+    else:
+        lazy = face_engine
+        model = lazy.get()
     proposals: list[dict] = []
     if model is None:
         warnings.append(f"Không nạp được model {lazy.what}. {lazy.error or ''}")
@@ -506,3 +532,76 @@ def interactive(image: np.ndarray, profile: dict, cfg: dict, cfgs: list[dict], b
         if not proposals:
             warnings.append("Không tìm thấy khuôn mặt trong hộp. Thử vẽ hộp rộng hơn một chút.")
     return {"width": width, "height": height, "proposals": _in_label_order(proposals, cfgs), "warnings": warnings}
+
+
+# ------------------------------------------------ hộp bàn tay: tay nào (0.9.6) --
+_SIDE_WORDS = {"left": ("left", "l", "trai", "trái", "lh"), "right": ("right", "r", "phai", "phải", "rh")}
+
+
+def _side_value(values: list[str], side: str) -> Optional[str]:
+    from .profiles import norm
+
+    for v in values:
+        n = norm(v)
+        if n in _SIDE_WORDS[side] or n.startswith(side) or any(n == w or n.startswith(w + " ") for w in _SIDE_WORDS[side][2:]):
+            return v
+    return None
+
+
+def hand_sides(engine: Engine, state: Any, image: np.ndarray, proposals: list[dict], cfgs: list[dict],
+               wholebody_engine, warnings: list[str]) -> int:
+    """Hộp bàn tay có thuộc tính trái / phải: tìm người, chạy pose toàn thân, hộp tay gần bàn tay trái hay bàn tay
+    phải (theo chính người đó) của ai thì điền giá trị đó. Trả số hộp đã điền. Không có model thì bỏ qua."""
+    from .profiles import norm
+
+    by_id = {c["label_id"]: c for c in cfgs}
+    todo = []
+    for p in proposals:
+        cfg = by_id.get(p.get("label_id")) or {}
+        if "hand" not in norm(cfg.get("name", "")) or p.get("type") not in ("rectangle", "polygon", None):
+            continue
+        for a in cfg.get("label_attributes") or []:
+            vals = a.get("values") or []
+            if _side_value(vals, "left") and _side_value(vals, "right"):
+                todo.append((p, a))
+                break
+    if not todo or wholebody_engine is None or engine is None:
+        return 0
+    model = wholebody_engine.get()
+    if model is None:
+        return 0
+    height, width = image.shape[:2]
+    try:
+        people = [G.clamp_box(G.mask_bbox(i.mask.astype(bool)), width, height)
+                  for i in engine.segment_text(state, "person", 0.4) if G.mask_bbox(i.mask.astype(bool))]
+    except Exception:  # noqa: BLE001
+        return 0
+    if not people:
+        return 0
+    hands = []          # (tâm bàn tay, phía, chỉ số người)
+    for pi, (coords, scores) in enumerate(model.estimate(image, people)):
+        coords, scores = np.asarray(coords, float), np.asarray(scores, float)
+        if len(coords) < 133:
+            continue
+        for side, sl, wrist in (("left", slice(91, 112), 9), ("right", slice(112, 133), 10)):
+            ok = scores[sl] >= 0.3
+            if ok.sum() >= 3:
+                hands.append((coords[sl][ok].mean(0), side, pi))
+            elif scores[wrist] >= 0.3:
+                hands.append((coords[wrist], side, pi))
+    filled = 0
+    for p, attr in todo:
+        box = p.get("bbox") or [0, 0, 0, 0]
+        c = np.array([(box[0] + box[2]) / 2, (box[1] + box[3]) / 2])
+        size = max(box[2] - box[0], box[3] - box[1], 1.0)
+        best = min(hands, key=lambda h: float(np.linalg.norm(h[0] - c)), default=None)
+        if best is None or np.linalg.norm(best[0] - c) > 1.5 * size:
+            continue
+        value = _side_value(attr.get("values") or [], best[1])
+        p.setdefault("attributes", {})[norm(attr["name"])] = value
+        p["auto_attributes"] = dict(p.get("auto_attributes") or {}, **{norm(attr["name"]): value})
+        add_flag(p.setdefault("flags", []), "ATTRIBUTE_CHECK",
+                 f"{attr['name']} = {value}: tool đoán theo pose toàn thân (bàn tay {'trái' if best[1] == 'left' else 'phải'} "
+                 f"của người #{best[2] + 1}, theo chính người đó). Kiểm tra nếu guideline tính trái / phải theo ảnh.")
+        filled += 1
+    return filled

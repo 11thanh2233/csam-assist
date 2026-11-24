@@ -284,7 +284,7 @@ def test_body_filter_low_visibility_and_picture():
 
     engine = ScriptedEngine({"person": [(rect(100, 100, 300, 600), 0.9), (rect(700, 100, 800, 300), 0.8), (rect(1000, 150, 1100, 350), 0.85)],
                              "picture frame": [(rect(980, 120, 1150, 400), 0.9)]})
-    kps = [{"label_id": 200 + i, "name": n, "index": i} for i, n in enumerate(K.SOURCE_OF_INDEX)]
+    kps = [{"label_id": 200 + i, "name": n, "index": i} for i, n in enumerate(K.SOURCE_OF_INDEX[:17])]
     cfg = {"label_id": 9, "name": "person", "prompts": ["person"], "threshold": 0.5, "keypoints": kps, "edges": [], "shape": "skeleton",
            "supported": True, "enabled": True, "attributes": [], "role": "body", "min_area_px": 30}
     props = K.body_proposals(engine, {}, np.zeros((H, W, 3), np.uint8), cfg, {"pose": {"lr_convention": "anatomical"}}, Body(), [])

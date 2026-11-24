@@ -4,6 +4,9 @@
   sam3     trọng số SAM 3 (facebook/sam3, repo có cổng: cần token đã được Meta duyệt)    bắt buộc
   vitpose  trọng số ViTPose cho skeleton người                                          tuỳ chọn
   face     model khuôn mặt MediaPipe (50 điểm mặt)                                      tuỳ chọn
+  reid     DINOv2-small: nhận lại đúng người sau khi khuất (0.9.6)                      tuỳ chọn
+  depth    Depth Anything V2 Small: ai đứng trước ai (0.9.6)                            tuỳ chọn
+  wholebody RTMW (ONNX): pose toàn thân 133 điểm, có bàn tay, bàn chân (0.9.6)           tuỳ chọn
 
 Danh sách file, địa chỉ và mã băm của PyTorch và model khuôn mặt do bước build ghim sẵn trong
 desktop/manifest.lock.json. Trọng số trên Hugging Face được ghim theo commit lúc tải, mỗi file kiểm tra theo
@@ -30,8 +33,13 @@ COMPONENTS = {
     "vitpose": {"title": "Skeleton người (ViTPose)", "required": False},
     "face": {"title": "Skeleton mặt (MediaPipe)", "required": False},
     "detector": {"title": "Trọng số khởi đầu cho model riêng", "required": False},
+    "reid": {"title": "Nhận lại người (DINOv2)", "required": False},
+    "depth": {"title": "Độ sâu: ai đứng trước ai (Depth Anything V2)", "required": False},
+    "wholebody": {"title": "Pose toàn thân: tay, bàn chân (RTMW)", "required": False},
 }
-FILE_MODELS = ("face", "detector")          # thành phần là một file tải theo địa chỉ + mã băm trong manifest
+FILE_MODELS = ("face", "detector", "wholebody")
+HF_MODELS = ("sam3", "vitpose", "reid", "depth")
+ORDER = ("torch", "sam3", "vitpose", "face", "detector", "reid", "depth", "wholebody")          # thành phần là một file tải theo địa chỉ + mã băm trong manifest
 TORCH_EXTRACT = 2.1          # bản cài PyTorch chiếm khoảng 2 lần file tải về
 MIN_DRIVER = 528.0           # driver NVIDIA tối thiểu cho PyTorch CUDA 12 trên Windows
 
@@ -132,7 +140,7 @@ class Components:
             return (self.paths.packages / "torch" / "__init__.py").exists()
         if key in FILE_MODELS:
             return self._file_path(key).exists()
-        folder = self.paths.sam3 if key == "sam3" else self.paths.vitpose
+        folder = self._hf_folder(key)
         return all((folder / f).exists() for f in st.get("files", [])) and bool(st.get("files"))
 
     def status(self) -> dict:
@@ -172,7 +180,7 @@ class Components:
         out = {}
         for key in keys:
             try:
-                kind = "hf" if key in ("sam3", "vitpose") else ("file" if key in FILE_MODELS else key)
+                kind = "hf" if key in HF_MODELS else ("file" if key in FILE_MODELS else key)
                 out[key] = getattr(self, f"_plan_{kind}")(key, gpu, token, check_hash)
             except Exception as exc:  # noqa: BLE001 - không kiểm được thì báo, không chặn
                 out[key] = {"action": "install" if not self.installed(key) else "none", "download": 0, "reuse": 0,
@@ -200,7 +208,7 @@ class Components:
         return [d / "models" for d in self.tool_dirs()] + [self.paths.models]
 
     def _file_path(self, key: str) -> Path:
-        return self.paths.face if key == "face" else self.paths.detector
+        return {"face": self.paths.face, "wholebody": self.paths.wholebody}.get(key, self.paths.detector)
 
     def _plan_file(self, key, gpu, token, check_hash) -> dict:
         f = (self.manifest.get("models") or {}).get(key)
@@ -221,7 +229,7 @@ class Components:
     _plan_face = _plan_file
 
     def _hf_folder(self, key: str) -> Path:
-        return self.paths.sam3 if key == "sam3" else self.paths.vitpose
+        return {"sam3": self.paths.sam3, "reid": self.paths.reid, "depth": self.paths.depth}.get(key, self.paths.vitpose)
 
     def _plan_hf(self, key, gpu, token, check_hash) -> dict:
         m = self.manifest["models"][key]
@@ -319,7 +327,9 @@ class Components:
         if not f:
             raise D.DownloadError(f"Bản cài này chưa có thành phần {COMPONENTS[key]['title']}: cập nhật app lên bản mới.")
         dest = self._file_path(key)
-        what = "model khuôn mặt" if key == "face" else "trọng số khởi đầu"
+        what = {"face": "model khuôn mặt", "wholebody": "model pose toàn thân"}.get(key, "trọng số khởi đầu")
+        if f.get("zip_member") is not None:      # 0.9.6: model nằm trong file zip (RTMW của OpenMMLab)
+            return self._install_zip(key, f, dest, what, progress, cancel)
         item = {"path": dest.name, "sha256": f["sha256"], "size": f.get("size")}
         src = R.find_match(item, [d / "models" for d in self.tool_dirs()], [])
         if src and src != dest.resolve():
@@ -331,6 +341,24 @@ class Components:
         D.download(f["url"], dest, sha256=f["sha256"], size=f.get("size"), cancel=cancel, allow_http=self.allow_http,
                    progress=lambda done, total: progress(file=dest.name, done=done, total=total, step=f"Tải {what}"))
         info = {"sha256": f["sha256"]}
+        self._save(key, info)
+        return info
+
+    def _install_zip(self, key: str, f: dict, dest: Path, what: str, progress, cancel) -> dict:
+        import zipfile
+
+        archive = self.paths.downloads / (f.get("filename") or f"{key}.zip")
+        D.download(f["url"], archive, sha256=f["sha256"], size=f.get("size"), cancel=cancel, allow_http=self.allow_http,
+                   progress=lambda done, total: progress(file=archive.name, done=done, total=total, step=f"Tải {what}"))
+        progress(file="", done=0, total=None, step=f"Giải nén {what}")
+        with zipfile.ZipFile(archive) as z:
+            member = f["zip_member"] or next(n for n in z.namelist() if n.endswith(".onnx"))
+            tmp = dest.with_suffix(".part")
+            with z.open(member) as src, open(tmp, "wb") as out:
+                shutil.copyfileobj(src, out)
+        tmp.replace(dest)
+        archive.unlink(missing_ok=True)
+        info = {"sha256": f["sha256"], "member": member}
         self._save(key, info)
         return info
 
@@ -389,7 +417,7 @@ class Components:
         elif key in FILE_MODELS:
             self._file_path(key).unlink(missing_ok=True)
         else:
-            final = self.paths.sam3 if key == "sam3" else self.paths.vitpose
+            final = self._hf_folder(key)
             shutil.rmtree(final, ignore_errors=True)
             shutil.rmtree(final.with_name(final.name + ".download"), ignore_errors=True)
         self._save(key, None)
@@ -405,6 +433,9 @@ class Components:
             "SAM3_POSE_MODEL": str(p.vitpose),
             "SAM3_FACE_MODEL": str(p.face),
             "SAM3_DETECTOR_BASE": str(p.detector),
+            "SAM3_REID_MODEL": str(p.reid),
+            "SAM3_DEPTH_MODEL": str(p.depth),
+            "SAM3_WHOLEBODY_MODEL": str(p.wholebody),
             "SAM3_PROFILES_DIR": str(p.profiles),
             "SAM3_LIBRARY_DIR": str(p.library),
             "SAM3_NO_AUTO_DOWNLOAD": "1",

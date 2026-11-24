@@ -59,7 +59,7 @@ async function main() {
     await until(() => !doc.getElementById('todoBanner').classList.contains('hidden'), 'báo cần cập nhật PyTorch');
     assert.match(doc.getElementById('todoBanner').textContent, /PyTorch 2\.14\.1, máy đang có 2\.13\.0/);
     assert.match(doc.getElementById('comps').textContent, /Có bản mới/);
-    assert.strictEqual(doc.querySelectorAll('#comps .ccard').length, 5, 'mỗi thành phần một thẻ (0.9.4: thêm bộ phát hiện)');
+    assert.strictEqual(doc.querySelectorAll('#comps .ccard').length, 8, 'mỗi thành phần một thẻ (0.9.6: thêm nhận lại người, độ sâu, pose toàn thân)');
     await until(() => /Có bản mới 99\.0\.0/.test(doc.getElementById('updDetail').textContent), 'thông tin bản mới');
     assert.ok(doc.querySelector('#updDetail .notes b'), 'ghi chú bản mới hiện dạng định dạng');
     assert.ok(!doc.getElementById('updBadge').classList.contains('hidden'));
@@ -77,11 +77,11 @@ async function main() {
 
     // Trình cài: bước quét liệt kê từng thành phần, bước chọn chỉ chọn sẵn cái cần
     win.openWizard(1);
-    await until(() => doc.querySelectorAll('#scanBox tr').length === 5, 'kết quả quét');
+    await until(() => doc.querySelectorAll('#scanBox tr').length === 8, 'kết quả quét');
     assert.match(doc.getElementById('scanBox').textContent, /cần cập nhật/);
     assert.match(doc.getElementById('scanBox').textContent, /đã có, đúng bản|chưa có/);
     win.go(4);
-    await until(() => doc.querySelectorAll('#pick input[data-k]').length === 5, 'bảng chọn thành phần');
+    await until(() => doc.querySelectorAll('#pick input[data-k]').length === 8, 'bảng chọn thành phần');
     const torch = doc.querySelector('#pick input[data-k="torch"]');
     assert.ok(torch.checked && torch.disabled, 'PyTorch bắt buộc cập nhật: chọn sẵn, không bỏ được');
     await until(() => /Tải về khoảng/.test(doc.getElementById('estimate').textContent), 'ước lượng dung lượng');
