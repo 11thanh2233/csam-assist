@@ -183,4 +183,7 @@ class MockVideoTracker:
         return out
 
     def end(self, sid: Optional[str] = None) -> None:
-        self.sessions.clear()
+        if sid is None:
+            self.sessions.clear()
+        else:
+            self.sessions.pop(sid, None)

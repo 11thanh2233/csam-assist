@@ -210,17 +210,25 @@ def create_face(mock: bool, model_path: Path, max_faces: int = 20) -> FaceEngine
 class LazyEngine:
     """Nạp model ở lần dùng đầu; lỗi được nhớ để báo lại cho panel thay vì làm sập request."""
 
-    def __init__(self, factory, what: str):
+    def __init__(self, factory, what: str, need_mb: int = 1500):
         self.factory = factory
         self.what = what
         self.engine: Optional[object] = None
         self.error: Optional[str] = None
         self.lock = threading.Lock()
+        self.need_mb = need_mb            # VRAM ước tính khi nạp (0.9.6: để nhả model khác trước nếu thiếu)
+        self.last = 0.0
+        self.before_load = None           # hàm gọi trước khi nạp: dọn chỗ VRAM (runtime_tools.Resources)
 
     def get(self):
+        import time as _t
+
         with self.lock:
+            self.last = _t.time()
             if self.engine is None and self.error is None:
                 try:
+                    if self.before_load:
+                        self.before_load(self)
                     log.info("Đang nạp %s ...", self.what)
                     self.engine = self.factory()
                     log.info("Đã nạp %s.", self.what)
@@ -232,3 +240,35 @@ class LazyEngine:
     def reset(self) -> None:
         with self.lock:
             self.engine, self.error = None, None
+
+    @property
+    def loaded(self) -> bool:
+        return self.engine is not None
+
+    def release(self, reason: str = "") -> bool:
+        """Nhả model khỏi bộ nhớ (lần dùng sau tự nạp lại)."""
+        with self.lock:
+            if self.engine is None:
+                return False
+            eng = self.engine
+            self.engine = None
+            for attr in ("model", "processor", "_model", "_session"):
+                if hasattr(eng, attr):
+                    try:
+                        setattr(eng, attr, None)
+                    except Exception:  # noqa: BLE001
+                        pass
+            if hasattr(eng, "close"):
+                try:
+                    eng.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            del eng
+        import gc
+
+        gc.collect()
+        from ..runtime_tools import free_cuda
+
+        free_cuda()
+        log.info("Đã nhả %s%s.", self.what, f" ({reason})" if reason else "")
+        return True

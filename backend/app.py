@@ -55,6 +55,7 @@ class Runtime:
     cancelled: set = set()               # phiên SAM3 Video panel đã bỏ cuộc (0.9.4)
     memory: Any = None                   # trí nhớ của từng project (0.9.5)
     judge: Any = None                    # Claude xem ảnh (0.9.5)
+    res: Any = None                      # quản lý VRAM (0.9.6)
 
 
 rt = Runtime()
@@ -72,13 +73,23 @@ async def lifespan(_: FastAPI):
             if lazy is not None:
                 lazy.reset()
 
-    rt.engine = EngineProxy(lambda: create_engine(settings), settings.idle_unload_min, on_unload)
+    from .runtime_tools import Resources
+
+    rt.res = Resources()
+
+    def make_engine():
+        # 0.9.6: nạp lại SAM3 ảnh thì nhả SAM3 Video trước (hai model SAM3 cùng nằm trên GPU dễ tràn VRAM)
+        if rt.video is not None and rt.video.engine is not None:
+            rt.video.release("nạp lại SAM3 ảnh")
+        return create_engine(settings)
+
+    rt.engine = EngineProxy(make_engine, settings.idle_unload_min, on_unload)
     rt.engine.ensure()
     mock = rt.engine.name == "mock"
     if settings.warmup and not mock:
         log.info("Khởi động nóng xong sau %.1fs.", warmup(rt.engine))
     log.info("Sẵn sàng. Engine: %s, thiết bị: %s", rt.engine.name, rt.engine.device)
-    watcher = IdleWatcher([rt.engine])
+    watcher = IdleWatcher([rt.engine, rt.res])
     watcher.start()                     # luôn chạy: còn nhả SAM 3 Tracker (bấm điểm) khi lâu không dùng
     if settings.idle_unload_min > 0:
         log.info("Tự nhả model sau %g phút không dùng.", settings.idle_unload_min)
@@ -95,10 +106,10 @@ async def lifespan(_: FastAPI):
     rt.trainer = Trainer(rt.custom, settings.device)
     info = rt.guide.llm_info(False)
     log.info("Soạn guideline: %d bài học trong thư viện, LLM: %s %s", len(rt.guide.lib.lessons), info["provider"], info["model"])
-    rt.body = LazyEngine(lambda: create_body_pose(mock, settings.pose_model, settings.device),
-                         "tư thế người (ViTPose)" if not mock else "tư thế người (giả lập)")
-    rt.face = LazyEngine(lambda: create_face(mock, settings.face_model),
-                         "khuôn mặt (MediaPipe)" if not mock else "khuôn mặt (giả lập)")
+    rt.body = rt.res.register("body", LazyEngine(lambda: create_body_pose(mock, settings.pose_model, settings.device),
+                                                 "tư thế người (ViTPose)" if not mock else "tư thế người (giả lập)", 800))
+    rt.face = rt.res.register("face", LazyEngine(lambda: create_face(mock, settings.face_model),
+                                                 "khuôn mặt (MediaPipe)" if not mock else "khuôn mặt (giả lập)", 200))
     if settings.host not in ("127.0.0.1", "localhost") and not settings.api_key:
         log.warning("Backend mở ra ngoài máy này nhưng chưa đặt SAM3_API_KEY. Hãy đặt API key.")
     yield
@@ -207,6 +218,7 @@ class ResolveReq(BaseModel):
     task_id: Optional[int] = None
     profile_inline: Optional[dict] = None   # profile chưa lưu (bản xem trước "Thử trên frame này")
     ignore_zones: list[list[float]] = Field(default_factory=list)   # vùng bỏ qua [x1,y1,x2,y2] (gương, quảng cáo...)
+    quality: str = ""          # 0.9.6: mức cấu hình của panel: light | balanced | quality | max
 
 
 class ProposeReq(ResolveReq):
@@ -236,6 +248,7 @@ class TrackFrame(BaseModel):
 
 class TrackDetectReq(ResolveReq):
     frames: list[TrackFrame]
+    request_id: Optional[str] = None     # 0.9.6: panel bỏ cuộc (hết giờ, Dừng) thì backend dừng ở frame kế tiếp
 
 
 class TrackBuildReq(ResolveReq):
@@ -245,6 +258,7 @@ class TrackBuildReq(ResolveReq):
     start: int
     stop: int
     targets: list[dict] = Field(default_factory=list)   # người bạn chọn: [{name, frame, box, label_id}] (0.9.4)
+    thresholds: dict = Field(default_factory=dict)       # 0.9.6: ngưỡng che bạn sửa ở panel {occluded_hidden, outside_hidden}
 
 
 class GuideStartReq(BaseModel):
@@ -348,6 +362,8 @@ def image_state(image_b64: str) -> tuple[np.ndarray, Any]:
 
 
 def context(req: ResolveReq, purpose: str = "frame") -> tuple[dict, list[dict], list[dict]]:
+    if rt.res is not None:
+        rt.res.touch(req.quality or None)
     labels = [l.model_dump() for l in req.labels]
     if req.profile_inline:
         profile = inline_profile(req.profile_inline)
@@ -355,9 +371,19 @@ def context(req: ResolveReq, purpose: str = "frame") -> tuple[dict, list[dict], 
         profile = rt.store.get(req.profile_id, [l["name"] for l in labels], purpose, [l["type"] for l in labels], labels,
                                project_id=req.project_id, task_id=req.task_id)
     cfgs = resolve_labels(profile, labels, req.overrides, purpose)
+    limit = PROMPTS_BY_QUALITY.get(req.quality or "")
+    if limit:
+        # 0.9.6: mức cấu hình thấp chạy ít prompt hơn mỗi label (mỗi prompt là một lượt SAM3)
+        for c in cfgs:
+            if len(c.get("prompts") or []) > limit and not (req.overrides.get(str(c["label_id"])) or {}).get("prompts"):
+                c["prompts"] = c["prompts"][:limit]
     if req.use_learned and rt.learner is not None:
         apply_learned(cfgs, learner_for(req.user).for_profile(profile["id"]), req.overrides)
     return profile, labels, cfgs
+
+
+PROMPTS_BY_QUALITY = {"light": 1, "balanced": 2}
+CROPS_BY_QUALITY = {"light": 0, "balanced": 3, "quality": 6, "max": 6}
 
 
 def inline_profile(data: dict) -> dict:
@@ -599,6 +625,7 @@ def health() -> dict:
         "model_loaded": getattr(rt.engine, "loaded", True),
         "idle_unload_min": settings.idle_unload_min,
         "vision_llm": bool(rt.judge and rt.judge.available()),
+        "vram": rt.res.status() if rt.res else None,
         "llm_usage": rt.judge.usage.status() if rt.judge else None,
     }
 
@@ -691,8 +718,17 @@ def resolve(req: ResolveReq) -> dict:
             "profile_id": track_profile["id"],
             "title": track_profile.get("title", track_profile["id"]),
             "labels": track_cfgs,
+            # 0.9.6: ngưỡng % bị che của profile (guideline ghi, hoặc mặc định) để panel hiện và cho sửa
+            "thresholds": _track_thresholds(track_profile),
         },
     }
+
+
+def _track_thresholds(profile: dict) -> dict:
+    rule = (profile.get("rules") or {}).get("tracking") or {}
+    return {"occluded_hidden": float(rule.get("occluded_hidden", tracking.DEFAULT_OCCLUDED_HIDDEN)),
+            "outside_hidden": float(rule.get("outside_hidden", tracking.DEFAULT_OUTSIDE_HIDDEN)),
+            "source": "guideline" if "occluded_hidden" in rule else "default"}
 
 
 @app.post("/propose", dependencies=[Depends(require_key)])
@@ -722,6 +758,7 @@ def propose(req: ProposeReq) -> dict:
         if before - len(result["proposals"]):
             result.setdefault("warnings", []).append(f"Bỏ {before - len(result['proposals'])} đề xuất nằm trong vùng bỏ qua.")
     log.info("propose: profile=%s, %d đề xuất, %.1fs", profile["id"], len(result["proposals"]), result["seconds"])
+    rt.res.after_heavy()
     return result
 
 
@@ -774,7 +811,7 @@ def llm_review(req: ProposeReq, profile: dict, cfgs: list[dict], image: np.ndarr
         hints = {"mean_brightness_0_255": int(round(tagrules.brightness(image))), "infrared": bool(tagrules.is_infrared(image)),
                  "fisheye": bool(tagrules.fisheye_like(image))}
     text, images, items = J.build_request(image, result["proposals"], cfgs, profile, tags, tag_cfgs, memory,
-                                          req.filename, hints)
+                                          req.filename, hints, max_crops=CROPS_BY_QUALITY.get(req.quality or "", 6))
     try:
         answer = rt.judge.ask(text, images)
     except Exception as exc:  # noqa: BLE001 - Claude lỗi thì giữ kết quả của tool
@@ -1015,10 +1052,66 @@ def track_detect(req: TrackDetectReq) -> dict:
     profile, _, cfgs = context(req, "track")
     out, warnings = [], []
     for item in req.frames:
+        if req.request_id and req.request_id in rt.cancelled:
+            break
         image = decode_image(item.image_b64)
         dets = tracking.detect_frame(rt.engine, image, cfgs, warnings)
         out.append({"frame": item.frame, "width": image.shape[1], "height": image.shape[0], "dets": dets})
-    return {"profile_id": profile["id"], "frames": out, "warnings": sorted(set(warnings))}
+    rt.res.after_heavy()
+    return {"profile_id": profile["id"], "frames": out, "warnings": sorted(set(warnings)), "cancelled": len(out) < len(req.frames)}
+
+
+class RescueFrame(BaseModel):
+    frame: int
+    image_b64: str
+    boxes: list[dict] = Field(default_factory=list)      # [{label_id, box}] vị trí dự đoán
+
+
+class TrackRescueReq(ResolveReq):
+    frames: list[RescueFrame]
+    request_id: Optional[str] = None
+
+
+@app.post("/track/rescue", dependencies=[Depends(require_key)])
+def track_rescue(req: TrackRescueReq) -> dict:
+    """0.9.6: frame model mất người giữa hai đoạn của track: SAM3 tìm lại đúng vị trí dự đoán (ngưỡng thấp).
+    Tìm thấy thì trả phát hiện (kèm phần mask) để tính % bị che; không thấy thì frame đó mới là outside."""
+    _, _, cfgs = context(req, "track")
+    by_id = {c["label_id"]: c for c in cfgs}
+    out = []
+    for item in req.frames:
+        if req.request_id and req.request_id in rt.cancelled:
+            break
+        image = decode_image(item.image_b64)
+        h, w = image.shape[:2]
+        state = rt.engine.encode(image)
+        dets = []
+        for b in item.boxes:
+            cfg = by_id.get(b.get("label_id"))
+            if cfg is None:
+                continue
+            box = [float(v) for v in b["box"]]
+            pad_w, pad_h = 0.1 * (box[2] - box[0]), 0.1 * (box[3] - box[1])
+            probe = G.clamp_box([box[0] - pad_w, box[1] - pad_h, box[2] + pad_w, box[3] + pad_h], w, h)
+            try:
+                found = rt.engine.segment_box(state, probe, (cfg.get("prompts") or [None])[0], 0.25, None)
+            except Exception:  # noqa: BLE001
+                found = []
+            best, best_iou = None, 0.2
+            for inst in found:
+                mb = G.mask_bbox(inst.mask.astype(bool))
+                if mb and G.box_iou(mb, box) > best_iou:
+                    best, best_iou = (inst, mb), G.box_iou(mb, box)
+            if best is None:
+                continue
+            inst, mb = best
+            mb = G.clamp_box(mb, w, h)
+            dets.append({"label_id": cfg["label_id"], "box": [round(v, 2) for v in mb], "score": round(float(inst.score), 3),
+                         "hist": tracking.appearance(image, mb), "rescued": True,
+                         "fill": round(float(np.count_nonzero(inst.mask)) / max(G.box_area(mb), 1.0), 3)})
+        out.append({"frame": item.frame, "dets": dets})
+    rt.res.after_heavy()
+    return {"frames": out}
 
 
 class TrackVideoStartReq(ResolveReq):
@@ -1039,11 +1132,12 @@ def _video_tracker():
         if rt.engine is not None and rt.engine.name == "mock":
             from .engines.sam3_video import MockVideoTracker
 
-            rt.video = LazyEngine(lambda: MockVideoTracker(rt.engine).load(), "SAM3 Video (giả lập)")
+            rt.video = rt.res.register("video", LazyEngine(lambda: MockVideoTracker(rt.engine).load(), "SAM3 Video (giả lập)", 4000))
         else:
             from .engines.sam3_video import Sam3VideoTracker
 
-            rt.video = LazyEngine(lambda: Sam3VideoTracker(settings.hf_model, settings.device, settings.video_dtype).load(), "SAM3 Video")
+            rt.video = rt.res.register("video", LazyEngine(
+                lambda: Sam3VideoTracker(settings.hf_model, settings.device, settings.video_dtype).load(), "SAM3 Video", 4000))
     if rt.video.engine is None and hasattr(rt.engine, "unload") and getattr(rt.engine, "name", "") != "mock":
         # 0.9.4: hai model SAM3 cùng nằm trên GPU dễ đầy VRAM (Windows mượn RAM thường, chạy chậm hàng chục lần):
         # nhả model gợi ý nhãn trước khi nạp SAM3 Video; lần gợi ý sau tự nạp lại.
@@ -1118,8 +1212,15 @@ def track_video_end(req: TrackVideoEndReq) -> dict:
 def track_build(req: TrackBuildReq) -> dict:
     """Bước 2: nối các phát hiện thành track, áp luật box/occluded/outside/keyframe của guideline."""
     profile, _, cfgs = context(req, "track")
+    custom = {k: float(v) for k, v in (req.thresholds or {}).items()
+              if k in ("occluded_hidden", "outside_hidden") and isinstance(v, (int, float)) and 0 < float(v) <= 1}
+    if custom:
+        profile = dict(profile, rules=dict(profile.get("rules") or {}))
+        profile["rules"]["tracking"] = dict(profile["rules"].get("tracking") or {}, **custom)
     result = tracking.build_tracks(req.frames, cfgs, profile, req.width, req.height, req.start, req.stop,
                                    targets=req.targets, zones=req.ignore_zones)
+    track_rule = (profile.get("rules") or {}).get("tracking") or {}
+    result["thresholds_source"] = "panel" if custom else ("guideline" if "occluded_hidden" in track_rule else "default")
     log.info("track: profile=%s, %d track", profile["id"], len(result["tracks"]))
     return dict(result, profile_id=profile["id"])
 

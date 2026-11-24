@@ -67,6 +67,8 @@
     qaFindMissing: false,    // Rà cả job: chạy thêm SAM3 để tìm đối tượng có thể bị sót
     trackEngine: 'classic',  // 'classic' | 'sam3_video'
     trackSampling: 'smart',  // 0.9.5: 'smart' (keyframe + kiểm tra giữa khoảng) | 'all' (mọi frame)
+    trackThresholds: {},     // 0.9.6: task id -> { occ, out } (% diện tích toàn thân bị che)
+    quality: 'auto',         // 0.9.6: 'auto' | 'light' | 'balanced' | 'quality' | 'max'
     guidePurpose: '',
     guideTerms: '',
     opacity: 0.3,
@@ -452,7 +454,23 @@
   }
 
   const baseBody = () => ({ profile_id: cfg.profileId, labels: labelPayload(), overrides: overridePayload(), use_learned: cfg.useLearned !== false, user: S.user || '', use_custom: !!cfg.useCustom,
-    project_id: (S.job && S.job.project_id) || null, task_id: (S.job && S.job.task_id) || null, ignore_zones: zonesOf().map((z) => z.box) });
+    project_id: (S.job && S.job.project_id) || null, task_id: (S.job && S.job.task_id) || null, ignore_zones: zonesOf().map((z) => z.box),
+    quality: qualityLevel() });
+  // 0.9.6: mức cấu hình (giống chỉnh đồ hoạ trong game): Tự động chọn theo VRAM của máy
+  const QUALITY = {
+    light: { name: 'Nhẹ', step: 16, batch: 2, prefetch: false, note: 'Máy yếu / không GPU: ít lần chạy SAM3, 1 prompt mỗi label, nhả model phụ ngay' },
+    balanced: { name: 'Cân bằng', step: 8, batch: 4, prefetch: true, note: '6–8 GB VRAM: theo dõi thông minh, 2 prompt mỗi label' },
+    quality: { name: 'Chất lượng', step: 4, batch: 4, prefetch: true, note: '10–12 GB VRAM: kiểm tra dày hơn khi theo dõi, đủ prompt, tìm lại người bị mất' },
+    max: { name: 'Tối đa', step: 0, batch: 4, prefetch: true, note: '16 GB VRAM trở lên: chạy SAM3 mọi frame, giữ mọi model trên GPU' },
+  };
+  function autoQuality() {
+    const g = (S.health && S.health.gpu) || null;
+    const total = (g && g.total_mb) || (S.health && S.health.vram && S.health.vram.total_mb) || 0;
+    if (S.health && S.health.is_mock) return 'balanced';   // engine giả (demo, test): không tốn VRAM
+    if (!total || (S.health && S.health.device === 'cpu')) return 'light';
+    return total < 6000 ? 'light' : total < 9000 ? 'balanced' : total < 14000 ? 'quality' : 'max';
+  }
+  function qualityLevel() { return cfg.quality && cfg.quality !== 'auto' && QUALITY[cfg.quality] ? cfg.quality : autoQuality(); }
   // Vùng bỏ qua (gương, kính, quảng cáo, màn hình): nhớ theo task vì cùng một camera
   function zonesOf() { cfg.zones = cfg.zones || {}; return (S.job && cfg.zones[S.job.task_id]) || []; }
   // Người cần theo dõi: nhớ theo job
@@ -1425,27 +1443,74 @@
         if (!video) return;
         try { await backend('POST', '/track/cancel', { session_id: video.session_id }); } catch (e) { /* bỏ qua */ }
       };
-      let sampled = null;
-      if (!video && cfg.trackSampling !== 'all' && frames.length > 8) {
-        // 0.9.5: không chạy SAM3 trên mọi frame. Chạy keyframe cách đều, rồi kiểm tra ở giữa mỗi khoảng: chỗ nào nội suy
-        // khớp với SAM3 thì giữ nội suy, chỗ nào lệch thì chia đôi và chạy tiếp tới từng frame. Đoạn chuyển động phức tạp
-        // vẫn được chạy đủ mọi frame, nên độ chính xác giữ như cũ còn số lần chạy SAM3 giảm mạnh ở đoạn đều.
-        sampled = await smartTrackDetect(frames, async (list) => {
-          const images = await Promise.all(list.map((f) => fetchFrame(f)));
-          size = size || { w: images[0].w, h: images[0].h };
-          const res = await backend('POST', '/track/detect', Object.assign({}, body, { frames: list.map((f, k) => ({ frame: f, image_b64: images[k].b64 })) }));
+      // 0.9.6: kết quả từng frame được lưu lại (đứt giữa chừng thì lần sau chạy tiếp, không làm lại); mỗi lượt gửi có
+      // mã riêng để panel hết giờ chờ thì báo backend dừng đúng lượt đó (không để GPU chạy tiếp việc không ai nhận).
+      const q = QUALITY[qualityLevel()];
+      const progKey = `trackprog:${S.jobId}`;
+      const sig = JSON.stringify([r.from, r.to, (S.resolved.track && S.resolved.track.profile_id) || '', trackLabels().map((c) => `${c.label_id}:${(c.prompts || []).join('|')}`), zonesOf().length]);
+      const prevProg = GM_getValue(progKey, null);
+      const cache = new Map(prevProg && prevProg.sig === sig && !video ? prevProg.done : []);
+      if (prevProg && prevProg.sig === sig && prevProg.size) size = prevProg.size;
+      const resumed = cache.size;
+      const persistProg = () => { try { GM_setValue(progKey, { sig, done: [...cache.entries()], size, at: Date.now() }); } catch (e) { /* đầy bộ nhớ: bỏ qua */ } };
+      const sendDetect = async (list, timeout) => {
+        const images = await Promise.all(list.map((f) => fetchFrame(f)));
+        size = size || { w: images[0].w, h: images[0].h };
+        const rid = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+        try {
+          return await backend('POST', '/track/detect', Object.assign({}, body, { request_id: rid, frames: list.map((f, k) => ({ frame: f, image_b64: images[k].b64 })) }), { timeout });
+        } catch (err) {
+          try { await backend('POST', '/track/cancel', { session_id: rid }); } catch (e) { /* bỏ qua */ }
+          throw err;
+        }
+      };
+      const detectList = async (list) => {
+        const todo = list.filter((f) => !cache.has(f));
+        for (let i = 0; i < todo.length; i += q.batch) {
+          if (S.stopRequested) break;
+          const part = todo.slice(i, i + q.batch);
+          let res;
+          try {
+            res = await sendDetect(part, 300000);
+          } catch (err) {
+            if (err.code !== 'E_BACKEND_TIMEOUT' || S.stopRequested) throw err;
+            // quá 5 phút: thử lại từng frame, mỗi frame tối đa 10 phút (thường do VRAM đầy, backend đã được báo dừng lượt cũ)
+            setStatus('Một lượt chạy quá lâu, đang thử lại từng frame (tiến độ đã lưu)…', 'busy');
+            res = { frames: [], warnings: [] };
+            for (const f of part) {
+              const one = await sendDetect([f], 600000);
+              res.frames = res.frames.concat(one.frames);
+            }
+          }
+          for (const fr of res.frames) cache.set(fr.frame, fr.dets);
           warnings = warnings.concat(res.warnings || []);
-          return res.frames.map((fr) => ({ frame: fr.frame, dets: fr.dets }));
-        }, (done, ran) => {
-          const per = (Date.now() - started) / Math.max(ran, 1) / 1000;
+          persistProg();
+        }
+        return list.filter((f) => cache.has(f)).map((f) => ({ frame: f, dets: cache.get(f) }));
+      };
+      let sampled = null;
+      const smart = !video && cfg.trackSampling !== 'all' && q.step > 0 && frames.length > 8;
+      if (smart) {
+        // 0.9.5: không chạy SAM3 trên mọi frame. Chạy keyframe cách đều, rồi kiểm tra ở giữa mỗi khoảng: chỗ nào nội suy
+        // khớp với SAM3 thì giữ nội suy, chỗ nào lệch thì chia đôi và chạy tiếp tới từng frame.
+        sampled = await smartTrackDetect(frames, detectList, (done, ran) => {
+          const per = (Date.now() - started) / Math.max(ran - resumed, 1) / 1000;
           setStatus(`Đang tìm đối tượng: đã xong ${done}/${frames.length} frame (SAM3 chạy ${ran} frame, phần còn lại nội suy đã kiểm tra). `
-            + `Khoảng ${Math.round(per)} giây mỗi lần chạy.`, 'busy');
-        });
+            + `Khoảng ${Math.round(per)} giây mỗi lần chạy.${resumed ? ` Tiếp tục từ lần trước (${resumed} frame có sẵn).` : ''}`, 'busy');
+        }, q.step);
         for (const d of sampled.detected) detected.push(d);
+      } else if (!video) {
+        for (let i = 0; i < frames.length; i += 16) {
+          if (S.stopRequested) break;
+          for (const d of await detectList(frames.slice(i, i + 16))) detected.push(d);
+          const ran = Math.max(detected.length - resumed, 1);
+          const per = (Date.now() - started) / ran / 1000;
+          setStatus(`Đang tìm đối tượng: ${detected.length}/${frames.length} frame. Còn khoảng ${Math.round(per * (frames.length - detected.length))} giây.`, 'busy');
+        }
       }
-      for (let i = sampled ? frames.length : 0; i < frames.length; i += (video ? 2 : 4)) {
+      for (let i = video ? 0 : frames.length; i < frames.length; i += 2) {
         if (S.stopRequested) { await cancelVideo(); break; }
-        const part = frames.slice(i, i + (video ? 2 : 4));
+        const part = frames.slice(i, i + 2);
         const images = await Promise.all(part.map((f) => fetchFrame(f)));
         size = size || { w: images[0].w, h: images[0].h };
         const payload = { frames: part.map((f, k) => ({ frame: f, image_b64: images[k].b64 })) };
@@ -1460,11 +1525,9 @@
             video = null;
             engineNote = ` SAM3 Video lỗi giữa chừng (${String(err.message || err).slice(0, 160)}), đã làm lại bằng cách thường.`;
             detected.length = 0;
-            i = -4;
-            continue;
+            for (const d of await detectList(frames)) detected.push(d);
+            break;
           }
-        } else {
-          res = await backend('POST', '/track/detect', Object.assign({}, body, payload));
         }
         for (const fr of res.frames) detected.push({ frame: fr.frame, dets: fr.dets });
         warnings = warnings.concat(res.warnings || []);
@@ -1475,15 +1538,46 @@
       if (!detected.length) return;
       setStatus('Đang nối ID và chọn keyframe…', 'busy');
       const last = detected[detected.length - 1].frame;
-      const built = await backend('POST', '/track/build', Object.assign({}, body, {
+      const buildBody = () => Object.assign({}, body, {
         frames: detected, width: size.w, height: size.h, start: r.from, stop: r.start === r.from && r.to === r.stop ? r.stop : last,
-        targets: targetsOf(),
-      }));
+        targets: targetsOf(), thresholds: trackThresholds(),
+      });
+      let built = await backend('POST', '/track/build', buildBody());
+      // 0.9.6: frame model mất người giữa hai đoạn của track: SAM3 tìm lại đúng chỗ dự đoán. Thấy thì tính % bị che,
+      // không thấy mới là outside. (Mức Nhẹ bỏ qua bước này.)
+      const rescue = (built.rescue || []).filter((x) => !S.stopRequested);
+      if (rescue.length && qualityLevel() !== 'light' && !video) {
+        const byFrame = new Map();
+        for (const x of rescue) { if (!byFrame.has(x.frame)) byFrame.set(x.frame, []); byFrame.get(x.frame).push({ label_id: x.label_id, box: x.box }); }
+        const list = [...byFrame.keys()];
+        let found = 0;
+        for (let i = 0; i < list.length && !S.stopRequested; i += 4) {
+          setStatus(`Tìm lại người bị mất dấu: ${Math.min(i + 4, list.length)}/${list.length} frame…`, 'busy');
+          const part = list.slice(i, i + 4);
+          const images = await Promise.all(part.map((f) => fetchFrame(f)));
+          const res = await backend('POST', '/track/rescue', Object.assign({}, body, {
+            frames: part.map((f, k) => ({ frame: f, image_b64: images[k].b64, boxes: byFrame.get(f) })) }), { timeout: 600000 });
+          for (const fr of res.frames || []) {
+            if (!fr.dets.length) continue;
+            found += fr.dets.length;
+            const entry = detected.find((d) => d.frame === fr.frame);
+            if (entry) entry.dets = entry.dets.concat(fr.dets); else detected.push({ frame: fr.frame, dets: fr.dets });
+          }
+        }
+        if (found) {
+          detected.sort((a, b) => a.frame - b.frame);
+          setStatus('Đang nối lại ID sau khi tìm lại…', 'busy');
+          built = await backend('POST', '/track/build', buildBody());
+          warnings.push(`Tìm lại được người ở ${found} chỗ model bỏ sót (tính % bị che thay vì đặt outside).`);
+        }
+      }
+      if (!S.stopRequested) GM_setValue(progKey, null);
       S.tracks = built.tracks || [];
       S.trackMeta = {
         from: r.from, to: last, width: size.w, height: size.h, existing,
         warnings: [...new Set(warnings.concat(built.warnings || []))],
         title: (S.resolved.track && S.resolved.track.title) || '',
+        thresholds: built.thresholds || null, thresholdsSource: built.thresholds_source || '',
       };
       S.imgW = size.w; S.imgH = size.h;
       persist('tracks');
@@ -1568,6 +1662,12 @@
     progress(res.size, ran);
     const detected = frames.filter((f) => res.has(f)).map((f) => ({ frame: f, dets: res.get(f) }));
     return { detected, ran };
+  }
+
+  // 0.9.6: ngưỡng % diện tích toàn thân bị che để đặt occluded / outside: theo profile, bạn sửa được (nhớ theo task)
+  function trackThresholds() {
+    const t = ((cfg.trackThresholds || {})[S.job && S.job.task_id]) || null;
+    return t ? { occluded_hidden: t.occ / 100, outside_hidden: t.out / 100 } : {};
   }
 
   function trackColor(tid) { return PALETTE[(tid - 1) % PALETTE.length]; }
@@ -3164,10 +3264,48 @@
         h('span', { text: `Vùng ${i + 1}` }),
         h('button', { class: 'x', type: 'button', text: '✕', title: 'Bỏ vùng này', onclick: () => { const l = zonesOf().slice(); l.splice(i, 1); cfg.zones[S.job.task_id] = l; saveCfg(); clearProposals(); render(); drawOverlay(); } })))) : null,
       h('button', { type: 'button', disabled: busy, onclick: () => startBox('zone') }, ico('box', 's'), h('span', { text: 'Khoanh vùng bỏ qua' }))));
+    out.push(renderThresholds(busy));
+    const prog = GM_getValue(`trackprog:${S.jobId}`, null);
+    out.push(h('div', { class: 'row muted small-text' },
+      h('span', { class: 'grow', text: `Mức cấu hình: ${QUALITY[qualityLevel()].name}${(cfg.quality || 'auto') === 'auto' ? ' (tự động)' : ''}` }),
+      h('button', { class: 'small link', type: 'button', text: 'Đổi', onclick: () => { S.prevTab = S.tab; S.tab = 'settings'; render(); } })));
+    if (prog && prog.done && prog.done.length && !busy) {
+      out.push(h('div', { class: 'note' }, h('span', { text: `Lần trước dừng giữa chừng: đã có ${prog.done.length} frame. Bấm Theo dõi để chạy tiếp (cùng khoảng frame, label). ` }),
+        h('button', { class: 'small link', type: 'button', text: 'Bỏ tiến độ cũ', onclick: () => { GM_setValue(`trackprog:${S.jobId}`, null); render(); } })));
+    }
     out.push(h('button', { class: 'primary', type: 'button', disabled: busy || !labels.length,
       onclick: runTracking, text: targets.length ? `Theo dõi ${targets.length} người qua ${jobFrames(r.from, r.to).length} frame` : `Theo dõi ${jobFrames(r.from, r.to).length} frame` }));
     if (!S.tracks.length) return out;
     return out.concat(renderTrackList(busy));
+  }
+
+  // 0.9.6: ngưỡng occluded / outside theo % diện tích toàn thân bị che. Lấy từ guideline (profile), không có thì mặc định;
+  // bạn sửa được, tool nhớ theo task. Trạng thái đổi theo từng frame (một frame lẻ không làm đổi trạng thái).
+  function renderThresholds(busy) {
+    const prof = (S.resolved && S.resolved.track && S.resolved.track.thresholds) || { occluded_hidden: 0.35, outside_hidden: 0.6, source: 'default' };
+    const tid = S.job && S.job.task_id;
+    const mine = (cfg.trackThresholds || {})[tid] || null;
+    const occ = mine ? mine.occ : Math.round(prof.occluded_hidden * 100);
+    const outv = mine ? mine.out : Math.round(prof.outside_hidden * 100);
+    const source = mine ? 'bạn đặt cho task này' : prof.source === 'guideline' ? 'theo guideline của profile' : 'mặc định (guideline không ghi)';
+    const save = (o, u) => {
+      cfg.trackThresholds = cfg.trackThresholds || {};
+      o = Math.max(5, Math.min(95, Math.round(Number(o) || 0)));
+      u = Math.max(o + 5, Math.min(100, Math.round(Number(u) || 0)));
+      cfg.trackThresholds[tid] = { occ: o, out: u };
+      saveCfg(); render();
+    };
+    const num = (value, onchange, title) => h('input', { type: 'number', min: 5, max: 100, step: 5, value, disabled: busy, title,
+      style: 'width:4.2em', onchange: (ev) => onchange(ev.target.value) });
+    return h('div', { class: 'group', style: 'gap:6px' },
+      h('h4', { text: 'Ngưỡng che khuất' }),
+      h('div', { class: 'row', style: 'flex-wrap:wrap;gap:6px;align-items:center' },
+        h('span', { text: 'occluded từ' }), num(occ, (v) => save(v, outv), 'Phần trăm diện tích toàn thân bị che để đặt occluded'), h('span', { text: '%' }),
+        h('span', { class: 'muted', text: '·' }),
+        h('span', { text: 'outside từ' }), num(outv, (v) => save(occ, v), 'Phần trăm diện tích toàn thân bị che để đặt outside'), h('span', { text: '%' })),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: `Nguồn: ${source}. Tính trên diện tích toàn thân ước lượng (cả phần bị che), đổi theo từng frame; người quay lại vẫn giữ ID cũ.` }),
+      mine ? h('button', { class: 'small link', type: 'button', disabled: busy, text: 'Về ngưỡng của profile',
+        onclick: () => { delete cfg.trackThresholds[tid]; saveCfg(); render(); } }) : null);
   }
 
   function renderTrackList(busy) {
@@ -3509,6 +3647,33 @@
     return out.concat(renderJobQa());
   }
 
+  // 0.9.6: mức cấu hình giống chỉnh đồ hoạ trong game. Mỗi mức là một dòng chọn được, có giải thích ngắn;
+  // dưới cùng là VRAM backend đang dùng và các model đang nạp.
+  function vramText() {
+    const v = S.health && S.health.vram;
+    if (!v || !v.total_mb) return '';
+    const used = v.total_mb - (v.free_mb || 0);
+    const loaded = (v.loaded || []).map((n) => ({ body: 'pose người', face: 'điểm mặt', video: 'SAM3 Video', reid: 'nhận lại người', depth: 'độ sâu', wholebody: 'pose toàn thân' }[n] || n));
+    return `VRAM: ${(used / 1024).toFixed(1)}/${(v.total_mb / 1024).toFixed(1)} GB · model phụ đang nạp: ${loaded.length ? loaded.join(', ') : 'không'}`
+      + (v.refreshes ? ` · đã dọn ${v.refreshes} lần` : '');
+  }
+  function renderQuality() {
+    const auto = autoQuality();
+    const opts = [['auto', `Tự động (máy này: ${QUALITY[auto].name})`, 'Chọn theo VRAM của GPU backend']]
+      .concat(Object.entries(QUALITY).map(([k, q]) => [k, q.name, q.note]));
+    const cur = cfg.quality || 'auto';
+    const v = S.health && S.health.vram;
+    const low = v && v.total_mb && v.free_mb < 800;
+    return h('div', { class: 'group', role: 'radiogroup', 'aria-label': 'Mức cấu hình' },
+      h('h4', { text: 'Mức cấu hình' }),
+      h('p', { class: 'muted small-text', style: 'margin:0', text: 'Giống chỉnh đồ hoạ trong game: mức cao chính xác hơn nhưng tốn VRAM và chậm hơn. Backend tự nhả model không dùng tới để không chậm dần.' }),
+      opts.map(([k, name, note]) => h('label', { class: 'check' + (cur === k ? ' on' : '') },
+        h('input', { type: 'radio', name: 'sam3q', checked: cur === k, onchange: () => { cfg.quality = k; saveCfg(); render(); } }),
+        h('span', {}, name, h('span', { class: 'sub', text: note })))),
+      vramText() ? h('div', { class: 'muted small-text', text: vramText() }) : null,
+      low ? h('div', { class: 'note', text: 'VRAM gần đầy: nên hạ một mức, hoặc đóng chương trình khác đang dùng GPU.' }) : null);
+  }
+
   function renderSettings() {
     const text = (label, key, type, hint) => h('label', { class: 'field' }, h('span', { text: label }),
       h('input', { type: type || 'text', value: String(cfg[key] ?? ''), onchange: (ev) => { cfg[key] = ev.target.value.trim(); saveCfg(); } }),
@@ -3548,8 +3713,9 @@
             if (!S.labels.length) setStatus(`Backend kết nối tốt (${S.health.engine} trên ${S.health.device}), nhưng ${NO_LABELS}`, 'error');
             else setStatus(`Kết nối tốt: ${S.health.engine} trên ${S.health.device}, phiên bản ${S.health.version}. Đã đọc ${S.labels.length} label.`, 'ok');
           }) }))),
+      renderQuality(),
       group('Khi duyệt',
-        sw('Chạy sẵn gợi ý cho frame tiếp theo', 'prefetch', 'Chuyển frame là có đề xuất ngay'),
+        sw('Chạy sẵn gợi ý cho frame tiếp theo', 'prefetch', qualityLevel() === 'light' ? 'Tắt ở mức Nhẹ để đỡ VRAM' : 'Chuyển frame là có đề xuất ngay'),
         sw('Tự gợi ý khi chuyển frame', 'autoPropose'),
         sw('Nhắc khi frame có ít vật hơn frame bên cạnh', 'neighborHints', 'Có thể bạn đã sót vật')),
       group('Khi ghi vào CVAT',
@@ -4051,7 +4217,7 @@
     return { res, existing, w: fr.w, h: fr.h };
   }
   function schedulePrefetch(fromFrame) {
-    if (!cfg.prefetch || !S.resolved || !S.jobId) return;
+    if (!cfg.prefetch || !QUALITY[qualityLevel()].prefetch || !S.resolved || !S.jobId) return;
     const target = nextFrameOf(fromFrame);
     if (target === null || pfInflight[target] || S.batch[target]) return;
     const job = S.jobId, sig = pfSig();

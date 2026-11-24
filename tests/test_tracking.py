@@ -19,7 +19,7 @@ GREEN[10] = 1.0
 def person_a(f):
     """Đi từ trái sang phải, lại gần camera dần (box to ra)."""
     h = 200 + f * 0.8
-    x = 100 + f * 9
+    x = 100 + f * 7       # 0.9.6: luôn nằm trong khung (box ra ngoài mép là đã ra khỏi khung: outside)
     return [x, 600 - h, x + h * 0.4, 600]
 
 
@@ -79,10 +79,11 @@ def test_ids_survive_crossing_and_short_occlusion(store):
     assert len(long_tracks) == 2, [(t["tid"], t["start"], t["end"]) for t in tracks]
     a = next(t for t in long_tracks if t["start"] == 0 and t["shapes"][0]["points"][0] < 640)
     b = next(t for t in long_tracks if t is not a)
-    assert a["end"] == 149 and b["end"] == 149 and a["gaps"] == 1
+    # 0.9.6: B đi hẳn ra khỏi mép trái từ frame 136 (box toàn nằm ngoài ảnh) -> outside từ đó
+    assert a["end"] == 149 and b["end"] == 135 and a["gaps"] == 1
     assert any(f["code"] == "id_check" and "khuất" in f["message"] for f in a["flags"])
     # B chạy hết 150 frame không đổi ID dù đi cắt ngang A ở khoảng frame 58
-    assert b["visible_frames"] == 150
+    assert b["visible_frames"] == 136 and b["shapes"][-1]["frame"] == 136 and b["shapes"][-1]["outside"]
 
 
 def test_outside_during_full_occlusion_then_back(store):

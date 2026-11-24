@@ -208,7 +208,8 @@ def where_text(box: list[float], width: int, height: int) -> str:
 
 
 def build_request(image: np.ndarray, proposals: list[dict], cfgs: list[dict], profile: dict, tags: list[dict],
-                  tag_cfgs: list[dict], memory: dict, filename: str = "", hints: Optional[dict] = None) -> tuple[str, list[bytes], list[dict]]:
+                  tag_cfgs: list[dict], memory: dict, filename: str = "", hints: Optional[dict] = None,
+                  max_crops: int = MAX_CROPS) -> tuple[str, list[bytes], list[dict]]:
     h, w = image.shape[:2]
     items = []
     for i, p in enumerate(proposals, 1):
@@ -221,7 +222,7 @@ def build_request(image: np.ndarray, proposals: list[dict], cfgs: list[dict], pr
     crops_note = []
     small = sorted((it for it in items if (it["bbox"][2] - it["bbox"][0]) < 0.3 * w and (it["bbox"][3] - it["bbox"][1]) < 0.3 * h
                     and (proposals[it["index"]].get("elements") or any(cfg_by_id(cfgs, proposals[it["index"]]).get("label_attributes") or []))),
-                   key=lambda it: -(it["bbox"][2] - it["bbox"][0]) * (it["bbox"][3] - it["bbox"][1]))[:MAX_CROPS]
+                   key=lambda it: -(it["bbox"][2] - it["bbox"][0]) * (it["bbox"][3] - it["bbox"][1]))[:max(0, int(max_crops))]
     for it in small:
         c = crop(image, it["bbox"])
         if c.size:

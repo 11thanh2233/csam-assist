@@ -250,6 +250,22 @@ def min_size_px(markdown: str, label_name: str) -> Optional[int]:
     return None
 
 
+def hidden_thresholds(markdown: str) -> tuple[Optional[float], Optional[float]]:
+    """% bị che để đặt occluded / outside nếu guideline ghi (vd "che hơn 35% thì occluded", "trên 60%... outside")."""
+    occ = out = None
+    for sent in re.split(r"(?<=[.!?\n])", markdown or ""):
+        low = sent.lower()
+        m = re.search(r"(\d{1,2}(?:[.,]\d)?)\s*%", low)
+        if not m or not re.search(r"che|occlu|hidden|khuất", low):
+            continue
+        v = float(m.group(1).replace(",", "."))
+        if "outside" in low and out is None:
+            out = v
+        elif "occluded" in low and occ is None:
+            occ = v
+    return occ, out
+
+
 STRATEGIES = ("instance", "region", "ground", "edge", "centerline")
 STRATEGY_TEXT = {
     "region": "gộp các mảnh gần nhau thành một vùng, lấy viền ngoài (vd cả vùng vạch qua đường là một polygon)",
@@ -283,7 +299,8 @@ LLM_SCHEMA = (
     '"strategy": cách dựng hình, một trong "instance" (mỗi vật một hình), "region" (gộp các mảnh thành một vùng), '
     '"ground" (vùng mặt đường liền với xe), "edge" (mép của vùng mặt đường), "centerline" (đường giữa vệt sơn)}], '
     '"exclude": [những thứ guideline dặn KHÔNG gán, ví dụ poster, gương], '
-    '"tracking": {"reid_max_gap_frames": số hoặc null, "max_occluded_keyframes": số hoặc null}}'
+    '"tracking": {"reid_max_gap_frames": số hoặc null, "max_occluded_keyframes": số hoặc null, '
+    '"occluded_hidden_pct": % diện tích toàn thân bị che để đặt occluded hoặc null, "outside_hidden_pct": % để đặt outside hoặc null}}'
 )
 
 
@@ -487,6 +504,15 @@ def build(task_labels: list[dict], profiles: dict[str, dict], *, project: Option
         tracking["reid_max_gap_frames"] = int(track_hint["reid_max_gap_frames"])
     if isinstance(track_hint, dict) and track_hint.get("max_occluded_keyframes"):
         tracking["max_occluded_frames"] = int(track_hint["max_occluded_keyframes"])
+    # 0.9.6: ngưỡng % diện tích toàn thân bị che để đặt occluded / outside: theo guideline của project
+    occ_pct, out_pct = hidden_thresholds(markdown)
+    if isinstance(track_hint, dict):
+        occ_pct = track_hint.get("occluded_hidden_pct") or occ_pct
+        out_pct = track_hint.get("outside_hidden_pct") or out_pct
+    if occ_pct:
+        tracking["occluded_hidden"] = round(float(occ_pct) / 100, 3)
+    if out_pct:
+        tracking["outside_hidden"] = round(float(out_pct) / 100, 3)
     rules["tracking"] = tracking
     if any((l.get("type") or "").lower() == "cuboid" for l in task_labels):
         from . import lidar
