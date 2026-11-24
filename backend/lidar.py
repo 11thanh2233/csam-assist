@@ -160,15 +160,55 @@ def ground_z(plane: np.ndarray, x: float, y: float) -> float:
     return float(plane[0] * x + plane[1] * y + plane[2])
 
 
+# ------------------------------------------------- mặt đất cục bộ (0.9.6) ---
+class LocalGround:
+    """Mặt đất theo từng ô 8 m (đường dốc, lề cao, bãi đỗ thấp hơn mặt đường): mỗi ô lấy mức thấp của các điểm gần
+    mặt phẳng chung; ô ít điểm dùng mặt phẳng chung. Đáy cuboid đặt theo ô dưới vật, không theo một mặt phẳng."""
+
+    def __init__(self, points: np.ndarray, plane: np.ndarray, cell: float = 8.0, band: float = 0.6):
+        self.plane, self.cell = plane, cell
+        self.grid: dict[tuple[int, int], float] = {}
+        if not len(points):
+            return
+        pz = points[:, 0] * plane[0] + points[:, 1] * plane[1] + plane[2]
+        near = np.abs(points[:, 2] - pz) < band
+        pts = points[near]
+        if not len(pts):
+            return
+        ij = np.floor(pts[:, :2] / cell).astype(np.int64)
+        order = np.lexsort((ij[:, 1], ij[:, 0]))
+        ij, z = ij[order], pts[order, 2]
+        keys, start = np.unique(ij, axis=0, return_index=True)
+        bounds = list(start[1:]) + [len(z)]
+        for k, a, b in zip(keys, start, bounds):
+            if b - a >= 15:
+                self.grid[(int(k[0]), int(k[1]))] = float(np.percentile(z[a:b], 20))
+
+    def z(self, x, y):
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        base = self.plane[0] * x + self.plane[1] * y + self.plane[2]
+        if not self.grid:
+            return base
+        i, j = np.floor(x / self.cell).astype(np.int64), np.floor(y / self.cell).astype(np.int64)
+        flat_i, flat_j, flat_b = np.atleast_1d(i), np.atleast_1d(j), np.atleast_1d(base).astype(float).copy()
+        for n in range(len(flat_b)):
+            g = self.grid.get((int(flat_i[n]), int(flat_j[n])))
+            if g is not None:
+                flat_b[n] = g
+        return flat_b.reshape(np.shape(base)) if np.ndim(base) else float(flat_b[0])
+
+
 # --------------------------------------------------------------- cụm ---
-def clusters(points: np.ndarray, plane: np.ndarray, *, cell: float = 0.25, max_range: float = 60.0, ego: float = 2.5,
-             min_height: float = 0.25, max_height: float = 5.0, min_points: int = 5) -> list[np.ndarray]:
-    """Điểm không thuộc mặt đường -> các cụm (lưới BEV, ô 25 cm, nối 8 hướng)."""
+def clusters(points: np.ndarray, ground, *, cell: float = 0.25, max_range: float = 60.0, ego: float = 2.5,
+             min_height: float = 0.25, max_height: float = 5.0, min_points: int = 3) -> list[np.ndarray]:
+    """Điểm không thuộc mặt đất -> các cụm (lưới BEV, ô 25 cm, nối 8 hướng). ground: LocalGround hoặc mặt phẳng."""
     from scipy import ndimage
 
     if not len(points):
         return []
-    hz = points[:, 2] - (points[:, 0] * plane[0] + points[:, 1] * plane[1] + plane[2])
+    gz = ground.z(points[:, 0], points[:, 1]) if hasattr(ground, "z") else \
+        points[:, 0] * ground[0] + points[:, 1] * ground[1] + ground[2]
+    hz = points[:, 2] - gz
     r = np.hypot(points[:, 0], points[:, 1])
     keep = (hz > min_height) & (hz < max_height) & (r < max_range) & ~((np.abs(points[:, 0]) < ego) & (np.abs(points[:, 1]) < ego * 0.6))
     pts = points[keep]
@@ -181,16 +221,46 @@ def clusters(points: np.ndarray, plane: np.ndarray, *, cell: float = 0.25, max_r
     grid[ij[:, 0], ij[:, 1]] = True
     lab, n = ndimage.label(grid, structure=np.ones((3, 3), bool))
     ids = lab[ij[:, 0], ij[:, 1]]
-    out = []
-    for k in range(1, n + 1):
-        c = pts[ids == k]
-        if len(c) >= min_points:
-            out.append(c)
-    return out
+    groups = [pts[ids == k] for k in range(1, n + 1)]
+    groups = _merge_sparse([g for g in groups if len(g)])
+    return [c for c in groups if len(c) >= min_points]
 
 
-def fit_box(c: np.ndarray, plane: np.ndarray) -> dict:
-    """Cuboid cho một cụm: chữ nhật nhỏ nhất bao điểm nhìn từ trên (dài, rộng, yaw), đáy chạm mặt đường."""
+def _merge_sparse(groups: list[np.ndarray]) -> list[np.ndarray]:
+    """0.9.6: vật ở xa có điểm thưa nên bị vỡ thành nhiều cụm nhỏ: nối các cụm nhỏ nằm sát nhau, khoảng nối tăng theo
+    khoảng cách (25 cm + 1 cm mỗi mét). Cụm lớn (>= 200 điểm) giữ nguyên để không dính hai xe đỗ sát nhau."""
+    small = [i for i, g in enumerate(groups) if len(g) < 200]
+    if len(small) < 2:
+        return groups
+    boxes = {i: (groups[i][:, 0].min(), groups[i][:, 1].min(), groups[i][:, 0].max(), groups[i][:, 1].max()) for i in small}
+    parent = {i: i for i in small}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a_i, a in enumerate(small):
+        ba = boxes[a]
+        r = math.hypot((ba[0] + ba[2]) / 2, (ba[1] + ba[3]) / 2)
+        eps = 0.25 + 0.01 * r
+        for b in small[a_i + 1:]:
+            bb = boxes[b]
+            dx = max(bb[0] - ba[2], ba[0] - bb[2], 0.0)
+            dy = max(bb[1] - ba[3], ba[1] - bb[3], 0.0)
+            if math.hypot(dx, dy) <= eps:
+                parent[find(a)] = find(b)
+    merged: dict[int, list[np.ndarray]] = {}
+    for i in small:
+        merged.setdefault(find(i), []).append(groups[i])
+    big = [g for i, g in enumerate(groups) if i not in parent]
+    return big + [np.vstack(v) for v in merged.values()]
+
+
+def fit_box(c: np.ndarray, ground) -> dict:
+    """Cuboid cho một cụm: chữ nhật nhỏ nhất bao điểm nhìn từ trên (dài, rộng, yaw), đáy chạm mặt đất cục bộ.
+    `gap`: điểm thấp nhất của cụm cao hơn mặt đất bao nhiêu mét (vật lơ lửng: biển, tán cây)."""
     import cv2
 
     (cx, cy), (a, b), ang = cv2.minAreaRect(c[:, :2].astype(np.float32))
@@ -198,11 +268,11 @@ def fit_box(c: np.ndarray, plane: np.ndarray) -> dict:
     length, width = float(a), float(b)
     if width > length:
         length, width, yaw = width, length, yaw + math.pi / 2
-    base = ground_z(plane, cx, cy)
+    base = float(ground.z(cx, cy)) if hasattr(ground, "z") else ground_z(ground, cx, cy)
     top = float(c[:, 2].max())
     height = max(top - base, 0.2)
     return {"center": [float(cx), float(cy), base + height / 2], "size": [max(length, 0.2), max(width, 0.2), height],
-            "yaw": _wrap(yaw), "points": int(len(c))}
+            "yaw": _wrap(yaw), "points": int(len(c)), "gap": round(float(c[:, 2].min()) - base, 2)}
 
 
 def _wrap(a: float) -> float:
@@ -210,9 +280,22 @@ def _wrap(a: float) -> float:
 
 
 # ------------------------------------------------------------ class ---
+VEHICLES = ("car", "truck", "trailer", "bus", "construction vehicle")
+VRU = ("pedestrian", "two wheels")
+# Phạm vi gán của guideline 3D Cuboid: xe <= 50 m, người / xe hai bánh <= 40 m, rào chắn <= 30 m
+DEFAULT_RANGES = {**{k: 50.0 for k in VEHICLES}, **{k: 40.0 for k in VRU}, "barrier": 30.0}
+# Số điểm tối thiểu theo khoảng cách (càng xa càng thưa): [đến m, số điểm]; người / xe hai bánh cần một nửa
+DEFAULT_MIN_POINTS = [[20.0, 25], [35.0, 12], [1000.0, 6]]
+SPLITTABLE = ("barrier",)          # một dãy rào chắn liền nhau: tách thành từng tấm
+
+
 def class_key(name: str) -> str:
     key = norm(_ascii(name)).replace("_", " ")
     return ALIASES.get(key, key)
+
+
+def class_group(key: str) -> str:
+    return "vehicle" if key in VEHICLES else ("vru" if key in VRU else key)
 
 
 def parse_size_table(markdown: str) -> dict[str, list]:
@@ -242,51 +325,232 @@ def parse_size_table(markdown: str) -> dict[str, list]:
     return out
 
 
-def classify(size: list[float], table: dict[str, list], allowed: dict[str, int], tol: float = 0.15) -> tuple[Optional[int], list[str], float]:
-    """(label_id, các class cùng khớp, điểm 0..1). Cho phép lệch 15% vì cụm điểm thường nhỏ hơn vật thật một chút."""
+def parse_ranges(markdown: str) -> dict[str, float]:
+    """Phạm vi gán theo nhóm class nếu guideline ghi ('Vehicle ... trong 50 m', 'VRU ≤ 40m', 'Barrier: 30 m')."""
+    out: dict[str, float] = {}
+    groups = {"vehicle": VEHICLES, "ô tô": VEHICLES, "phương tiện": VEHICLES, "vru": VRU, "pedestrian": ("pedestrian",), "người": ("pedestrian",),
+              "two wheel": ("two wheels",), "barrier": ("barrier",), "rào": ("barrier",)}
+    for sent in re.split(r"(?<=[.!?\n])", markdown or ""):
+        low = sent.lower()
+        m = re.search(r"(\d{2,3})\s*m\b", low)
+        if not m or not re.search(r"range|phạm vi|khoảng cách|within|trong vòng|≤|<=|tối đa|max", low):
+            continue
+        for word, keys in groups.items():
+            if word in low:
+                for k in keys:
+                    out.setdefault(k, float(m.group(1)))
+    return out
+
+
+def min_points_at(dist: float, key: str, rule: dict) -> int:
+    """Số điểm tối thiểu của một cụm ở khoảng cách dist. rule['min_points_scale'][class]: hệ số đã tự chỉnh theo
+    cuboid bạn đánh (0.9.6, mục Tự chỉnh của job 3D)."""
+    table = rule.get("min_points_by_range") or DEFAULT_MIN_POINTS
+    n = next((int(c) for d, c in table if dist <= float(d)), int(table[-1][1]))
+    if key in VRU:
+        n = n // 2
+    scale = float((rule.get("min_points_scale") or {}).get(key, 1.0))
+    return max(3, int(round(n * scale)))
+
+
+def _dim_score(v: float, lo: float, hi: float, tol: float, partial: bool) -> float:
+    """1 khi nằm trong khoảng (nới tol); nhỏ hơn: được phép khi một phần bị che (partial), điểm giảm theo tỉ lệ."""
+    if lo * (1 - tol) <= v <= hi * (1 + tol):
+        return 1.0
+    if v > hi * (1 + tol):
+        return 0.0                                    # lớn hơn bảng: không phải class này
+    if partial:
+        return max(0.0, min(1.0, v / lo))
+    return max(0.0, 1.0 - (lo - v) / lo * 3)
+
+
+def classify(size: list[float], table: dict[str, list], allowed: dict[str, int], tol: float = 0.15,
+             height_tol: float = 0.12) -> tuple[Optional[int], list[str], float]:
+    """(label_id, các class cùng khớp, điểm 0..1).
+
+    0.9.6 (cuboid lệch class): CHIỀU CAO phải khớp bảng (LiDAR gần như luôn thấy đỉnh vật); dài / rộng được nhỏ hơn bảng
+    (vật bị che một phần, chỉ thấy một mặt) nhưng không được lớn hơn. Cụm không khớp class nào thì bỏ, không gán bừa."""
+    length, width, height = size
     scored = []
     for key, label_id in allowed.items():
         best = 0.0
         for ranges in table.get(key) or []:
-            s = 0.0
-            for v, (lo, hi) in zip(size, ranges):
-                if lo * (1 - tol) <= v <= hi * (1 + tol):
-                    s += 1.0
-                else:
-                    gap = (lo - v) / lo if v < lo else (v - hi) / hi
-                    s += max(0.0, 1.0 - gap * 3)
-            best = max(best, s / 3)
+            (llo, lhi), (wlo, whi), (hlo, hhi) = ranges
+            if (wlo + whi) > (llo + lhi):                 # bảng ghi rộng > dài (người): so theo cạnh lớn / nhỏ
+                (llo, lhi), (wlo, whi) = (wlo, whi), (llo, lhi)
+            hs = _dim_score(height, hlo, hhi, height_tol, partial=False)
+            if hs < 0.75:
+                continue
+            # chỉ thấy một mặt (đuôi / đầu xe): cạnh dài đo được là bề RỘNG của vật -> thử cả hai cách ghép cạnh
+            for a, b in ((length, width), (width, length)):
+                ls = _dim_score(a, llo, lhi, tol, partial=True)
+                ws = _dim_score(b, wlo, whi, tol, partial=True)
+                if ls == 0.0 or ws == 0.0 or max(ls, ws) < 1.0:
+                    continue                              # lớn hơn bảng; hoặc không cạnh nào đủ (bị che vẫn thấy trọn một mặt)
+                # vật cụ thể hơn thắng khi hai class cùng khớp: khoảng hẹp và số đo gần giữa khoảng (xe con 4.5 m là
+                # car, không phải trailer 2–5 m)
+                spec = []
+                for v, (lo, hi) in ((a, (llo, lhi)), (b, (wlo, whi)), (height, (hlo, hhi))):
+                    mid, half = (lo + hi) / 2, max((hi - lo) / 2, 1e-3)
+                    spec.append(max(0.0, 1 - abs(v - mid) / half) / (1 + (hi - lo) / mid))
+                best = max(best, 0.5 * hs + 0.25 * ls + 0.25 * ws + 0.08 * float(np.mean(spec)))
         if best > 0:
             scored.append((best, key, label_id))
     scored.sort(reverse=True)
     if not scored or scored[0][0] < 0.6:
         return None, [], 0.0
-    close = [k for s, k, _ in scored if s >= scored[0][0] - 0.05]
-    return scored[0][2], close, scored[0][0]
+    close = [k for s, k, _ in scored if s >= scored[0][0] - 0.15]      # gần bằng nhau: gắn cờ để xem ảnh camera
+    return scored[0][2], close, min(1.0, scored[0][0])
+
+
+def complete_partial(box: dict, rows: list, tol: float = 0.15) -> Optional[str]:
+    """Cụm chỉ thấy một phần vật (đuôi xe, nửa xe bị che): xoay cho đúng hướng nếu cạnh dài đo được là bề rộng, kéo
+    cạnh thiếu tới cỡ nhỏ nhất của bảng, đẩy tâm ra xa cảm biến (phần khuất nằm phía sau mặt thấy được).
+    Trả câu mô tả nếu có sửa."""
+    length, width, height = box["size"]
+    best = None
+    for ranges in rows:
+        (llo, lhi), (wlo, whi), _ = ranges
+        if (wlo + whi) > (llo + lhi):
+            (llo, lhi), (wlo, whi) = (wlo, whi), (llo, lhi)
+        for swap, (a, b) in ((False, (length, width)), (True, (width, length))):
+            ls, ws = _dim_score(a, llo, lhi, tol, True), _dim_score(b, wlo, whi, tol, True)
+            if ls and ws and max(ls, ws) >= 1.0 and (best is None or ls + ws > best[0]):
+                best = (ls + ws, swap, a, b, llo, wlo)
+    if best is None:
+        return None
+    _, swap, a, b, llo, wlo = best
+    yaw = box["yaw"] + (math.pi / 2 if swap else 0.0)
+    new_l, new_w = max(a, llo), max(b, wlo)
+    if not swap and new_l == a and new_w == b:
+        return None
+    ux, uy = math.cos(yaw), math.sin(yaw)               # trục dài mới
+    cx, cy = box["center"][:2]
+    for grow, (ax, ay) in ((new_l - a, (ux, uy)), (new_w - b, (-uy, ux))):
+        if grow > 0:
+            sign = 1.0 if cx * ax + cy * ay >= 0 else -1.0     # phía xa cảm biến
+            cx, cy = cx + sign * ax * grow / 2, cy + sign * ay * grow / 2
+    box["center"] = [float(cx), float(cy), box["center"][2]]
+    box["size"] = [float(new_l), float(new_w), height]
+    box["yaw"] = _wrap(yaw)
+    if new_l > a or new_w > b:
+        return f"Chỉ thấy một phần vật: kích thước kéo theo bảng ({new_l:.1f} × {new_w:.1f} m), tâm dời ra phía khuất. Kiểm tra ở Top view."
+    return None
+
+
+def split_row(c: np.ndarray, box: dict, ground, piece: float) -> list[np.ndarray]:
+    """Một dãy vật liền nhau (rào chắn): chia cụm theo chiều dài thành từng đoạn cỡ một vật."""
+    n = max(2, int(round(box["size"][0] / piece)))
+    axis = np.array([math.cos(box["yaw"]), math.sin(box["yaw"])])
+    t = (c[:, :2] - np.array(box["center"][:2])) @ axis
+    edges = np.linspace(t.min(), t.max() + 1e-6, n + 1)
+    return [c[(t >= a) & (t < b)] for a, b in zip(edges, edges[1:])]
 
 
 # ------------------------------------------------------------- frame ---
-def detect(points: np.ndarray, labels: dict[str, int], table: dict[str, list], rule: Optional[dict] = None) -> dict:
-    """Một frame: cuboid đề xuất kèm class. labels: {class_key: label_id} của các label cuboid trong task."""
+REASONS = {"no_class": "kích thước không khớp class nào (chiều cao sai, hoặc lớn hơn bảng)",
+           "range": "xa hơn phạm vi gán của class", "few_points": "quá ít điểm so với khoảng cách",
+           "floating": "lơ lửng trên mặt đất (biển, tán cây, mái)", "too_big": "quá lớn (tường, nhà, cây)",
+           "remembered": "giống vật bạn đã bỏ nhiều lần"}
+
+
+def _looks_dropped(key: str, size: list[float], dropped: list[dict]) -> int:
+    n = 0
+    for d in dropped or []:
+        if d.get("cls") == key and all(abs(a - b) <= 0.1 * max(b, 0.3) for a, b in zip(size, d.get("size") or [])):
+            n += int(d.get("count", 1))
+    return n
+
+
+def detect(points: np.ndarray, labels: dict[str, int], table: dict[str, list], rule: Optional[dict] = None,
+           debug: bool = False) -> dict:
+    """Một frame: cuboid đề xuất kèm class. labels: {class_key: label_id} của các label cuboid trong task.
+
+    0.9.6: mặt đất cục bộ, phạm vi gán theo class, số điểm tối thiểu theo khoảng cách, bỏ cụm lơ lửng, tách dãy rào
+    chắn, bỏ cụm không khớp class nào, hạ cụm giống vật bạn đã bỏ. debug=True trả thêm điểm nhìn từ trên (BEV) và
+    các cụm bị bỏ kèm lý do (bản đồ nhỏ và mục "Kiểm tra dữ liệu job 3D" ở panel)."""
     rule = rule or {}
     plane, ratio = ground_plane(points)
-    out, warnings = [], []
+    ground = LocalGround(points, plane) if rule.get("local_ground", True) else plane
+    ranges = dict(DEFAULT_RANGES, **(rule.get("ranges") or {}))
+    max_gap = float(rule.get("max_base_gap_m", 0.5))
+    by_label = {v: k for k, v in labels.items()}
+    want_range = max([ranges.get(k, 60.0) for k in labels] or [60.0])
+    out, warnings, rejected = [], [], []
+    stats = {k: 0 for k in REASONS}
     if ratio < 0.2:
         warnings.append("Không tìm được mặt đường rõ ràng: đáy cuboid có thể lệch, kiểm tra ở Side view.")
-    for c in clusters(points, plane, max_range=float(rule.get("max_range_m", 60)), min_points=int(rule.get("min_points", 5))):
-        box = fit_box(c, plane)
+
+    def reject(box, why):
+        stats[why] += 1
+        if debug and len(rejected) < 300:
+            rejected.append({"center": [round(v, 2) for v in box["center"]], "size": [round(v, 2) for v in box["size"]],
+                             "yaw": round(box["yaw"], 3), "points": box["points"], "gap": box["gap"], "reason": why})
+
+    def consider(c, box, allow_split=True):
         if box["size"][0] > 20 or box["size"][2] > 4.6:
-            continue                                        # tường, nhà, cây: không phải vật cần gán
+            return reject(box, "too_big")
+        if box["gap"] > max_gap:
+            return reject(box, "floating")
         label_id, close, score = classify(box["size"], table, labels)
         if label_id is None:
-            continue
+            # dãy rào chắn liền nhau: tách rồi xét từng tấm
+            for key in SPLITTABLE:
+                if allow_split and key in labels and table.get(key):
+                    (llo, lhi), (wlo, whi), (hlo, hhi) = table[key][0]
+                    if box["size"][0] > lhi * 1.2 and box["size"][1] <= whi * 1.3 and hlo * 0.85 <= box["size"][2] <= hhi * 1.15:
+                        for part in split_row(c, box, ground, (llo + lhi) / 2):
+                            if len(part) >= 3:
+                                consider(part, fit_box(part, ground), allow_split=False)
+                        return None
+            return reject(box, "no_class")
+        key = by_label[label_id]
+        note = complete_partial(box, table.get(key) or [])
+        dist = math.hypot(box["center"][0], box["center"][1])
+        if dist > ranges.get(key, 60.0):
+            return reject(box, "range")
+        need = min_points_at(dist, key, rule)
+        if box["points"] < need:
+            return reject(box, "few_points")
         flags = []
         if len(close) > 1:
             flags.append({"code": "UNCERTAIN_CLASS", "message": f"Kích thước khớp nhiều class: {', '.join(close)}. Xem ảnh camera để chọn."})
-        if box["points"] < int(rule.get("sparse_points", 30)):
-            flags.append({"code": "LOW_VISIBILITY", "message": f"Chỉ {box['points']} điểm LiDAR: kích thước, hướng có thể sai."})
-        out.append(dict(box, label_id=label_id, score=round(score, 3), flags=flags))
-    return {"objects": out, "warnings": warnings, "ground_ratio": round(ratio, 3)}
+        if box["points"] < 2 * need:
+            flags.append({"code": "LOW_VISIBILITY", "message": f"Chỉ {box['points']} điểm LiDAR ở {dist:.0f} m: kích thước, hướng có thể sai."})
+        if note:
+            flags.append({"code": "ATTRIBUTE_CHECK", "message": note})
+        if box["gap"] > 0.25:
+            flags.append({"code": "ATTRIBUTE_CHECK", "message": f"Phần dưới không có điểm (đáy cách đất {box['gap']:.2f} m): có thể bị che, đáy đặt theo mặt đất."})
+        conf = score * min(1.0, box["points"] / (3.0 * need))
+        checked = True
+        seen = _looks_dropped(key, box["size"], rule.get("dropped") or [])
+        if seen >= 2:
+            checked = False
+            stats["remembered"] += 1
+            flags.append({"code": "LEARNED", "message": f"Giống vật bạn đã bỏ {seen} lần (cùng class, cùng cỡ): tool bỏ tick sẵn."})
+            conf *= 0.5
+        out.append(dict(box, label_id=label_id, cls=key, score=round(score, 3), confidence=round(conf, 3),
+                        distance=round(dist, 1), min_points=need, flags=flags, checked=checked))
+        return None
+
+    for c in clusters(points, ground, max_range=want_range + (12 if debug else 2)):
+        consider(c, fit_box(c, ground))
+    res = {"objects": out, "warnings": warnings, "ground_ratio": round(ratio, 3), "stats": stats}
+    if debug:
+        sample = points[np.hypot(points[:, 0], points[:, 1]) < want_range + 5]
+        if len(sample) > 4000:
+            sample = sample[np.random.default_rng(0).choice(len(sample), 4000, replace=False)]
+        gz = ground.z(sample[:, 0], sample[:, 1]) if hasattr(ground, "z") else sample[:, 0] * plane[0] + sample[:, 1] * plane[1] + plane[2]
+        res["bev"] = {"points": [[round(float(x), 1), round(float(y), 1), int(h > 0.25)] for (x, y, _), h in zip(sample, sample[:, 2] - gz)],
+                      "range": want_range}
+        res["rejected"] = rejected
+        r = np.hypot(points[:, 0], points[:, 1]) if len(points) else np.zeros(1)
+        res["info"] = {"points": int(len(points)), "max_range_m": round(float(r.max()), 1),
+                       "ground_z": round(float(plane[2]), 2), "ground_cells": len(getattr(ground, "grid", {}) or {}),
+                       "ego_hole": bool(len(points) and np.count_nonzero(r < 2.0) < 0.002 * len(points)),
+                       "x_span": [round(float(points[:, 0].min()), 1), round(float(points[:, 0].max()), 1)] if len(points) else [0, 0],
+                       "y_span": [round(float(points[:, 1].min()), 1), round(float(points[:, 1].max()), 1)] if len(points) else [0, 0]}
+    return res
 
 
 def cvat_points(center, size, yaw) -> list[float]:
@@ -381,7 +645,11 @@ def build_tracks(frames: list[dict], rule: Optional[dict] = None, names: Optiona
         keys = _keyframes(shapes)
         out.append({"tid": i, "label_id": t["label_id"], "label_name": names.get(t["label_id"], str(t["label_id"])),
                     "start": fs[0], "end": fs[-1], "size": [round(v, 2) for v in size], "ref_frame": ref,
-                    "shapes": keys, "keyframes": len(keys), "flags": flags + _merge_flags(t), "checked": True})
+                    "shapes": keys, "keyframes": len(keys), "flags": flags + _merge_flags(t),
+                    # 0.9.6: phần lớn các frame bị bỏ tick (giống vật bạn hay bỏ, ảnh camera thấy vật khác) thì track cũng bỏ tick
+                    "checked": sum(1 for f in fs if t["obs"][f].get("checked", True)) >= 0.5 * len(fs),
+                    "confidence": round(float(np.mean([t["obs"][f].get("confidence", t["obs"][f].get("score", 0.5)) for f in fs])), 3),
+                    "cls": t["obs"][ref].get("cls")})
     return {"tracks": out, "warnings": [] if out else ["Không dựng được track cuboid nào."]}
 
 

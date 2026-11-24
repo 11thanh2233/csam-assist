@@ -201,6 +201,42 @@ class ProjectMemory:
                 "lessons": data["lessons"], "file_rules": sorted(rules, key=lambda r: -r["count"])[:30],
                 "suggest_lessons": data.get("since_lesson", 0) >= LESSON_EVERY}
 
+    # ------------------------------------------------- cuboid 3D (0.9.6) ---
+    def record_lidar(self, profile_id: str, dropped: list[dict], kept: list[dict]) -> dict:
+        """Cuboid bạn bỏ khi ghi (thùng rác, nhà vệ sinh di động... bị đoán là xe): nhớ class + cỡ. Cuboid bạn giữ
+        cùng cỡ làm giảm số lần đếm (để không bỏ nhầm vật thật)."""
+        with self.lock:
+            data = self.load(profile_id)
+            items = data.setdefault("lidar_drops", [])
+
+            def same(a, b):
+                return a.get("cls") == b.get("cls") and all(abs(x - y) <= 0.1 * max(y, 0.3) for x, y in zip(a["size"], b["size"]))
+
+            for d in dropped or []:
+                if not d.get("cls") or len(d.get("size") or []) != 3:
+                    continue
+                hit = next((x for x in items if same(x, d)), None)
+                if hit:
+                    hit["count"] += 1
+                else:
+                    items.append({"cls": d["cls"], "size": [round(float(v), 2) for v in d["size"]], "count": 1, "at": time.time()})
+            for k in kept or []:
+                for x in items:
+                    if len(k.get("size") or []) == 3 and same(x, k):
+                        x["count"] = max(0, x["count"] - 1)
+            data["lidar_drops"] = [x for x in items if x["count"] > 0][-200:]
+            self._save(profile_id, data)
+            return {"drops": len(data["lidar_drops"])}
+
+    def lidar_drops(self, profile_id: str) -> list[dict]:
+        return self.load(profile_id).get("lidar_drops") or []
+
+    def clear_lidar(self, profile_id: str) -> None:
+        with self.lock:
+            data = self.load(profile_id)
+            data["lidar_drops"] = []
+            self._save(profile_id, data)
+
     # --------------------------------------------------------- tóm bài học ---
     def distill(self, profile_id: str, llm, guide_notes: str = "") -> list[dict]:
         data = self.load(profile_id)

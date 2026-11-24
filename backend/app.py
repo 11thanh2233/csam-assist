@@ -12,6 +12,7 @@ import logging
 import re
 import shutil
 import time
+import zipfile
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -230,6 +231,7 @@ class ResolveReq(BaseModel):
     profile_inline: Optional[dict] = None   # profile chưa lưu (bản xem trước "Thử trên frame này")
     ignore_zones: list[list[float]] = Field(default_factory=list)   # vùng bỏ qua [x1,y1,x2,y2] (gương, quảng cáo...)
     quality: str = ""          # 0.9.6: mức cấu hình của panel: light | balanced | quality | max
+    lidar: Optional[dict] = None   # 0.9.6: chỉnh của bạn cho job 3D (bảng cỡ, phạm vi, số điểm, prompt camera, hướng camera)
 
 
 class ProposeReq(ResolveReq):
@@ -1274,14 +1276,30 @@ class LidarFrame(BaseModel):
     frame: int
     data_b64: str
     name: str = ""
+    context_b64: str = ""       # 0.9.6: ảnh camera của frame (zip context image của CVAT)
 
 
 class LidarDetectReq(ResolveReq):
     frames: list[LidarFrame] = Field(default_factory=list, max_length=8)
+    debug: bool = False         # 0.9.6: trả thêm điểm nhìn từ trên + cụm bị bỏ (bản đồ nhỏ, Kiểm tra dữ liệu)
 
 
 class LidarTrackReq(ResolveReq):
     frames: list[dict]          # [{frame, objects}] từ /lidar/detect
+
+
+class LidarEvalReq(ResolveReq):
+    frames: list[LidarFrame] = Field(default_factory=list, max_length=8)
+    truth: list[dict] = Field(default_factory=list)      # [{frame, label_id, points}] cuboid bạn đã đánh
+
+
+class LidarFeedbackReq(ResolveReq):
+    dropped: list[dict] = Field(default_factory=list)    # [{cls, size}]
+    kept: list[dict] = Field(default_factory=list)
+    clear: bool = False
+
+
+LIDAR_KEYS = ("ranges", "min_points_scale", "min_points_by_range", "max_base_gap_m", "local_ground")
 
 
 def _lidar_setup(req: ResolveReq) -> tuple[dict, dict, dict, dict]:
@@ -1291,36 +1309,78 @@ def _lidar_setup(req: ResolveReq) -> tuple[dict, dict, dict, dict]:
     profile = inline_profile(req.profile_inline) if req.profile_inline else rt.store.get(
         req.profile_id, [l["name"] for l in labels], "frame", [l["type"] for l in labels], labels, project_id=req.project_id, task_id=req.task_id)
     rule = dict((profile.get("rules") or {}).get("lidar") or {})
-    table = rule.get("sizes") or lidar.DEFAULT_SIZES
-    wanted = {}
+    mine = req.lidar or {}
+    for k in LIDAR_KEYS:                                # chỉnh của bạn (tab Label, Tự chỉnh) thắng profile
+        if mine.get(k) is not None:
+            rule[k] = dict(rule.get(k) or {}, **mine[k]) if isinstance(mine[k], dict) else mine[k]
+    table = dict(rule.get("sizes") or lidar.DEFAULT_SIZES)
+    for k, rows in (mine.get("sizes") or {}).items():
+        if rows:
+            table[lidar.class_key(k)] = rows
+    if rt.memory is not None:
+        rule["dropped"] = rt.memory.lidar_drops(profile["id"])
+    wanted, prompts = {}, {}
     for l in labels:
         if (l.get("type") or "any").lower() in ("cuboid", "any"):
             key = lidar.class_key(l["name"])
             if key in table:
                 wanted[key] = l["id"]
+            p = (mine.get("prompts") or {}).get(str(l["id"])) or (mine.get("prompts") or {}).get(l["name"])
+            if p:
+                prompts[l["id"]] = str(p)
     names = {l["id"]: l["name"] for l in labels}
-    return profile, rule, {k: [tuple(map(tuple, r)) for r in v] for k, v in table.items()}, {"wanted": wanted, "names": names}
+    return profile, rule, {k: [tuple(map(tuple, r)) for r in v] for k, v in table.items()}, \
+        {"wanted": wanted, "names": names, "prompts": prompts, "calib": mine.get("cameras") or {}, "offset": mine.get("offset_deg")}
+
+
+def _read_cloud(item: LidarFrame):
+    from . import lidar
+
+    try:
+        return lidar.read_points(base64.b64decode(item.data_b64.split(",", 1)[-1]), item.name)
+    except (ValueError, KeyError, IndexError, zipfile.BadZipFile) as exc:
+        raise HTTPException(status_code=400, detail=f"Không đọc được point cloud của frame {item.frame}: {exc}") from exc
 
 
 @app.post("/lidar/detect", dependencies=[Depends(require_key)])
 def lidar_detect(req: LidarDetectReq) -> dict:
-    """Cuboid đề xuất cho từng frame point cloud (CVAT 3D)."""
-    from . import lidar
+    """Cuboid đề xuất cho từng frame point cloud (CVAT 3D). Có ảnh camera thì đối chiếu thêm bằng SAM3 (0.9.6)."""
+    from . import lidar, lidar_assist
 
     profile, rule, table, info = _lidar_setup(req)
     if not info["wanted"]:
         raise HTTPException(status_code=400, detail="Task không có label cuboid nào khớp bảng kích thước (Car, Truck, Bus, Pedestrian...). "
-                                                    "Tạo profile cho project kèm guideline có bảng kích thước.")
+                                                    "Thêm kích thước cho label ở tab Label, hoặc tạo profile kèm guideline có bảng kích thước.")
     out, warnings = [], []
+    camera_info = None
+    offset = info["offset"]
     for item in sorted(req.frames, key=lambda x: x.frame):
-        try:
-            points = lidar.read_points(base64.b64decode(item.data_b64.split(",", 1)[-1]), item.name)
-        except (ValueError, KeyError, IndexError) as exc:
-            raise HTTPException(status_code=400, detail=f"Không đọc được point cloud của frame {item.frame}: {exc}") from exc
-        res = lidar.detect(points, info["wanted"], table, rule)
-        out.append({"frame": item.frame, "objects": res["objects"], "points": int(len(points))})
+        points = _read_cloud(item)
+        res = lidar.detect(points, info["wanted"], table, rule, debug=req.debug)
+        for i, o in enumerate(res["objects"], 1):
+            o["id"] = i
+        if item.context_b64 and res["objects"] and rt.engine is not None:
+            try:
+                images = lidar_assist.read_context(base64.b64decode(item.context_b64.split(",", 1)[-1]))
+                chk = lidar_assist.check(rt.engine, images, res["objects"], info["prompts"], info["calib"], offset)
+                lidar_assist.apply_camera(res["objects"], chk)
+                offset = chk["offset"]          # các frame sau dùng lại hướng đã dò
+                camera_info = {k: chk.get(k) for k in ("offset", "offset_source", "cameras", "note")}
+            except Exception as exc:  # noqa: BLE001 - ảnh camera lỗi thì bỏ bước này, vẫn trả cuboid
+                warnings.append(f"Không đối chiếu được ảnh camera của frame {item.frame}: {str(exc)[:160]}")
+        frame_out = {"frame": item.frame, "objects": res["objects"], "points": int(len(points)), "stats": res.get("stats")}
+        for k in ("bev", "rejected", "info"):
+            if k in res:
+                frame_out[k] = res[k]
+        out.append(frame_out)
         warnings += [w for w in res["warnings"] if w not in warnings]
-    return {"profile_id": profile["id"], "frames": out, "warnings": warnings}
+    rt.res.after_heavy()
+    return {"profile_id": profile["id"], "frames": out, "warnings": warnings, "camera": camera_info,
+            "rule": {"ranges": dict(lidar.DEFAULT_RANGES, **(rule.get("ranges") or {})),
+                     "min_points_by_range": rule.get("min_points_by_range") or lidar.DEFAULT_MIN_POINTS,
+                     "min_points_scale": rule.get("min_points_scale") or {}, "max_base_gap_m": rule.get("max_base_gap_m", 0.5),
+                     "remembered": len(rule.get("dropped") or [])},
+            "reasons": lidar.REASONS}
 
 
 @app.post("/lidar/track", dependencies=[Depends(require_key)])
@@ -1330,6 +1390,37 @@ def lidar_track(req: LidarTrackReq) -> dict:
     profile, rule, _, info = _lidar_setup(req)
     res = lidar.build_tracks(req.frames, rule, info["names"])
     return dict(res, profile_id=profile["id"])
+
+
+@app.post("/lidar/evaluate", dependencies=[Depends(require_key)])
+def lidar_evaluate(req: LidarEvalReq) -> dict:
+    """0.9.6: chạy lại trên các frame bạn đã đánh cuboid, so với cuboid của bạn, đề nghị chỉnh (bạn bấm Áp dụng mới đổi)."""
+    from . import lidar_assist
+
+    profile, rule, table, info = _lidar_setup(req)
+    if not info["wanted"]:
+        raise HTTPException(status_code=400, detail="Task không có label cuboid nào khớp bảng kích thước.")
+    frames = [(item.frame, _read_cloud(item)) for item in req.frames]
+    truth = []
+    for t in req.truth:
+        pts = t.get("points") or []
+        if len(pts) >= 9:
+            truth.append(dict(lidar_assist.truth_from_cvat(pts), frame=int(t["frame"]), label_id=int(t["label_id"])))
+    if not truth:
+        raise HTTPException(status_code=400, detail="Chưa có cuboid nào bạn đã đánh ở các frame này.")
+    return dict(lidar_assist.evaluate(frames, truth, info["wanted"], table, rule), profile_id=profile["id"])
+
+
+@app.post("/lidar/feedback", dependencies=[Depends(require_key)])
+def lidar_feedback(req: LidarFeedbackReq) -> dict:
+    """0.9.6: cuboid bạn bỏ / giữ lúc ghi: nhớ để lần sau bỏ tick sẵn vật hay bị nhầm (thùng rác, nhà vệ sinh di động...)."""
+    profile, _, _, _ = _lidar_setup(req)
+    if rt.memory is None:
+        return {"drops": 0}
+    if req.clear:
+        rt.memory.clear_lidar(profile["id"])
+        return {"drops": 0}
+    return rt.memory.record_lidar(profile["id"], req.dropped, req.kept)
 
 
 # ------------------------------------------------------- soạn guideline -----

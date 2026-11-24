@@ -523,6 +523,9 @@ def build(task_labels: list[dict], profiles: dict[str, dict], *, project: Option
             lid["max_occluded_frames"] = int(track_hint["max_occluded_keyframes"])
         if sizes:
             lid["sizes"] = {k: [list(map(list, r)) for r in v] for k, v in sizes.items()}
+        ranges = lidar.parse_ranges(markdown)       # 0.9.6: phạm vi gán theo class nếu guideline ghi
+        if ranges:
+            lid["ranges"] = ranges
         rules["lidar"] = lid
     for pid in sorted(used_profiles):
         base = profiles.get(pid) or {}
