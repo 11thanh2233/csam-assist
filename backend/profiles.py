@@ -436,6 +436,7 @@ def resolve_labels(profile: dict, cvat_labels: list[dict], overrides: Optional[d
             "join_dashes": (entry or {}).get("join_dashes", defaults.get("join_dashes", True)),
             "min_area_px": float((entry or {}).get("min_area_px", defaults.get("min_area_px", 30))),
             "min_side_px": (entry or {}).get("min_side_px"),
+            "strategy": (entry or {}).get("strategy"),
             "attr_rules": dict((entry or {}).get("attr_rules") or {}),
             "tag_rules": dict((entry or {}).get("tag_rules") or {}),
             "label_attributes": [{"name": a.get("name"), "values": a.get("values") or [], "default": a.get("default_value"),

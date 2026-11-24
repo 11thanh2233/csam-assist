@@ -642,7 +642,9 @@ class ControlApi:
     # ----------------------------------------------------- LLM soạn guideline ---
     LLM_DEFAULT_MODEL = {"anthropic": "claude-sonnet-5-5", "openai": ""}
 
-    LLM_ENV_KEYS = ("GUIDELINE_LLM", "ANTHROPIC_API_KEY", "GUIDELINE_OPENAI_BASE_URL", "GUIDELINE_OPENAI_API_KEY", "GUIDELINE_LLM_MODEL")
+    LLM_ENV_KEYS = ("GUIDELINE_LLM", "ANTHROPIC_API_KEY", "GUIDELINE_OPENAI_BASE_URL", "GUIDELINE_OPENAI_API_KEY", "GUIDELINE_LLM_MODEL",
+                    "SAM3_LLM_DAILY_LIMIT")
+    LLM_DEFAULT_LIMIT = 500
 
     def _llm_env(self) -> dict:
         """Biến môi trường cho backend (backend/guideline/llm.py đọc).
@@ -658,6 +660,9 @@ class ControlApi:
             env = dict.fromkeys(self.LLM_ENV_KEYS, "")
             env.update(GUIDELINE_LLM="openai", GUIDELINE_OPENAI_BASE_URL=cfg["base_url"], GUIDELINE_OPENAI_API_KEY=key,
                        GUIDELINE_LLM_MODEL=cfg["model"])
+        if env:
+            # 0.9.5: số lần Claude xem ảnh tối đa mỗi ngày (0 = không giới hạn)
+            env["SAM3_LLM_DAILY_LIMIT"] = str(int(cfg.get("daily_limit", self.LLM_DEFAULT_LIMIT)))
         return env
 
     def llm_settings(self):
@@ -665,9 +670,10 @@ class ControlApi:
         cfg["has_key"] = bool(credstore.get(credstore.LLM_USER))
         cfg["keyring"] = credstore.available()
         cfg["active"] = bool(self._llm_env())
+        cfg.setdefault("daily_limit", self.LLM_DEFAULT_LIMIT)
         return cfg
 
-    def set_llm(self, provider, model="", base_url="", api_key=None):
+    def set_llm(self, provider, model="", base_url="", api_key=None, daily_limit=None):
         """Lưu cấu hình. api_key: None = giữ key cũ, "" = xoá key. Áp dụng khi bật lại backend."""
         if provider not in ("none", "anthropic", "openai"):
             return {"ok": False, "message": "Nhà cung cấp không hợp lệ."}
@@ -686,7 +692,12 @@ class ControlApi:
                 credstore.delete(credstore.LLM_USER)
         if provider == "anthropic" and not credstore.get(credstore.LLM_USER):
             return {"ok": False, "message": "Cần API key của Anthropic (bắt đầu bằng sk-ant-)."}
-        self._settings.data["llm"] = {"provider": provider, "model": (model or "").strip(), "base_url": base_url}
+        old_limit = (self._settings.data.get("llm") or {}).get("daily_limit", self.LLM_DEFAULT_LIMIT)
+        try:
+            limit = max(0, min(100000, int(daily_limit))) if daily_limit not in (None, "") else int(old_limit)
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "Giới hạn mỗi ngày phải là số (0 = không giới hạn)."}
+        self._settings.data["llm"] = {"provider": provider, "model": (model or "").strip(), "base_url": base_url, "daily_limit": limit}
         self._settings.save()
         for k in self.LLM_ENV_KEYS:
             self._backend.extra_env.pop(k, None)

@@ -37,6 +37,7 @@ class LLM:
     provider = "none"
     model = ""
     sees_images = True
+    last_usage: Optional[dict] = None    # {input_tokens, output_tokens} của lần gọi gần nhất (0.9.5: đếm lượt dùng)
 
     def complete(self, system: str, text: str, images: Optional[list[bytes]] = None, max_tokens: int = 3000) -> str:
         raise NotImplementedError
@@ -59,6 +60,7 @@ class AnthropicLLM(LLM):
                      {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
                      {"model": self.model, "max_tokens": max_tokens, "system": system,
                       "messages": [{"role": "user", "content": content}]}, self.timeout)
+        self.last_usage = data.get("usage") or None
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
 
 
@@ -78,6 +80,8 @@ class OpenAICompatLLM(LLM):
         data = _post(self.base_url + "/chat/completions", headers,
                      {"model": self.model, "max_tokens": max_tokens,
                       "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}]}, self.timeout)
+        usage = data.get("usage") or {}
+        self.last_usage = {"input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens")}
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:

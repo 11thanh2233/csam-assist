@@ -14,8 +14,12 @@ SAM3 Label Assist không thu thập dữ liệu sử dụng, không có telemetr
 | Các trang CVAT trong danh sách **Trang gán nhãn** | Khi bạn mở CVAT | Như khi bạn dùng CVAT bằng trình duyệt | Có: bạn chọn trang nào |
 | Máy khác trong mạng nội bộ | Chỉ khi bạn bật **Chia sẻ backend** hoặc dùng backend của máy khác | Ảnh frame đang gán, để máy kia chạy SAM 3 | Có: tắt mặc định |
 | Dịch vụ AI tạo guideline (Anthropic hoặc dịch vụ bạn tự cấu hình) | Chỉ khi bạn dùng tính năng tạo hoặc nhập guideline bằng AI, hoặc tạo Profile cho project có tick "Cho AI đọc guideline", và đồng ý gửi | Ảnh mẫu và nội dung guideline bạn chọn (Profile cho project: chỉ văn bản guideline và tên label, không gửi ảnh), kèm key của chính bạn | Có: tắt mặc định, chỉ gửi khi bạn đồng ý |
+| Claude xem ảnh (Anthropic, 0.9.5) | Mỗi lần gợi ý nhãn khi app có Anthropic API key và ô "Claude xem ảnh" ở tab Gợi ý đang bật (bật sẵn khi có key) | Ảnh frame thu nhỏ có đánh số đề xuất, vài ảnh cắt nhỏ quanh vật nhỏ (mặt, tay…), tên file của frame, tên label, thuộc tính, ghi chú guideline, bài học và các lần sửa của project (chữ, không có ảnh cũ), kèm key của chính bạn | Có: bỏ tick ô "Claude xem ảnh", hoặc xoá key trong Cài đặt của app. Có giới hạn số lần mỗi ngày |
 
 ## Lưu trên máy bạn
+
+- Trí nhớ của project (0.9.5): giá trị bạn chốt, quy ước tên file, bài học. Chỉ là chữ, không lưu ảnh, nằm trong thư
+  mục dữ liệu của app (`guideline_library/memory`).
 
 - Token Hugging Face và API key của AI soạn guideline: lưu trong Windows Credential Manager, không lưu dạng chữ thường
   trong file.
@@ -47,12 +51,14 @@ learning data stay on your computer unless you turn on one of the features below
 | CVAT sites in your **Labeling sites** list | When you open CVAT | The same as using CVAT in a browser | Yes: you choose the sites |
 | Another machine on your local network | Only if you turn on **Share backend** or use another machine's backend | The frame being labeled, so that machine can run SAM 3 | Yes: off by default |
 | An AI service for drafting guidelines (Anthropic or one you configure) | Only when you use AI guideline drafting or import, or create a Project profile with "Let AI read the guideline" ticked, and agree to send | The sample images and guideline text you choose (Project profile: only the guideline text and label names, no images), with your own key | Yes: off by default, only sent with your consent |
+| Claude image review (Anthropic, 0.9.5) | Each label suggestion while the app has an Anthropic API key and the "Claude reviews the image" box in the Suggest tab is on (on by default once a key is set) | A downscaled frame with numbered proposals, a few small crops around small objects (faces, hands…), the frame's file name, label names, attributes, guideline notes, and the project's lessons and past corrections (text, no earlier images), with your own key | Yes: untick "Claude reviews the image", or delete the key in the app's Settings. A daily call limit applies |
 
 **Stored on your computer:**
 
 - The Hugging Face token and the AI guideline drafting API key are kept in Windows Credential Manager, not as plain
   text.
 - Settings, profiles, guidelines, learning data and logs are in `%LOCALAPPDATA%\SAM3CvatAssist`.
+- Project memory (0.9.5): the values you settle on, file-name conventions and lessons. Text only, no images.
 - The uninstaller asks whether to delete them.
 
 **Error reports:** created only on your computer; you decide whether to send them. A report contains logs, system

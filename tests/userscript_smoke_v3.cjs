@@ -144,7 +144,9 @@ async function scenario(frameBytes) {
   assert.strictEqual(proposeCalls().length, 2, 'frame 3 + chạy sẵn frame 4');
 
   // 18. Tự điền thuộc tính truncated/occluded cho label có chúng
-  assert.match(root.textContent, /Tự điền: (truncated|occluded) = (true|false)/);
+  // 0.9.5: thuộc tính chọn ngay trên panel (giá trị tool tự điền đã chọn sẵn)
+  const attrSel = [...root.querySelectorAll('.attrs .attr-row')].find((r) => /truncated|occluded/.test(r.textContent));
+  assert.ok(attrSel && /^(true|false)$/.test(attrSel.querySelector('select').value), 'ô chọn thuộc tính tự điền');
 
   // 4. Thanh ngưỡng + ẩn class (tức thì, không gọi lại backend)
   const total = root.querySelectorAll('li.item').length;

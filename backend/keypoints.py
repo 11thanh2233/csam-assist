@@ -179,6 +179,10 @@ def body_skeleton(cfg: dict, coords: np.ndarray, scores: np.ndarray, box: list[f
     return _proposal(cfg, elements, score, flags, box)
 
 
+DEFAULT_OCCLUDERS = ["sunglasses", "hand", "face mask", "hat", "mustache"]
+DEFAULT_IGNORE_INSIDE = ["picture frame", "poster", "photograph", "television screen", "mirror"]
+
+
 def body_proposals(engine: Optional[Engine], state: Any, image: np.ndarray, cfg: dict, rules: dict, body,
                    warnings: list[str], boxes: Optional[list[list[float]]] = None) -> list[dict]:
     rule = rules.get("pose") or {}
@@ -207,9 +211,32 @@ def body_proposals(engine: Optional[Engine], state: Any, image: np.ndarray, cfg:
     if not scored:
         return []
     results = body.estimate(image, [b for b, _ in scored])
+    # 0.9.5: người nằm trong ảnh chụp, poster, màn hình, gương: không phải người thật trong cảnh, guideline thường bỏ.
+    frames_found: list[list[float]] = []
+    if boxes is None and engine is not None and state is not None:
+        for prompt in rule.get("ignore_inside", DEFAULT_IGNORE_INSIDE):
+            try:
+                for inst in engine.segment_text(state, prompt, 0.5):
+                    fb = G.mask_bbox(inst.mask.astype(bool))
+                    if fb and G.box_area(fb) < 0.6 * width * height:
+                        frames_found.append(fb)
+            except Exception:  # noqa: BLE001 - prompt lỗi thì bỏ qua bước này
+                break
+    total = len(cfg.get("keypoints") or []) or 17
+    need = int(cfg.get("min_visible") or rule.get("min_visible_points") or max(4, round(total * 0.25)))
     out = []
     for (box, score), (coords, scores) in zip(scored, results):
         proposal = body_skeleton(cfg, np.asarray(coords, float), np.asarray(scores, float), box, score, width, height, rule)
+        seen = sum(1 for e in proposal["elements"] if not e["outside"] and not e["occluded"])
+        if seen < need:
+            proposal["checked"] = False
+            add_flag(proposal["flags"], "LOW_VISIBILITY",
+                     f"Chỉ thấy rõ {seen}/{total} điểm (dưới {need}): người thấy quá ít, thường không gán. Tick lại nếu guideline vẫn yêu cầu.")
+        inside = next((fb for fb in frames_found if G.box_inter(box, fb) >= 0.8 * max(G.box_area(box), 1.0)), None)
+        if inside is not None:
+            proposal["checked"] = False
+            add_flag(proposal["flags"], "UNCERTAIN_SCOPE",
+                     "Người này nằm gọn trong một khung ảnh, poster, màn hình hoặc gương: không phải người thật trong cảnh, thường không gán.")
         if extra:
             add_flag(proposal["flags"], "UNCERTAIN_SCOPE",
                      f"Thấy {extra + limit} người; tool chọn người chiếm diện tích lớn nhất làm người lái. Nếu sai, vẽ hộp quanh đúng người lái.")
@@ -294,11 +321,14 @@ def face_skeleton(cfg: dict, landmarks: np.ndarray, width: int, height: int, far
                 for e, kp in zip(elements, cfg["keypoints"])]
     flags: list[dict] = []
     total = len(elements)
-    need = int(cfg.get("min_visible") or math.ceil(total / 2))
+    # 0.9.5: luật "thấy dưới ngưỡng thì Outside cả skeleton" chỉ áp khi guideline ghi ngưỡng cho chính skeleton này
+    # (Facial Landmark-50: mỗi bộ phận một skeleton). Skeleton gộp nhiều bộ phận (vd face13) mà áp ngưỡng nửa số điểm
+    # thì kính râm che mắt làm mất luôn mũi và môi.
+    need = int(cfg.get("min_visible") or 0)
     seen = sum(1 for e in elements if not e["occluded"] and not e["outside"])
     if covered_by:
         what = ", ".join(f"{name} ({count} điểm)" for name, count in covered_by.items())
-        if seen < need:
+        if need and seen < need:
             # Guideline mục 3.1: thấy dưới ngưỡng thì Outside cả skeleton, trừ khi có đủ bằng chứng thị giác.
             for e in elements:
                 e["occluded"], e["outside"] = False, True
@@ -385,7 +415,8 @@ def face_proposals(image: np.ndarray, cfgs: list[dict], rules: dict, face, warni
 def find_occluders(engine: Engine, state: Any, rules: dict, warnings: list[str]) -> list[tuple[str, np.ndarray]]:
     """Vật che mặt (kính râm, tay, khẩu trang...) do SAM3 tìm: điểm nằm dưới chúng không thể là Visible."""
     out = []
-    for prompt in (rules.get("face") or {}).get("occluders") or []:
+    # 0.9.5: profile không ghi vật che thì dùng danh sách chung (mũ trùm mắt, ria che môi... hình 15, 16)
+    for prompt in (rules.get("face") or {}).get("occluders") or DEFAULT_OCCLUDERS:
         masks = [inst.mask.astype(bool) for inst in run_prompt(engine, state, prompt, 0.5, prompt, warnings)]
         if masks:
             out.append((prompt, np.logical_or.reduce(masks)))

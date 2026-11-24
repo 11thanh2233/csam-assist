@@ -83,6 +83,8 @@ Mở một job trong CVAT, panel **SAM3** tự hiện ở góc phải.
    - Rê chuột vào một dòng để thấy đề xuất đó trên ảnh.
    - Bỏ tick đề xuất sai.
    - Đổi label ở ô chọn trên dòng.
+   - **Thuộc tính** chọn ngay trên dòng: giá trị tool hoặc Claude đã chọn sẵn, ô vàng là chỗ bạn cần chọn. Bấm nút
+     `occluded` / `visible` để đổi.
    - Dòng có cờ là chỗ tool không chắc, nên xem kỹ.
 3. **Sót vật?** Chọn label ở ô cạnh nút **Vẽ hộp**, bấm **Vẽ hộp** rồi kéo hộp quanh vật. **Tìm tương tự** tìm mọi
    vật giống vật trong hộp.
@@ -93,6 +95,20 @@ Mở một job trong CVAT, panel **SAM3** tự hiện ở góc phải.
 5. Sửa tay chỗ cần sửa bằng công cụ của CVAT, rồi `Ctrl+S`.
 
 Ghi nhầm? Bấm **Hoàn tác** ở thanh Ghi (`Alt+Z`), bấm nhiều lần để lùi tiếp.
+
+**Claude xem ảnh (tuỳ chọn):** khi app có Anthropic API key (Cài đặt → AI), ô **Claude xem ảnh** dưới nút Gợi ý bật
+sẵn. Mỗi lần gợi ý, Claude xem frame theo guideline của project:
+
+- điền thuộc tính và tag;
+- quyết định `occluded` / `outside` theo chính vật và từng bộ phận của skeleton;
+- đề nghị bỏ đề xuất guideline không gán (chip **Bỏ?**);
+- tìm vật bị sót (chip **Mới thêm**).
+
+Bỏ tick ô đó để không gửi ảnh. Số lần dùng trong ngày hiện ngay cạnh ô; giới hạn đổi trong Cài đặt của app.
+
+**Tool học theo cách bạn chốt:** mỗi lần bấm Ghi, tool nhớ thuộc tính, tag, occluded bạn để lại và đề xuất bạn bỏ.
+Ví dụ bạn chọn `fisheye_left` cho vài file tên có `_MVL` thì các ảnh `_MVL` sau tool tự chọn đúng. Xem, viết hoặc
+xoá **bài học** của project ở tab **Tự học**, mục **Trí nhớ của project**.
 
 | Chưa có đề xuất | Đang duyệt đề xuất |
 |---|---|
@@ -121,6 +137,9 @@ Tab **Cả job** của panel:
 
 Tool tự đặt `occluded` khi người bị che ngắn và `outside` khi người ra khỏi khung, nhưng bạn vẫn kiểm lại.
 
+**Chạy SAM3 trên:** **Thông minh** (mặc định) chạy SAM3 trên keyframe rồi kiểm tra ở giữa mỗi khoảng; chỗ nội suy lệch
+thì tool chạy từng frame, nên đoạn chuyển động phức tạp vẫn đủ chính xác. Chọn **Mọi frame** nếu muốn chạy như bản cũ.
+
 Tab **Kiểm tra** đối chiếu nhãn đã lưu với checklist trong guideline. Nên lưu (`Ctrl+S`) trước khi kiểm tra.
 
 ### Job có nhiều loại label: Profile cho project
@@ -134,6 +153,10 @@ Job có cả box, skeleton, tag (ví dụ cabin: `person`, `face`, `face13`, tag
 3. Bấm **Tạo profile cho project**. Bảng hiện từng label: **Tool gợi ý được**, **Gợi ý được một phần**, **Bạn đánh
    tay**. Mở **Chi tiết** để xem từng điểm skeleton, từng thuộc tính tool tự điền hay để bạn chọn.
 4. Bấm **Thử trên frame này**, xem đề xuất. Ổn thì bấm **Lưu cho project**. Mọi job của project tự dùng profile này.
+
+Với polygon và polyline, tool đọc định nghĩa trong guideline để chọn **cách dựng hình** (xem trong **Chi tiết**): gộp các
+mảnh thành một vùng (vd crosswalk), vùng mặt đường liền với xe (drivable), mép vùng mặt đường (road_curb), hay đường
+giữa vệt sơn (lane).
 
 Tag ảnh (camera, timeofday, weather…) hiện ở đầu danh sách đề xuất: giá trị tool đoán có dòng "tự đoán, kiểm lại",
 giá trị bạn phải chọn có dòng "Bạn chọn".

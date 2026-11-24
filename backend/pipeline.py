@@ -140,7 +140,12 @@ def rider_split(dets: list[Det], rules: dict, cfg_by_name: dict[str, dict]) -> N
 
 
 def mark_occluded(dets: list[Det], rules: dict) -> None:
-    """Ước lượng occluded: bị một đối tượng ở gần camera hơn (đáy thấp hơn) đè lên."""
+    """Gợi ý kiểm tra occluded (0.9.5).
+
+    occluded xét theo CHÍNH VẬT: bị che một phần nhưng còn ước lượng được hình dạng. Hai khung chồng nhau không có
+    nghĩa là vật phía sau bị che (tay trên vô lăng, mặt trước ghế...), nên tool KHÔNG tự đặt occluded theo chồng khung
+    nữa: chỉ gắn cờ để bạn (hoặc Claude, nếu bật) xem. Profile cũ muốn giữ cách cũ thì ghi `occluded: {set: true}`.
+    """
     rule = rules.get("occluded") or {}
     if not rule.get("enabled"):
         return
@@ -151,12 +156,13 @@ def mark_occluded(dets: list[Det], rules: dict) -> None:
             if other is det or other.box[3] <= det.box[3]:
                 continue
             if area > 0 and G.box_inter(det.box, other.box) / area >= min_ioa:
-                det.occluded = True
-                add_flag(
-                    det.flags,
-                    "ATTRIBUTE_CHECK",
-                    f"Đặt occluded=true vì bị '{other.cfg['name']}' che. Cần kiểm tra lại.",
-                )
+                inter = det.mask.astype(bool) & other.mask.astype(bool) if det.mask.shape == other.mask.shape and det.mask.size > 1 else None
+                if rule.get("set"):
+                    det.occluded = True
+                add_flag(det.flags, "ATTRIBUTE_CHECK",
+                         f"'{other.cfg['name']}' ở gần camera hơn chồng lên khung này. Nếu chính vật bị che mà vẫn ước lượng "
+                         "được hình dạng thì đặt occluded; thấy đủ thì giữ visible."
+                         + (" Mask hai vật gần như không chạm nhau." if inter is not None and not inter.any() else ""))
                 break
 
 
@@ -415,6 +421,93 @@ def lanes_to_proposals(items: list[dict], width: int, height: int) -> list[dict]
             )
         )
     return out
+
+
+# ------------------------------------------- cách dựng hình theo guideline (0.9.5) ---
+def merge_regions(dets: list[Det], width: int, height: int) -> list[Det]:
+    """strategy 'region': các mảnh cùng label nằm gần nhau là một vùng (vd các sọc của một vạch qua đường).
+    Gộp mask, lấp khoảng trống giữa các mảnh, lấy viền ngoài."""
+    out, by_label = [], {}
+    for d in dets:
+        if d.cfg.get("strategy") == "region":
+            by_label.setdefault(d.cfg["label_id"], []).append(d)
+        else:
+            out.append(d)
+    diag = float(np.hypot(width, height))
+    for group in by_label.values():
+        cfg = group[0].cfg
+        radius = int(cfg.get("merge_px") or max(8, 0.035 * diag))
+        for idx in G.cluster_masks([d.mask for d in group], radius):
+            members = [group[i] for i in idx]
+            mask = np.logical_or.reduce([m.mask.astype(bool) for m in members]).astype(np.uint8)
+            k = max(3, radius) | 1
+            closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+            filled = closed.copy()
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if len(contours) > 1:
+                # khoảng cách giữa các sọc rộng hơn bán kính gộp: bao lồi của cả cụm là viền ngoài của vùng
+                hull = cv2.convexHull(np.vstack(contours))
+                cv2.fillPoly(filled, [hull], 1)
+            else:
+                cv2.drawContours(filled, contours, -1, 1, -1)
+            filled = filled.astype(bool)
+            box = G.mask_bbox(filled) or members[0].box
+            det = Det(cfg, filled, max(m.score for m in members), members[0].prompt, box)
+            for m in members:
+                for f in m.flags:
+                    add_flag(det.flags, f["code"], f["message"])
+            if len(members) > 1:
+                add_flag(det.flags, "UNCERTAIN_BOUNDARY", f"Gộp {len(members)} mảnh thành một vùng theo guideline. Kiểm tra viền ngoài.")
+            out.append(det)
+    return out
+
+
+def ground_edges(ground_polys: list[list[float]], lane_items: list[dict], width: int, height: int,
+                 min_len: float = 40.0) -> list[np.ndarray]:
+    """strategy 'edge': mép trái/phải của vùng mặt đường không nằm trên mép ảnh và không trùng vạch sơn."""
+    lines = []
+    lane_mask = np.zeros((height, width), np.uint8)
+    for item in lane_items:
+        cv2.polylines(lane_mask, [np.round(item["pts"]).astype(np.int32)], False, 1, 15)
+    for flat in ground_polys:
+        pts = np.asarray(flat, float).reshape(-1, 2)
+        if len(pts) < 3:
+            continue
+        # đi dọc viền, lấy từng đoạn liên tục không nằm trên mép ảnh
+        dense = []
+        for a, b in zip(pts, np.roll(pts, -1, axis=0)):
+            n = max(1, int(np.hypot(*(b - a)) // 6))
+            dense += [a + (b - a) * t for t in np.linspace(0, 1, n, endpoint=False)]
+        dense = np.asarray(dense)
+        on_border = (dense[:, 0] <= 3) | (dense[:, 0] >= width - 4) | (dense[:, 1] <= 3) | (dense[:, 1] >= height - 4)
+        xi = np.clip(dense[:, 0].astype(int), 0, width - 1)
+        yi = np.clip(dense[:, 1].astype(int), 0, height - 1)
+        painted = lane_mask[yi, xi] > 0
+        keep = ~on_border & ~painted
+        run: list[np.ndarray] = []
+        for ok, p in zip(np.concatenate([keep, [False]]), np.concatenate([dense, dense[:1]])):
+            if ok:
+                run.append(p)
+                continue
+            if len(run) >= 2 and G.polyline_length(np.asarray(run)) >= min_len:
+                line = np.asarray(run)
+                # bỏ đoạn gần như nằm ngang ở xa (đường chân trời của vùng đường), mép đường chạy dọc theo chiều sâu ảnh
+                if np.ptp(line[:, 1]) >= 0.25 * max(np.ptp(line[:, 0]), 1.0):
+                    lines.append(G.simplify_polyline(line, 2.0))
+            run = []
+    return lines
+
+
+def apply_ground_attribute(props: list[dict], cfg: dict) -> None:
+    """Một label mặt đường có thuộc tính kiểu 'làn đang đi / làn bên cạnh' (2 giá trị trở lên): vùng liền với xe lấy
+    giá trị đầu, các vùng khác lấy giá trị thứ hai, kèm nhắc kiểm tra (Claude sửa lại nếu bật)."""
+    attrs = [a for a in cfg.get("label_attributes") or [] if len(a.get("values") or []) >= 2]
+    if not attrs or not props:
+        return
+    a = attrs[0]
+    for i, p in enumerate(props):
+        p.setdefault("attributes", {})[norm(a["name"])] = str(a["values"][0] if i == 0 else a["values"][1])
+        p.setdefault("review_attributes", []).append(a["name"])
 
 
 # -------------------------------------------------------- drivable area -----
@@ -781,8 +874,10 @@ def propose(
         proposals = semantic(engine, state, profile, cfgs, existing, width, height, warnings)
     else:
         dedup = rules.get("dedup") or {}
-        dets = detect(engine, state, [c for c in active if c["role"] in ("object", "lane")], warnings=warnings)
+        ground_cfgs = [c for c in active if c.get("strategy") == "ground" and c["role"] == "object"]
+        dets = detect(engine, state, [c for c in active if c["role"] in ("object", "lane") and c not in ground_cfgs], warnings=warnings)
         dets = suppress(dets, float(dedup.get("iou", 0.6)), float(dedup.get("class_margin", 0.15)))
+        dets = merge_regions(dets, width, height)
         objects = [d for d in dets if d.cfg["role"] == "object"]
         rider_split(objects, rules, cfg_by_name)
         mark_occluded(objects, rules)
@@ -805,9 +900,32 @@ def propose(
                 if norm(d.cfg["name"]) == region_name
                 or np.count_nonzero(d.mask & region) < 0.5 * np.count_nonzero(d.mask)
             ]
+        # 0.9.5: vạch nằm trong vùng 'region' (vd vạch qua đường) không phải vạch làn
+        regions = [d.mask for d in objects if d.cfg.get("strategy") == "region"]
+        if regions:
+            area = np.logical_or.reduce([r.astype(bool) for r in regions])
+            lane_dets = [d for d in lane_dets if d.cfg.get("strategy") == "region"
+                         or np.count_nonzero(d.mask & area) < 0.5 * max(np.count_nonzero(d.mask), 1)]
         lane_items = build_lanes(lane_dets, image, rules, cfg_by_name)
         proposals = objects_to_proposals(objects, width, height, rules, warnings)
         proposals += lanes_to_proposals(lane_items, width, height)
+        edge_cfgs = [c for c in active if c.get("strategy") == "edge"]
+        ground_polys: list[list[float]] = []
+        for gcfg in ground_cfgs or ([dict(edge_cfgs[0], prompts=["road"], name="_road")] if edge_cfgs else []):
+            got = drivable(engine, state, rules, gcfg, gcfg if gcfg in ground_cfgs else None, objects, lane_items, width, height, warnings)
+            ground_polys += [p["points"] for p in got]
+            if gcfg in ground_cfgs:
+                apply_ground_attribute(got, gcfg)
+                proposals += got
+        for ecfg in edge_cfgs:
+            have = [p for p in proposals if p["label_id"] == ecfg["label_id"]]
+            for line in ground_edges(ground_polys, [i for i in lane_items if i["cfg"].get("strategy") != "edge"], width, height):
+                bbox = [float(line[:, 0].min()), float(line[:, 1].min()), float(line[:, 0].max()), float(line[:, 1].max())]
+                if any(G.box_iou(bbox, p["bbox"]) > 0.3 for p in have):
+                    continue
+                prop = make_proposal(ecfg, "polyline", [round(float(v), 2) for v in line.ravel()], 0.5, bbox)
+                add_flag(prop["flags"], "UNCERTAIN_BOUNDARY", "Mép của vùng mặt đường (không có vạch sơn): có thể là vỉa hè, lề, hoặc xe đỗ che. Kiểm tra.")
+                proposals.append(prop)
         direct = next((c for c in active if c["role"] == "drivable_direct"), None)
         alt = next((c for c in active if c["role"] == "drivable_alt"), None)
         if direct:

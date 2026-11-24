@@ -239,7 +239,10 @@ async function trackingScenario(frameBytes) {
   assert.match(headings[0], /Theo dõi/, 'job video: phần theo dõi đứng đầu');
   button('Theo dõi 12 frame').click();
   await until(() => /1 track/.test(root.querySelector('.body').textContent), 'theo dõi xong: ' + status());
-  assert.strictEqual(store.calls.filter((c) => c.path.includes('/data?')).length, 12);
+  // 0.9.5: chạy SAM3 theo keyframe + kiểm tra giữa khoảng: ít frame hơn mà track vẫn phủ đủ frame 0–11
+  const fetched = store.calls.filter((c) => c.path.includes('/data?')).length;
+  assert.ok(fetched >= 3 && fetched < 12, 'theo dõi thông minh lấy ít frame hơn: ' + fetched);
+  assert.match(status(), /SAM3 chạy \d+\/12 frame/);
   assert.match(root.querySelector('ul').textContent, /#1 person · frame 0–11/);
   const rects = [...win.document.querySelectorAll('svg rect')];
   assert.ok(rects.length >= 1 && /#1/.test(win.document.querySelector('svg text').textContent), 'vẽ track trên frame đang xem');

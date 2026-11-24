@@ -21,6 +21,7 @@ import json
 import re
 from typing import Any, Callable, Optional
 
+from .judge import guide_notes
 from .profiles import COCO17, _ascii, match_skeletons, norm
 
 # --------------------------------------------------------------- điểm mặt ---
@@ -249,12 +250,38 @@ def min_size_px(markdown: str, label_name: str) -> Optional[int]:
     return None
 
 
+STRATEGIES = ("instance", "region", "ground", "edge", "centerline")
+STRATEGY_TEXT = {
+    "region": "gộp các mảnh gần nhau thành một vùng, lấy viền ngoài (vd cả vùng vạch qua đường là một polygon)",
+    "ground": "vùng mặt đường: lấy phần đường liền với vị trí xe, trừ xe và người; các làn khác tách riêng",
+    "edge": "mép của vùng mặt đường (nơi không có vạch sơn), kèm cờ để bạn kiểm",
+    "centerline": "đường giữa của vệt sơn, nối các đoạn thẳng hàng",
+}
+STRATEGY_PROMPTS = {"ground": ["road"], "edge": ["curb"], "region": [], "centerline": []}
+
+
+def shape_strategy(name: str, shape: str, definition: str) -> Optional[str]:
+    """Đoán cách dựng hình từ tên + định nghĩa (dùng khi không có Claude; có Claude thì Claude chọn khi đọc guideline)."""
+    text = f"{name} {definition}".lower().replace("_", " ")
+    if shape == "polygon":
+        if re.search(r"crosswalk|zebra|ngựa v[ằạa]n|bao các|cả vùng|một polygon bao|whole area|enclos", text):
+            return "region"
+        if re.search(r"drivable|free ?space|road ?surface|mặt đường|vùng lái|đi được", text):
+            return "ground"
+    if shape == "polyline":
+        if re.search(r"\bcurb|kerb|vỉa|lề đường|road ?edge|mép đường", text):
+            return "edge"
+    return None
+
+
 LLM_SCHEMA = (
     'Trả về DUY NHẤT JSON: {"lr_convention": "anatomical"|"image"|null, '
     '"labels": [{"name": tên đúng như task, "prompts": [1-3 cụm tiếng Anh ngắn cho SAM3, rỗng nếu là skeleton/tag], '
     '"definition": định nghĩa ngắn tiếng Việt, "min_px": số px tối thiểu hoặc null, '
     '"attributes": [{"name": tên attribute, "rule": một trong ' + json.dumps(sorted(RULE_TEXT)) + '}], '
-    '"points": [{"name": tên điểm đúng như task, "concept": một trong DANH SÁCH ĐIỂM hoặc null}]}], '
+    '"points": [{"name": tên điểm đúng như task, "concept": một trong DANH SÁCH ĐIỂM hoặc null}], '
+    '"strategy": cách dựng hình, một trong "instance" (mỗi vật một hình), "region" (gộp các mảnh thành một vùng), '
+    '"ground" (vùng mặt đường liền với xe), "edge" (mép của vùng mặt đường), "centerline" (đường giữa vệt sơn)}], '
     '"exclude": [những thứ guideline dặn KHÔNG gán, ví dụ poster, gương], '
     '"tracking": {"reid_max_gap_frames": số hoặc null, "max_occluded_keyframes": số hoặc null}}'
 )
@@ -429,6 +456,15 @@ def build(task_labels: list[dict], profiles: dict[str, dict], *, project: Option
                 entry = {"name": name, "shape": shape or (analysis_shape(analysis, name) or "rectangle"), "prompts": prompts}
                 if entry["shape"] == "polyline":
                     entry["polyline_mode"], entry["join_dashes"] = "centerline", True
+                # 0.9.5: cách dựng hình theo định nghĩa trong guideline (gộp vùng, mặt đường, mép đường), không theo tên label
+                strategy = hint.get("strategy") if hint.get("strategy") in STRATEGIES else None
+                strategy = strategy or shape_strategy(name, entry["shape"], str(hint.get("definition") or defs.get(norm(name)) or ""))
+                if strategy and strategy != "instance":
+                    entry["strategy"] = strategy
+                    extra = STRATEGY_PROMPTS.get(strategy) or []
+                    if source in ("tên label", "") or not prompts:
+                        entry["prompts"] = list(dict.fromkeys(extra + prompts))[:3]
+                    row["details"].append({"name": "cách dựng hình", "text": STRATEGY_TEXT[strategy]})
                 row.update(how=f"SAM3 tìm '{', '.join(prompts)}'" if prompts else "Chưa có prompt tiếng Anh: điền ở tab Label",
                            source=source, status="ok" if prompts else "bad")
             min_px = hint.get("min_px") or min_size_px(markdown, name)
@@ -488,6 +524,8 @@ def build(task_labels: list[dict], profiles: dict[str, dict], *, project: Option
         "labels": entries, "rules": rules,
         "checklist": analysis.get("checklist") or [],
         "exclude": [str(x) for x in llm_data.get("exclude") or []][:20],
+        # 0.9.5: các đoạn guideline Claude cần khi xem ảnh (occluded/outside, thuộc tính, tag, những thứ không gán)
+        "guide_notes": guide_notes(markdown) if markdown else "",
     }
     if not markdown:
         warnings.append("Chưa có guideline: tool dựng theo label của task và profile có sẵn. Thêm guideline để tool hiểu "

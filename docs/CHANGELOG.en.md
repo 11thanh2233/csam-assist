@@ -3,6 +3,45 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.5 (2026-11-24)
+
+Details and test results are in `docs/CHECKLIST_0.9.5.md` (Vietnamese). The direction of this release: the tool adapts
+to each project's guideline and to how YOU settle labels, instead of hand-written rules per label.
+
+- **Claude reviews the image** (needs an Anthropic API key in the app's Settings; turn it off with the "Claude reviews the
+  image" box in the Suggest tab):
+  - each suggestion sends the frame with numbered proposals, plus zoomed crops of small objects, together with the
+    guideline, labels, attributes and your past corrections;
+  - Claude fills attributes and tags with the task's own values;
+  - it judges `occluded` / `outside` on the object itself, and on each skeleton part (sunglasses, a hat, a moustache
+    over the mouth…);
+  - it suggests dropping what the guideline excludes (people in photos, too little visible);
+  - it points to objects SAM3 missed so SAM3 redraws them;
+  - a daily call limit applies (500 by default, change it in the app's Settings).
+- **Project memory** (Learning tab):
+  - the tool remembers the values you settle on at each Save, compared with what it suggested;
+  - it learns file-name conventions (e.g. `_MVL` = left mirror camera) and keeps tags across an image sequence;
+  - Claude summarises corrections into project "lessons"; you can also write rules and delete wrong ones.
+- **Pick attributes in the panel:** each proposal has a dropdown per attribute (tool / Claude values pre-selected, yellow
+  boxes need your choice); click `occluded` / `visible` to switch. No more fixing them in CVAT after saving.
+- **occluded judged on the object itself:** two overlapping boxes no longer set `occluded`; they are flagged for review
+  (or Claude decides).
+- **Face skeletons:** sunglasses over the eyes no longer drop the nose and lips too. The "below threshold, whole skeleton
+  Outside" rule only applies when the guideline sets a threshold for that skeleton. Hats and moustaches are now occluders.
+- **Body skeletons:** people with too few visible points, or inside a picture frame, poster, screen or mirror, start unticked.
+- **Polygons / polylines follow the guideline:** when creating a Project profile, the tool reads definitions to choose
+  how shapes are built:
+  - merge parts into one area (a crosswalk is one polygon around its stripes);
+  - road area connected to the car (drivable comes out on its own, with a current lane / adjacent lane attribute);
+  - the road area's edge as road_curb;
+  - paint inside a crosswalk is not a lane.
+- **Tags:** fisheye images are recognised with only two dark corners; when the direction is unknown, you choose instead
+  of getting `front`.
+- **Faster tracking, same accuracy:**
+  - SAM3 runs in bf16 / fp16 on GPU, about half the VRAM;
+  - "Smart" mode runs SAM3 on keyframes, checks inside each gap, and runs every frame where interpolation drifts;
+  - pick "Every frame" to run as before.
+
 ## 0.9.4 (2026-11-23)
 
 Details and test results are in `docs/CHECKLIST_0.9.4.md` (Vietnamese).

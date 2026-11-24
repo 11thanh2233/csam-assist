@@ -39,7 +39,7 @@ def create_engine(settings: Settings) -> Engine:
         try:
             from .sam3_hf import Sam3TransformersEngine
 
-            engine = Sam3TransformersEngine(settings.device, settings.hf_model, settings.min_conf)
+            engine = Sam3TransformersEngine(settings.device, settings.hf_model, settings.min_conf, settings.dtype)
             engine.load()
             return engine
         except Exception as exc:  # noqa: BLE001

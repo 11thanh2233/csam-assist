@@ -64,7 +64,8 @@ def test_occluded_and_existing_duplicate(store):
     existing = [{"type": "rectangle", "label_id": 3, "points": [500, 340, 760, 500]}]
     result = run_bdd(store, script, existing)
     cars = sorted(by_label(result, "car"), key=lambda p: p["bbox"][0])
-    assert cars[0]["occluded"] and any(f["code"] == "ATTRIBUTE_CHECK" for f in cars[0]["flags"])
+    # 0.9.5: chồng khung không còn tự đặt occluded (occluded xét theo chính vật), chỉ gắn cờ để xem
+    assert not cars[0]["occluded"] and any(f["code"] == "ATTRIBUTE_CHECK" for f in cars[0]["flags"])
     assert not cars[1]["occluded"]
     assert not cars[1]["checked"] and any(f["code"] == "DUPLICATE" for f in cars[1]["flags"])
 

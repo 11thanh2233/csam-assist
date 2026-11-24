@@ -53,6 +53,8 @@ class Runtime:
     video: Optional[LazyEngine] = None   # SAM3 Video, chỉ nạp khi người dùng bật
     cache: "OrderedDict[str, tuple[np.ndarray, Any]]" = OrderedDict()
     cancelled: set = set()               # phiên SAM3 Video panel đã bỏ cuộc (0.9.4)
+    memory: Any = None                   # trí nhớ của từng project (0.9.5)
+    judge: Any = None                    # Claude xem ảnh (0.9.5)
 
 
 rt = Runtime()
@@ -82,6 +84,11 @@ async def lifespan(_: FastAPI):
         log.info("Tự nhả model sau %g phút không dùng.", settings.idle_unload_min)
     rt.guide = GuidelineService(Library(settings.library_dir), guideline_llm.from_env())
     rt.learner = Learner(settings.library_dir / "learning")
+    from .judge import Judge, Usage
+    from .memory import ProjectMemory
+
+    rt.memory = ProjectMemory(settings.library_dir / "memory")
+    rt.judge = Judge(rt.guide.llm, Usage(settings.library_dir / "memory" / "_usage.json", settings.llm_daily_limit))
     from .custom_model import CustomStore, Trainer
 
     rt.custom = CustomStore(settings.library_dir / "custom")
@@ -206,6 +213,8 @@ class ProposeReq(ResolveReq):
     image_b64: str
     existing: list[dict] = Field(default_factory=list)
     use_custom: bool = False   # dùng model riêng của dự án cho các class đã đạt chuẩn (nhanh hơn SAM3)
+    use_llm: bool = False      # 0.9.5: cho Claude xem ảnh để duyệt đề xuất, điền thuộc tính, tag, tìm vật sót
+    filename: str = ""         # tên file của frame: tool học quy ước tên file (vd _MVL = camera gương trái)
 
 
 class InteractiveReq(ResolveReq):
@@ -589,6 +598,8 @@ def health() -> dict:
         "gpu": gpu_info(),
         "model_loaded": getattr(rt.engine, "loaded", True),
         "idle_unload_min": settings.idle_unload_min,
+        "vision_llm": bool(rt.judge and rt.judge.available()),
+        "llm_usage": rt.judge.usage.status() if rt.judge else None,
     }
 
 
@@ -703,6 +714,8 @@ def propose(req: ProposeReq) -> dict:
             result["custom_labels"] = sorted(custom["names"])
         else:
             result = pipeline.propose(rt.engine, state, image, profile, cfgs, req.existing)
+    if req.use_llm:
+        llm_review(req, profile, cfgs, image, state, result)
     if req.ignore_zones:
         before = len(result["proposals"])
         result["proposals"] = [p for p in result["proposals"] if not tracking.in_zones(p.get("bbox") or [0, 0, 0, 0], req.ignore_zones)]
@@ -732,9 +745,133 @@ def propose_mixed(req: ProposeReq, profile: dict, cfgs: list[dict], image: np.nd
         kp = keypoints.propose(rt.engine, state, image, profile, cfgs, req.existing, rt.body, rt.face)
         result["proposals"] += kp["proposals"]
         result["warnings"] = result.get("warnings", []) + kp["warnings"]
-    result["tags"] = tagrules.suggest(image, [c for c in cfgs if c["shape"] == "tag" and c["enabled"] and c["supported"]])
+    mem = rt.memory.load(profile["id"]) if rt.memory else None
+    guess = (lambda label, attr: rt.memory.token_guess(profile["id"], label, attr, req.filename, mem)) if mem and req.filename else None
+    result["tags"] = tagrules.suggest(image, [c for c in cfgs if c["shape"] == "tag" and c["enabled"] and c["supported"]],
+                                      guess=guess, filename=req.filename)
     result["seconds"] = round(time.time() - started, 2)
     return result
+
+
+def llm_review(req: ProposeReq, profile: dict, cfgs: list[dict], image: np.ndarray, state: Any, result: dict) -> None:
+    """0.9.5: Claude xem frame đã đánh số đề xuất, duyệt theo guideline + label của task + những gì project đã học."""
+    from . import judge as J
+    from . import tags as tagrules
+
+    warnings = result.setdefault("warnings", [])
+    if rt.judge is None or not rt.judge.available():
+        warnings.append("Chưa bật Claude (cần Anthropic API key trong Cài đặt của app): tool chỉ dùng cách đo trên ảnh.")
+        return
+    started = time.time()
+    h, w = image.shape[:2]
+    tag_cfgs = [c for c in cfgs if c["shape"] == "tag" and c["enabled"] and c["supported"]]
+    tags = result.setdefault("tags", [])
+    labels = sorted({p.get("label_name") or "" for p in result["proposals"]} | {c["name"] for c in tag_cfgs})
+    mem = rt.memory.load(profile["id"])
+    memory = {"lessons": mem["lessons"], "examples": rt.memory.examples(profile["id"], labels, data=mem)}
+    hints = {}
+    if tag_cfgs:
+        hints = {"mean_brightness_0_255": int(round(tagrules.brightness(image))), "infrared": bool(tagrules.is_infrared(image)),
+                 "fisheye": bool(tagrules.fisheye_like(image))}
+    text, images, items = J.build_request(image, result["proposals"], cfgs, profile, tags, tag_cfgs, memory,
+                                          req.filename, hints)
+    try:
+        answer = rt.judge.ask(text, images)
+    except Exception as exc:  # noqa: BLE001 - Claude lỗi thì giữ kết quả của tool
+        warnings.append(f"Claude không xem được ảnh: {str(exc)[:200]}")
+        result["llm"] = {"used": False, "error": str(exc)[:200], "usage": rt.judge.usage.status()}
+        return
+    done = J.apply(answer, result["proposals"], items, cfgs, tags, tag_cfgs, w, h)
+    added = fill_missing(state, image, profile, cfgs, done["missing"], result["proposals"])
+    result["llm"] = {"used": True, "changed": done["changed"], "dropped": done["dropped"], "added": added,
+                     "seconds": round(time.time() - started, 2), "usage": rt.judge.usage.status()}
+
+
+def fill_missing(state: Any, image: np.ndarray, profile: dict, cfgs: list[dict], missing: list[dict], proposals: list[dict]) -> int:
+    """Vật Claude thấy bị sót: SAM3 vẽ lại trong khung Claude chỉ, rồi dựng hình theo kiểu của label."""
+    if not missing:
+        return 0
+    h, w = image.shape[:2]
+    rules = profile.get("rules", {})
+    by_id = {c["label_id"]: c for c in cfgs}
+    dets, lanes = [], []
+    for m in missing:
+        cfg = by_id.get(m["label_id"])
+        box = G.clamp_box(m["box"], w, h)
+        if any(p.get("label_id") == cfg["label_id"] and p.get("bbox") and G.box_iou(p["bbox"], box) > 0.5 for p in proposals):
+            continue
+        try:
+            found = rt.engine.segment_box(state, box, (cfg.get("prompts") or [None])[0], 0.2, None)
+        except Exception:  # noqa: BLE001
+            found = []
+        if not found:
+            continue
+        best = max(found, key=lambda inst: G.box_iou(G.mask_bbox(inst.mask.astype(bool)) or [0, 0, 0, 0], box) + 0.2 * inst.score)
+        mask = G.clean_mask(best.mask.astype(bool))
+        mbox = G.mask_bbox(mask) or box
+        det = pipeline.Det(cfg, mask, float(best.score), "claude", mbox)
+        pipeline.add_flag(det.flags, "LLM_ADDED", "Claude thấy vật này bị sót; SAM3 vẽ lại trong vùng Claude chỉ. Kiểm tra kỹ."
+                          + (f" ({m['why']})" if m.get("why") else ""))
+        (lanes if cfg["shape"] == "polyline" else dets).append(det)
+    new = pipeline.objects_to_proposals(dets, w, h, rules, [])
+    if lanes:
+        items = pipeline.build_lanes(lanes, image, rules, {norm(c["name"]): c for c in cfgs if c["supported"]})
+        new += pipeline.lanes_to_proposals(items, w, h)
+    for p in new:
+        p["llm_added"] = True
+    proposals += new
+    return len(new)
+
+
+# ------------------------------------------------- trí nhớ của project ---
+class MemoryRecordReq(BaseModel):
+    profile_id: str
+    items: list[dict] = Field(default_factory=list)
+
+
+class LessonReq(BaseModel):
+    text: str
+
+
+@app.post("/memory/record", dependencies=[Depends(require_key)])
+def memory_record(req: MemoryRecordReq) -> dict:
+    """Panel gửi giá trị bạn chốt lúc bấm Ghi (thuộc tính, tag, occluded, đề xuất bị bỏ) kèm giá trị tool đã gợi ý."""
+    new = rt.memory.record(req.profile_id, req.items[:500])
+    return {"corrections": new, "summary": rt.memory.summary(req.profile_id)}
+
+
+@app.get("/memory/{profile_id}", dependencies=[Depends(require_key)])
+def memory_get(profile_id: str) -> dict:
+    return {"summary": rt.memory.summary(profile_id),
+            "llm": {"available": bool(rt.judge and rt.judge.available()), **(rt.guide.llm_info(False) if rt.guide else {})},
+            "usage": rt.judge.usage.status() if rt.judge else None}
+
+
+@app.post("/memory/{profile_id}/distill", dependencies=[Depends(require_key)])
+def memory_distill(profile_id: str) -> dict:
+    """Claude tóm các lần bạn sửa thành vài luật ngắn cho project."""
+    if rt.judge is None or not rt.judge.available():
+        raise HTTPException(status_code=400, detail="Cần bật Claude (Anthropic API key trong Cài đặt của app) để tóm bài học.")
+    if not rt.judge.usage.allow():
+        raise HTTPException(status_code=429, detail="Đã dùng hết lượt Claude hôm nay.")
+    profile = rt.store.profiles.get(profile_id) or {}
+    try:
+        lessons = rt.memory.distill(profile_id, rt.judge.llm, profile.get("guide_notes") or "")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Claude không tóm được bài học: {str(exc)[:200]}") from exc
+    rt.judge.usage.add(getattr(rt.judge.llm, "last_usage", None))
+    return {"lessons": lessons, "summary": rt.memory.summary(profile_id)}
+
+
+@app.post("/memory/{profile_id}/lessons", dependencies=[Depends(require_key)])
+def memory_add_lesson(profile_id: str, req: LessonReq) -> dict:
+    """Bạn tự viết một luật cho project (Claude đọc luật này ở mọi lần xem ảnh sau)."""
+    return {"lessons": rt.memory.add_lessons(profile_id, [req.text], source="you")}
+
+
+@app.delete("/memory/{profile_id}/lessons/{lesson_id}", dependencies=[Depends(require_key)])
+def memory_delete_lesson(profile_id: str, lesson_id: str) -> dict:
+    return {"lessons": rt.memory.delete_lesson(profile_id, lesson_id)}
 
 
 # ------------------------------------------------------------ model riêng ---

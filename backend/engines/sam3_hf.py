@@ -23,7 +23,9 @@ log = logging.getLogger("sam3-assist")
 class Sam3TransformersEngine(Engine):
     name = "transformers"
 
-    def __init__(self, device: str = "auto", model_id: str = "facebook/sam3", min_conf: float = 0.25):
+    def __init__(self, device: str = "auto", model_id: str = "facebook/sam3", min_conf: float = 0.25, dtype: str = "auto"):
+        self._requested_dtype = (dtype or "auto").lower()
+        self.dtype = None
         self._requested_device = device
         self._model_id = model_id
         self._min_conf = min_conf
@@ -39,8 +41,43 @@ class Sam3TransformersEngine(Engine):
 
         self.torch = torch
         self.device = resolve_device(self._requested_device)
-        self.model = Sam3Model.from_pretrained(self._model_id).to(self.device).eval()
+        self.dtype = self._pick_dtype(torch)
+        self.model = Sam3Model.from_pretrained(self._model_id, torch_dtype=self.dtype).to(self.device).eval()
         self.processor = Sam3Processor.from_pretrained(self._model_id)
+        log.info("SAM3 dtype: %s", str(self.dtype).replace("torch.", ""))
+
+    def _pick_dtype(self, torch):
+        """0.9.5: trên GPU chạy bf16 (hoặc fp16 nếu card không có bf16): VRAM giảm khoảng một nửa so với fp32.
+        Thiếu VRAM là lý do chính làm theo dõi cả job chậm hàng chục lần trên Windows (VRAM tràn sang RAM thường)."""
+        want = self._requested_dtype
+        if self.device != "cuda" or want in ("float32", "fp32"):
+            return torch.float32
+        if want in ("float16", "fp16"):
+            return torch.float16
+        if want in ("bfloat16", "bf16"):
+            return torch.bfloat16
+        try:
+            return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        except Exception:  # noqa: BLE001
+            return torch.float16
+
+    def _half_failed(self, exc: Exception) -> bool:
+        """Lỗi do nửa độ chính xác (bản transformers không hỗ trợ): nạp lại fp32 một lần, chạy tiếp."""
+        msg = str(exc).lower()
+        if self.dtype in (None, self.torch.float32) or not any(k in msg for k in ("dtype", "half", "bfloat16", "scalar type", "same type")):
+            return False
+        log.warning("SAM3 %s lỗi (%s); chuyển về float32.", self.dtype, str(exc)[:200])
+        self.model = self.model.to(self.torch.float32)
+        self.dtype = self.torch.float32
+        self._requested_dtype = "float32"
+        return True
+
+    def _cast(self, inputs):
+        """Đưa mọi tensor số thực của đầu vào về đúng dtype của model."""
+        for k, v in list(inputs.items()):
+            if hasattr(v, "is_floating_point") and v.is_floating_point() and v.dtype != self.dtype:
+                inputs[k] = v.to(self.dtype)
+        return inputs
 
     # ------------------------------------------------ SAM 3 Tracker: bấm điểm ---
     TRACKER_IDLE_S = 300            # không bấm điểm 5 phút thì nhả model tracker khỏi VRAM
@@ -115,7 +152,12 @@ class Sam3TransformersEngine(Engine):
         image = Image.fromarray(image_rgb)
         with self._lock, self.torch.no_grad():
             img_inputs = self.processor(images=image, return_tensors="pt").to(self.device)
-            vision_embeds = self.model.get_vision_features(pixel_values=img_inputs.pixel_values)
+            try:
+                vision_embeds = self.model.get_vision_features(pixel_values=img_inputs.pixel_values.to(self.dtype or self.torch.float32))
+            except RuntimeError as exc:
+                if not self._half_failed(exc):
+                    raise
+                vision_embeds = self.model.get_vision_features(pixel_values=img_inputs.pixel_values.float())
         return {
             "image": image,
             "vision_embeds": vision_embeds,
@@ -133,6 +175,10 @@ class Sam3TransformersEngine(Engine):
             )
 
     def _post(self, outputs: Any, target_sizes: Any, threshold: float) -> list[Instance]:
+        for key in ("pred_masks", "pred_boxes", "pred_logits", "presence_logits", "semantic_seg"):
+            v = getattr(outputs, key, None)
+            if v is not None and hasattr(v, "float") and v.dtype != self.torch.float32:
+                setattr(outputs, key, v.float())
         results = self.processor.post_process_instance_segmentation(
             outputs,
             threshold=min(threshold, max(self._min_conf, 0.05)),
@@ -150,7 +196,7 @@ class Sam3TransformersEngine(Engine):
         with self._lock, self.torch.no_grad():
             text_inputs = self.processor(text=prompt, return_tensors="pt").to(self.device)
             self._check_prompt(text_inputs, prompt)
-            outputs = self.model(vision_embeds=state["vision_embeds"], **text_inputs)
+            outputs = self.model(vision_embeds=state["vision_embeds"], **self._cast(text_inputs))
             return self._post(outputs, state["target_sizes"], threshold)
 
     def segment_box(
@@ -167,7 +213,7 @@ class Sam3TransformersEngine(Engine):
         if prompt:
             kwargs["text"] = prompt
         with self._lock, self.torch.no_grad():
-            inputs = self.processor(**kwargs).to(self.device)
+            inputs = self._cast(self.processor(**kwargs).to(self.device))
             if prompt:
                 self._check_prompt(inputs, prompt)
             if self._reuse_vision is not False and state.get("vision_embeds") is not None:

@@ -43,6 +43,10 @@ class Settings:
         self.hf_model = os.getenv("SAM3_HF_MODEL", "facebook/sam3")
         # Kiểu số của SAM3 Video (theo dõi thử nghiệm): auto = float16 trên GPU, float32 trên CPU.
         self.video_dtype = os.getenv("SAM3_VIDEO_DTYPE", "auto")
+        # 0.9.5: SAM3 ảnh chạy nửa độ chính xác trên GPU (bf16/fp16, nhẹ VRAM một nửa). "float32" để về như cũ.
+        self.dtype = os.getenv("SAM3_DTYPE", "auto")
+        # 0.9.5: số lần gọi Claude xem ảnh tối đa mỗi ngày (0 = không giới hạn)
+        self.llm_daily_limit = int(os.getenv("SAM3_LLM_DAILY_LIMIT", "500") or 0)
         # Đường dẫn checkpoint cục bộ (tuỳ chọn, chỉ dùng cho engine "sam3").
         self.checkpoint = os.getenv("SAM3_CHECKPOINT", "")
         # Ngưỡng tin cậy thấp nhất mà model trả về; từng label lọc tiếp theo ngưỡng riêng.

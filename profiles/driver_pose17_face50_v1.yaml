@@ -191,7 +191,7 @@ rules:
     yaw: {nose: 1, left_corner: 33, right_corner: 263, ratio: 2.5, occluded_ratio: 5.0}
     # Vật che mặt do SAM3 tìm. Điểm nằm dưới vật che -> Occluded. Skeleton còn thấy dưới `min_visible` điểm -> Outside cả skeleton.
     # Kính trong suốt không nằm trong danh sách: guideline coi là Visible.
-    occluders: ["sunglasses", "hand", "face mask"]
+    occluders: ["sunglasses", "hand", "face mask", "hat", "mustache"]
 
   dedup:
     existing_iou: 0.5         # trùng với skeleton đã có (ví dụ pre-label) -> gắn cờ, bỏ tick

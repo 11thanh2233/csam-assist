@@ -3,6 +3,41 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.5 (2026-11-24)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.5.md`. Hướng chung của bản này: tool thích nghi theo guideline và
+cách BẠN chốt nhãn của từng project, không viết luật riêng cho từng label.
+
+- **Claude xem ảnh** (cần Anthropic API key trong Cài đặt của app; tắt được bằng ô "Claude xem ảnh" ở tab Gợi ý):
+  - mỗi lần gợi ý, tool gửi frame đã đánh số từng đề xuất, cộng ảnh phóng to cho vật nhỏ, kèm guideline, label,
+    thuộc tính và các lần bạn đã sửa;
+  - Claude điền thuộc tính và tag theo đúng giá trị của task;
+  - xét `occluded` / `outside` theo chính vật, và từng bộ phận của skeleton (kính râm, mũ, ria che miệng…);
+  - đề nghị bỏ đề xuất guideline không gán (người trong ảnh chụp, thấy quá ít);
+  - chỉ ra vật SAM3 bỏ sót để SAM3 vẽ lại;
+  - có giới hạn số lần mỗi ngày (mặc định 500, đổi trong Cài đặt của app).
+- **Trí nhớ của project** (tab Tự học):
+  - tool nhớ giá trị bạn chốt mỗi lần bấm Ghi, so với giá trị nó gợi ý;
+  - học quy ước tên file (vd `_MVL` là camera gương trái) và giữ tag theo chuỗi ảnh;
+  - Claude tóm các lần sửa thành "bài học" cho project; bạn cũng tự viết được luật, xoá được luật sai.
+- **Chọn thuộc tính ngay trên panel:** mỗi đề xuất có ô chọn cho từng thuộc tính (giá trị tool / Claude đã chọn
+  sẵn, ô vàng là chỗ cần bạn chọn); bấm `occluded` / `visible` để đổi. Không phải sửa trong CVAT sau khi ghi.
+- **occluded theo chính vật:** tool không còn tự đặt `occluded` chỉ vì hai khung chồng nhau, mà gắn cờ để xem
+  (hoặc Claude quyết định).
+- **Skeleton mặt:** kính râm che mắt không còn làm mất cả mũi và môi. Luật "thấy dưới ngưỡng thì Outside cả
+  skeleton" chỉ áp khi guideline ghi ngưỡng cho chính skeleton đó. Tool tìm thêm mũ và ria làm vật che.
+- **Skeleton người:** bỏ tick sẵn người thấy quá ít điểm và người nằm trong khung ảnh, poster, màn hình, gương.
+- **Polygon / polyline theo guideline:** khi tạo Profile cho project, tool đọc định nghĩa để chọn cách dựng hình:
+  - gộp các mảnh thành một vùng (crosswalk là một polygon bao các vạch);
+  - vùng mặt đường liền với xe (drivable tự ra, có thuộc tính làn đang đi / làn bên cạnh);
+  - mép vùng mặt đường làm road_curb;
+  - vạch nằm trong vùng crosswalk không thành lane.
+- **Tag:** nhận ra ảnh fisheye khi chỉ hai góc tối; không biết hướng thì để bạn chọn thay vì ghi `front`.
+- **Theo dõi nhanh hơn, giữ độ chính xác:**
+  - SAM3 chạy bf16 / fp16 trên GPU, VRAM giảm khoảng một nửa;
+  - chế độ "Thông minh" chạy SAM3 trên keyframe, kiểm tra giữa mỗi khoảng, chỗ nội suy lệch thì chạy từng frame;
+  - chọn "Mọi frame" để chạy như cũ.
+
 ## 0.9.4 (2026-11-23)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.4.md`.
