@@ -14,6 +14,10 @@ const assert = require('assert');
 const { spawn, execFileSync } = require('child_process');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
+// Python của máy đang chạy test: Windows chỉ có 'python' (không có 'python3'), Linux/macOS có 'python3'.
+// Đặt biến môi trường PYTHON để dùng trình thông dịch khác (venv, py -3.12...).
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 8798;
 const BACKEND = `http://127.0.0.1:${PORT}`;
@@ -653,13 +657,13 @@ async function projectProfileScenario(frameBytes) {
 
 // 0.9.4: job CVAT 3D: cuboid từ point cloud, ghi shape và track kiểu cuboid
 async function lidarScenario(frameBytes) {
-  const cloud = execFileSync('python3', ['-c', 'import sys; sys.path[:0] = ["tests", "."]; from test_v094 import _scene, _pcd; sys.stdout.buffer.write(_pcd(_scene()))'], { cwd: ROOT });
+  const cloud = execFileSync(PY, ['-c', 'import sys; sys.path[:0] = ["tests", "."]; from test_v094 import _scene, _pcd; sys.stdout.buffer.write(_pcd(_scene()))'], { cwd: ROOT });
   const labels = [
     { id: 801, name: 'Car', type: 'cuboid', color: '#33aa55', attributes: [], parent_id: null, has_parent: false },
     { id: 802, name: 'Pedestrian', type: 'cuboid', color: '#aa3355', attributes: [], parent_id: null, has_parent: false },
   ];
   // 0.9.6: kèm ảnh camera (zip context image của CVAT) để đi qua bước đối chiếu camera
-  const context = execFileSync('python3', ['-c', 'import io, sys, zipfile, numpy, cv2; b = io.BytesIO(); z = zipfile.ZipFile(b, "w"); '
+  const context = execFileSync(PY, ['-c', 'import io, sys, zipfile, numpy, cv2; b = io.BytesIO(); z = zipfile.ZipFile(b, "w"); '
     + 'z.writestr("CAM_FRONT.jpg", cv2.imencode(".jpg", numpy.full((90, 160, 3), 80, numpy.uint8))[1].tobytes()); z.close(); sys.stdout.buffer.write(b.getvalue())'], { cwd: ROOT });
   const page = openPage({ jobId: 81, frame: 0, stop: 3, mode: 'interpolation', labels, dimension: '3d', cloud, context }, frameBytes);
   const { root, store, button, status } = page;
@@ -695,8 +699,9 @@ async function lidarScenario(frameBytes) {
   assert.ok(patch.body.shapes.every((s) => s.type === 'cuboid' && s.points.length === 16));
   assert.deepStrictEqual(patch.body.shapes.map((s) => s.label_id).sort(), [801, 802]);
   button('Cả job').click();
-  button('Dựng track cho 4 frame').click();
-  await until(() => /2 track cuboid/.test(status()), 'track cuboid: ' + status());
+  // 0.9.7: luồng 3 bước — một nút chính chạy phiên theo lô (init -> geometry -> vision -> result)
+  button('Bắt đầu dựng Cuboid 3D').click();
+  await until(() => /2 track:/.test(status()), 'track cuboid: ' + status());
   button('Ghi 2 track').click();
   const patch2 = await until(() => store.calls.filter((c) => c.method === 'PATCH' && c.path.includes('create'))[1], 'ghi track cuboid: ' + status());
   assert.strictEqual(patch2.body.tracks.length, 2);
@@ -707,13 +712,13 @@ async function lidarScenario(frameBytes) {
 
 async function main() {
   const jpg = path.join(os.tmpdir(), `sam3-assist-smoke2-${process.pid}.jpg`);
-  execFileSync('python3', ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
+  execFileSync(PY, ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
   const frameBytes = fs.readFileSync(jpg);
   fs.unlinkSync(jpg);
   // Thư viện guideline tạm: không ghi bài học của test vào thư mục thật.
   const libDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sam3-assist-lib-'));
   fs.cpSync(path.join(ROOT, 'guideline_library'), libDir, { recursive: true, filter: (src) => !/runs$|lessons\.jsonl$/.test(src) });
-  const server = spawn('python3', ['-m', 'backend'], {
+  const server = spawn(PY, ['-m', 'backend'], {
     cwd: ROOT, stdio: 'ignore',
     env: { ...process.env, SAM3_ENGINE: 'mock', SAM3_PORT: String(PORT), SAM3_API_KEY: 'smoke-key', GUIDELINE_LLM: 'none', SAM3_LIBRARY_DIR: libDir,
       SAM3_PROFILES_DIR: PROFILES_DIR },

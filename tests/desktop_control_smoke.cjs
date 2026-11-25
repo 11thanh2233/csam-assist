@@ -10,6 +10,10 @@ const assert = require('assert');
 const { spawn } = require('child_process');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
+// Python của máy đang chạy test: Windows chỉ có 'python' (không có 'python3'), Linux/macOS có 'python3'.
+// Đặt biến môi trường PYTHON để dùng trình thông dịch khác (venv, py -3.12...).
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 8795;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -29,7 +33,7 @@ process.on('unhandledRejection', (e) => { apiErrors.push(String(e && e.message |
 
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sam3-control-smoke-'));
-  const helper = spawn('python3', [path.join(ROOT, 'tests', 'desktop_control_helper.py'), String(PORT), tmp], { cwd: ROOT, stdio: 'inherit' });
+  const helper = spawn(PY, [path.join(ROOT, 'tests', 'desktop_control_helper.py'), String(PORT), tmp], { cwd: ROOT, stdio: 'inherit' });
   try {
     for (let i = 0; i < 60; i++) { try { await call('status', []); break; } catch (e) { await sleep(200); } }
     const errors = [];

@@ -12,6 +12,10 @@ const assert = require('assert');
 const { spawn, execFileSync } = require('child_process');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
+// Python của máy đang chạy test: Windows chỉ có 'python' (không có 'python3'), Linux/macOS có 'python3'.
+// Đặt biến môi trường PYTHON để dùng trình thông dịch khác (venv, py -3.12...).
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+
 const ROOT = path.resolve(__dirname, '..');
 const BE_PORT = 8797, HELPER_PORT = 8796, KEY = 'desktop-smoke-key';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -31,12 +35,12 @@ const LABELS = ['car', 'pedestrian', 'traffic light'].map((name, i) => ({ id: 10
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sam3-desktop-smoke-'));
   const jpg = path.join(tmp, 'f.jpg');
-  execFileSync('python3', ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
+  execFileSync(PY, ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
   const frameBytes = fs.readFileSync(jpg);
   const bootFile = path.join(tmp, 'boot.js');
-  const backend = spawn('python3', ['-m', 'backend'], { cwd: ROOT, stdio: 'ignore',
+  const backend = spawn(PY, ['-m', 'backend'], { cwd: ROOT, stdio: 'ignore',
     env: { ...process.env, SAM3_ENGINE: 'mock', SAM3_PORT: String(BE_PORT), SAM3_API_KEY: KEY, SAM3_LIBRARY_DIR: path.join(tmp, 'lib') } });
-  const helper = spawn('python3', [path.join(ROOT, 'tests', 'desktop_bridge_helper.py'), String(HELPER_PORT), String(BE_PORT), KEY, tmp, bootFile],
+  const helper = spawn(PY, [path.join(ROOT, 'tests', 'desktop_bridge_helper.py'), String(HELPER_PORT), String(BE_PORT), KEY, tmp, bootFile],
     { cwd: ROOT, stdio: 'inherit' });
   try {
     for (let i = 0; i < 150; i++) { try { if ((await fetch(`http://127.0.0.1:${BE_PORT}/health`)).ok) break; } catch (e) { await sleep(200); } }

@@ -529,11 +529,8 @@
       hover(li, 't' + t.tid);
       return li;
     })));
-    // thanh hành động ghim dưới đáy: ghi các track đã chọn
-    const checked = S.tracks.filter((t) => t.checked).length;
+    // 0.9.7: nút ghi nằm ở thanh hành động ghim đáy (renderActions); ở đây chỉ có "Bỏ kết quả"
     out.push(h('div', { class: 'row' },
-      h('button', { class: 'primary grow', type: 'button', disabled: busy || !checked, onclick: applyTracks,
-        text: `Ghi ${checked} track đã chọn vào CVAT` }),
       h('button', { type: 'button', disabled: busy, onclick: clearTracks, text: 'Bỏ kết quả' })));
     return out;
   }

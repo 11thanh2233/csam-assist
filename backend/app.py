@@ -1306,19 +1306,19 @@ class LidarSessionInitReq(ResolveReq):
 
 
 class LidarSessionFramesReq(ResolveReq):
-    session_id: str
+    session_id: str = ""                    # không bắt buộc: đường dẫn đã có; panel có gửi thì kiểm khớp
     frames: list[LidarFrame] = Field(default_factory=list, max_length=40)
 
 
 class LidarSessionStepReq(ResolveReq):
-    session_id: str
+    session_id: str = ""
     frames: Optional[list[int]] = None      # chỉ chạy các frame này (None = các frame chưa chạy)
     limit: int = 20                         # số frame mỗi lô (10-20 theo spec)
     offset_deg: Optional[float] = None
 
 
 class LidarSessionLlmReq(ResolveReq):
-    session_id: str
+    session_id: str = ""
     batch_size: int = 8                     # số track mỗi lô gửi Claude (6-10 theo spec)
     use_llm: bool = True
 
@@ -1545,7 +1545,7 @@ def lidar_v2_frames(sid: str, req: LidarSessionFramesReq) -> dict:
     """Nhận thêm lô frame (point cloud + ảnh camera). Gọi nhiều lần cho tới khi đủ cả job."""
     from . import lidar_session
 
-    if req.session_id != sid:
+    if req.session_id and req.session_id != sid:
         raise HTTPException(status_code=400, detail="session_id trong đường dẫn và thân request không khớp.")
     sess, _profile, _rule, _table, info = _session_of(req)
     batch, contexts = [], {}

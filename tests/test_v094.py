@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -639,8 +640,14 @@ def test_machine_check_rows(tmp_path):
 def test_machine_check_linux_and_vc(tmp_path):
     from desktop import machine
 
-    rows = machine.check(tmp_path)          # máy test là Linux: chỉ ổ đĩa và RAM
-    assert {r["key"] for r in rows} <= {"disk", "ram"} and any(r["key"] == "disk" for r in rows)
+    if sys.platform == "win32":
+        # Windows: machine.check trả đủ các hàng (windows, disk, ram, webview2, vcredist, wsl, docker).
+        # Phần đó do test_machine_check_rows kiểm với probe giả; ở đây chỉ kiểm phần độc lập hệ.
+        rows = {r["key"]: r for r in machine.check(tmp_path)}
+        assert {"disk", "ram"} <= set(rows) and rows["disk"]["kind"] == "ok"
+    else:
+        rows = machine.check(tmp_path)          # máy test là Linux: chỉ ổ đĩa và RAM
+        assert {r["key"] for r in rows} <= {"disk", "ram"} and any(r["key"] == "disk" for r in rows)
     sys32 = tmp_path / "System32"
     sys32.mkdir()
     (sys32 / "vcruntime140.dll").write_bytes(b"")

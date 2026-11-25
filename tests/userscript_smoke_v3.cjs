@@ -15,6 +15,10 @@ const assert = require('assert');
 const { spawn, execFileSync } = require('child_process');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
+// Python của máy đang chạy test: Windows chỉ có 'python' (không có 'python3'), Linux/macOS có 'python3'.
+// Đặt biến môi trường PYTHON để dùng trình thông dịch khác (venv, py -3.12...).
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 8793;
 const BACKEND = `http://127.0.0.1:${PORT}`;
@@ -36,9 +40,9 @@ const LABELS = [
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sam3-smoke3-'));
   const jpg = path.join(tmp, 'f.jpg');
-  execFileSync('python3', ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
+  execFileSync(PY, ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
   const frameBytes = fs.readFileSync(jpg);
-  const backend = spawn('python3', ['-m', 'backend'], { cwd: ROOT, stdio: 'ignore',
+  const backend = spawn(PY, ['-m', 'backend'], { cwd: ROOT, stdio: 'ignore',
     env: { ...process.env, SAM3_ENGINE: 'mock', SAM3_PORT: String(PORT), SAM3_API_KEY: 'k3', SAM3_LIBRARY_DIR: path.join(tmp, 'lib') } });
   try {
     for (let i = 0; i < 150; i++) { try { if ((await fetch(`${BACKEND}/health`)).ok) break; } catch (e) { await sleep(200); } }

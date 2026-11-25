@@ -34,7 +34,7 @@ jobs:
       - name: Cài thư viện
         run: |
           python -m pip install -r requirements-dev.txt
-          npm install --no-save jsdom acorn@8 acorn-walk@8
+          npm install --no-save jsdom@31 acorn@8 acorn-walk@8
       - name: Test backend + desktop
         run: python -m pytest -q
       - name: Test userscript và shim desktop (trình duyệt giả)

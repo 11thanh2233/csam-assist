@@ -12,6 +12,10 @@ const assert = require('assert');
 const { spawn, execFileSync } = require('child_process');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
+// Python của máy đang chạy test: Windows chỉ có 'python' (không có 'python3'), Linux/macOS có 'python3'.
+// Đặt biến môi trường PYTHON để dùng trình thông dịch khác (venv, py -3.12...).
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 8799;
 const BACKEND = `http://127.0.0.1:${PORT}`;
@@ -38,11 +42,11 @@ const LABELS = [...OBJECTS, ...OTHERS].map((name, i) => ({
 
 async function main() {
   const jpg = path.join(os.tmpdir(), `sam3-assist-smoke-${process.pid}.jpg`);
-  execFileSync('python3', ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
+  execFileSync(PY, ['-c', `import cv2, numpy; cv2.imwrite(r"${jpg}", numpy.full((720, 1280, 3), 90, numpy.uint8))`]);
   const frameBytes = fs.readFileSync(jpg);
   fs.unlinkSync(jpg);
 
-  const server = spawn('python3', ['-m', 'backend'], {
+  const server = spawn(PY, ['-m', 'backend'], {
     cwd: ROOT, stdio: 'ignore',
     // Thư viện guideline / dữ liệu tự học tạm: test không ghi vào thư mục thật của repo.
     env: { ...process.env, SAM3_ENGINE: 'mock', SAM3_PORT: String(PORT), SAM3_API_KEY: 'smoke-key',

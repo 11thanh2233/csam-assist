@@ -106,6 +106,10 @@ dùng duyệt rồi mới ghi; job 3D không được đụng CUDA context của
 - **L12** `add_frames` cho gửi lại cùng frame trong MỘT lô (kiểm `have` trước vòng lặp, không cập nhật khi thêm). Sửa: cập nhật `have` sau mỗi frame.
 - **L13** `lidarBuckets` bản đầu map sai tên bucket tự suy ('noise'/'review'/'high' không khớp 'suspected_noise'…). Sửa: chuẩn hoá tên bucket trước khi chia rổ.
 - **L14** Userscript bị thiếu `GM_registerMenuCommand` trong stub nạp (không phải lỗi script). Sửa shim kiểm nạp `tests/userscript_load_check.cjs`.
+- **L15** (phát hiện khi chạy smoke v2 trên máy thật) Panel gửi `/lidar/v2/session/{sid}/frames|geometry|vision|llm_batch` **không kèm `session_id`** trong body, nhưng model Pydantic lại bắt buộc trường này → mọi request 422, phiên không chạy được. Sửa: `session_id` thành tuỳ chọn (đường dẫn đã có `sid`), chỉ kiểm khớp khi client có gửi.
+- **L16** Smoke v2 chết ở `button('Dựng track cho 4 frame')` vì nút đó đã thay bằng luồng 3 bước. Sửa test theo giao diện mới: bấm `Bắt đầu dựng Cuboid 3D`, chờ status `N track:`, rồi `Ghi N track` ở thanh ghim đáy. Đồng thời bỏ nút ghi bị lặp trong danh sách (chỉ còn ở footer).
+- **L17** CI `test` job fail: `npm error notarget No matching version found for tldts-core@^7.5.6` — bước `npm install --no-save jsdom` không ghim phiên bản nên kéo bản jsdom mới nhất kèm dependency con hỏng. Sửa workflow: `jsdom@31` (đúng bản tài liệu và máy dev đang dùng).
+- **L18** (harness, không phải lỗi tool) 6 smoke test gọi cứng `'python3'` → `ENOENT` trên Windows; `test_machine_check_linux_and_vc` giả định máy chạy test là Linux → đỏ trên Windows. Sửa: `const PY = process.env.PYTHON || (win32 ? 'python' : 'python3')` trong 6 file, và guard `sys.platform` cho test máy (phần Windows đã có `test_machine_check_rows` kiểm bằng probe giả).
 
 ## Việc còn lại trên máy thật của bạn (trước khi tag v0.9.7)
 
