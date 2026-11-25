@@ -72,8 +72,12 @@ class Settings:
         self.wholebody_model = Path(os.getenv("SAM3_WHOLEBODY_MODEL") or str(ROOT / "models" / "rtmw-wholebody.onnx"))
         # 0.9.8: bộ dò vật 2D cho job 3D (RT-DETR r18vd COCO, Apache-2.0): lọc box 3D không phải xe / người
         self.rtdetr_model = Path(os.getenv("SAM3_RTDETR_MODEL") or str(ROOT / "models" / "rtdetr_r18vd.onnx"))
-        # 0.9.8: đối chiếu camera bằng SAM3 ở job 3D được phép nạp SAM3 khi VRAM trống >= số MB này (0 = không bao giờ)
-        self.sam3_3d_min_free_mb = int(os.getenv("SAM3_3D_SAM3_MIN_FREE_MB", "6000") or 0)
+        # 0.9.9: SAM3 ở job 3D (đối chiếu ảnh camera khi chưa có RT-DETR). auto: nạp khi VRAM trống đủ;
+        # always: luôn nạp khi bạn tick (thiếu VRAM thì nhả và báo); off: không dùng SAM3 ở job 3D.
+        mode = (os.getenv("SAM3_3D_SAM3_MODE", "auto") or "auto").strip().lower()
+        self.sam3_3d_mode = mode if mode in ("auto", "always", "off") else "auto"
+        # Ngưỡng VRAM trống (MB) của chế độ auto. 0 = tự tính theo card: min(3500, 55% tổng VRAM)
+        self.sam3_3d_min_free_mb = int(os.getenv("SAM3_3D_SAM3_MIN_FREE_MB", "0") or 0)
 
 
 settings = Settings()

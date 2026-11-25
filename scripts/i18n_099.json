@@ -1,0 +1,26 @@
+{
+"backend": {
+"Thiếu VRAM khi {0}: đã nhả SAM3, cuboid vẫn giữ nhưng chưa được đối chiếu ảnh camera. Đóng bớt ứng dụng dùng GPU, hoặc cài RT-DETR ở trang Thành phần (nhẹ hơn nhiều).": "Out of VRAM while {0}: SAM3 was released; cuboids are kept but not cross-checked with camera images. Close some apps that use the GPU, or install RT-DETR on the Components page (much lighter).",
+"Job 3D: SAM3 thiếu VRAM khi %s, đã nhả.": "3D job: SAM3 ran out of VRAM while %s, released.",
+"Bạn đã tắt SAM3 cho job 3D (Cài đặt của app): bỏ đối chiếu ảnh camera. Cài RT-DETR ở trang Thành phần để vẫn lọc rác bằng ảnh.": "You turned SAM3 off for 3D jobs (app Settings): skipping the camera cross-check. Install RT-DETR on the Components page to still filter noise with images.",
+"thiếu VRAM ở job 3D": "out of VRAM in a 3D job",
+"Không đọc được VRAM (máy không có GPU NVIDIA?): không nạp SAM3 cho job 3D. Chọn \"Luôn nạp SAM3\" trong Cài đặt của app nếu vẫn muốn, hoặc cài RT-DETR ở trang Thành phần.": "Could not read VRAM (no NVIDIA GPU?): not loading SAM3 for the 3D job. Choose \"Always load SAM3\" in the app Settings if you still want it, or install RT-DETR on the Components page.",
+"VRAM trống {0} MB < {1} MB: chưa nạp SAM3, bỏ đối chiếu ảnh camera. Đóng bớt ứng dụng dùng GPU, chọn \"Luôn nạp SAM3\" trong Cài đặt của app, hoặc cài RT-DETR ở trang Thành phần.": "Free VRAM {0} MB < {1} MB: SAM3 not loaded, skipping the camera cross-check. Close some apps that use the GPU, choose \"Always load SAM3\" in the app Settings, or install RT-DETR on the Components page.",
+"SAM3 xem ảnh camera": "SAM3 was reading camera images",
+"nạp SAM3": "loading SAM3"
+},
+"userscript": {
+"Lọc rác bằng ảnh: SAM3": "Noise filter with images: SAM3",
+"Lọc rác bằng ảnh: đang bỏ qua": "Noise filter with images: skipped",
+"Lọc rác bằng ảnh: tắt (chưa có RT-DETR, SAM3 đã tắt trong Cài đặt)": "Noise filter with images: off (no RT-DETR, SAM3 turned off in Settings)",
+"Lọc rác bằng ảnh: SAM3 (luôn nạp)": "Noise filter with images: SAM3 (always load)",
+"Lọc rác bằng ảnh: SAM3 nếu đủ VRAM": "Noise filter with images: SAM3 if enough VRAM"
+},
+"desktop": {
+"SAM3 ở job 3D (đối chiếu ảnh camera)": "SAM3 in 3D jobs (camera cross-check)",
+"Chỉ dùng khi chưa có RT-DETR. Tự động: nạp khi VRAM trống đủ (khoảng 3.5 GB). Luôn nạp: thiếu VRAM thì tool nhả SAM3 và báo. Áp dụng khi bật lại backend.": "Only used when RT-DETR is not installed. Automatic: loads when enough VRAM is free (about 3.5 GB). Always load: if VRAM runs out the tool releases SAM3 and tells you. Applies when the backend restarts.",
+"SAM3 ở job 3D": "SAM3 in 3D jobs",
+"Luôn nạp khi tôi tick": "Always load when I tick",
+"Không dùng SAM3 ở job 3D": "Don't use SAM3 in 3D jobs"
+}
+}

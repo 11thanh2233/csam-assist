@@ -3,6 +3,20 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.9 (2026-11-26)
+
+Bản vá nhỏ: SAM3 ở job 3D không còn đòi cứng 6 GB VRAM trống. Chỉ ảnh hưởng khi chưa cài RT-DETR (có RT-DETR thì tool
+luôn lọc rác bằng RT-DETR như 0.9.8).
+
+- **Ngưỡng VRAM theo card:** đối chiếu ảnh camera bằng SAM3 ("Gợi ý cuboid frame này") nạp SAM3 khi VRAM trống khoảng
+  3.5 GB (card nhỏ: 55% tổng VRAM), thay cho 6 GB cố định trước đây (card 6–8 GB gần như không bao giờ đủ).
+- **Lựa chọn mới trong Cài đặt của app → Backend và GPU → "SAM3 ở job 3D":** Tự động (mặc định) / Luôn nạp khi tôi
+  tick / Không dùng SAM3 ở job 3D. Áp dụng khi bật lại backend.
+- **Thiếu VRAM không làm hỏng gợi ý:** nạp hoặc chạy SAM3 mà hết bộ nhớ GPU thì tool nhả SAM3, dọn VRAM, báo một dòng
+  lý do, cuboid vẫn trả về (chỉ chưa được đối chiếu ảnh).
+- **Panel nói rõ đang lọc bằng gì:** dòng "Lọc rác bằng ảnh" ở tab Gợi ý ghi RT-DETR / SAM3 / SAM3 nếu đủ VRAM / đang
+  bỏ qua kèm lý do.
+
 ## 0.9.8 (2026-11-25)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.8.md`. Bản này sửa các lỗi làm job 3D "đánh loạn" ở 0.9.7 và cho các

@@ -641,7 +641,7 @@ def health() -> dict:
         "vram": rt.res.status() if rt.res else None,
         "llm_usage": rt.judge.usage.status() if rt.judge else None,
         # 0.9.8: job 3D dựng / lọc bằng gì (panel hiện một dòng ở Bước 1)
-        "lidar3d": {"model3d": bool(_onnx3d_path()), "vision2d": bool(_onnx2d_path())},
+        "lidar3d": {"model3d": bool(_onnx3d_path()), "vision2d": bool(_onnx2d_path()), "sam3_mode": settings.sam3_3d_mode},
     }
 
 
@@ -1492,25 +1492,68 @@ def lidar_onnx_detect(model, points, wanted: dict, rule: dict) -> dict:
     return lidar_onnx.detect(model, points, wanted, rule)
 
 
+SAM3_3D_NEED_MB = 3500          # 0.9.9: SAM3 xem một ảnh camera cần khoảng 3-3.5 GB (trước đặt cứng 6 GB)
+
+
+def _sam3_3d_need(total_mb: Optional[int] = None) -> int:
+    """Ngưỡng VRAM trống để nạp SAM3 ở job 3D (chế độ auto): số bạn đặt, không thì min(3.5 GB, 55% tổng VRAM)."""
+    if settings.sam3_3d_min_free_mb > 0:
+        return settings.sam3_3d_min_free_mb
+    if total_mb is None:
+        from .runtime_tools import cuda_mem
+
+        total_mb = (cuda_mem() or {}).get("total_mb")
+    return min(SAM3_3D_NEED_MB, int(0.55 * total_mb)) if total_mb else SAM3_3D_NEED_MB
+
+
+def _is_oom(exc: BaseException) -> bool:
+    return isinstance(exc, MemoryError) or "OutOfMemory" in type(exc).__name__ or "out of memory" in str(exc).lower()
+
+
+def _release_sam3_after_oom(where: str) -> str:
+    """0.9.9: SAM3 thiếu VRAM ở job 3D: nhả SAM3, dọn GPU, trả câu báo. Cuboid vẫn trả về như thường."""
+    from .runtime_tools import free_cuda
+
+    try:
+        unload = getattr(rt.engine, "unload", None)
+        if unload is not None:
+            unload("thiếu VRAM ở job 3D")
+    except Exception:  # noqa: BLE001
+        pass
+    free_cuda()
+    log.warning("Job 3D: SAM3 thiếu VRAM khi %s, đã nhả.", where)
+    return (f"Thiếu VRAM khi {where}: đã nhả SAM3, cuboid vẫn giữ nhưng chưa được đối chiếu ảnh camera. "
+            "Đóng bớt ứng dụng dùng GPU, hoặc cài RT-DETR ở trang Thành phần (nhẹ hơn nhiều).")
+
+
 def _sam3_for_3d() -> tuple[bool, str]:
-    """B3 (0.9.8): đối chiếu camera bằng SAM3 ở job 3D. SAM3 đã nạp thì dùng; chưa nạp thì chỉ nạp khi VRAM trống đủ
-    (SAM3_3D_SAM3_MIN_FREE_MB, mặc định 6 GB) — VRAM ít thì không nạp, báo lý do (tránh lại cudaErrorIllegalAddress)."""
+    """Đối chiếu camera bằng SAM3 ở job 3D (khi chưa có RT-DETR). 0.9.9: theo chế độ trong Cài đặt của app
+    (SAM3_3D_SAM3_MODE): auto = nạp khi VRAM trống >= ngưỡng tính theo card; always = luôn nạp; off = không dùng.
+    Nạp mà thiếu VRAM thì nhả SAM3 và báo lý do, không làm backend sập."""
     from .runtime_tools import cuda_mem
 
     if rt.engine is None:
         return False, "Backend chưa có engine SAM3: bỏ qua bước đối chiếu ảnh camera."
+    if settings.sam3_3d_mode == "off":
+        return False, ("Bạn đã tắt SAM3 cho job 3D (Cài đặt của app): bỏ đối chiếu ảnh camera. Cài RT-DETR ở trang "
+                       "Thành phần để vẫn lọc rác bằng ảnh.")
     if getattr(rt.engine, "loaded", True):
         return True, ""
-    need = settings.sam3_3d_min_free_mb
-    m = cuda_mem()
-    free = (m or {}).get("free_mb")
-    if need <= 0 or free is None or free < need:
-        return False, (f"SAM3 đang không nạp và VRAM trống {free if free is not None else '?'} MB < {need} MB: bỏ đối chiếu "
-                       "bằng SAM3. Bộ dò vật 2D (RT-DETR) vẫn đối chiếu được nếu đã cài ở trang Thành phần.")
+    if settings.sam3_3d_mode != "always":
+        m = cuda_mem() or {}
+        free, need = m.get("free_mb"), _sam3_3d_need(m.get("total_mb"))
+        if free is None:
+            return False, ("Không đọc được VRAM (máy không có GPU NVIDIA?): không nạp SAM3 cho job 3D. Chọn \"Luôn nạp "
+                           "SAM3\" trong Cài đặt của app nếu vẫn muốn, hoặc cài RT-DETR ở trang Thành phần.")
+        if free < need:
+            return False, (f"VRAM trống {free} MB < {need} MB: chưa nạp SAM3, bỏ đối chiếu ảnh camera. Đóng bớt ứng dụng "
+                           "dùng GPU, chọn \"Luôn nạp SAM3\" trong Cài đặt của app, hoặc cài RT-DETR ở trang Thành phần.")
     try:
         rt.engine.ensure()
         return True, ""
     except Exception as exc:  # noqa: BLE001
+        if _is_oom(exc):
+            return False, _release_sam3_after_oom("nạp SAM3")
         return False, f"Không nạp được SAM3 cho đối chiếu camera: {str(exc)[:120]}"
 
 
@@ -1536,8 +1579,14 @@ def _camera_check_frame(images, objects, info, rule, offset, vision) -> dict:
                 "note": "; ".join(rig.get("notes") or [])}
     ok, why = _sam3_for_3d()
     if not ok:
-        return {"offset": offset, "offset_source": "none", "cameras": names, "note": why}
-    chk = lidar_assist.check(rt.engine, images, objects, info["prompts"], info["calib"], offset)
+        return {"offset": offset, "offset_source": "none", "cameras": names, "note": why, "engine": "skip"}
+    try:
+        chk = lidar_assist.check(rt.engine, images, objects, info["prompts"], info["calib"], offset)
+    except Exception as exc:  # noqa: BLE001 - 0.9.9: thiếu VRAM giữa chừng thì nhả SAM3, vẫn trả cuboid
+        if not _is_oom(exc):
+            raise
+        return {"offset": offset, "offset_source": "none", "cameras": names, "engine": "skip",
+                "note": _release_sam3_after_oom("SAM3 xem ảnh camera")}
     lidar_assist.apply_camera(objects, chk)
     chk["engine"] = "sam3"
     return chk

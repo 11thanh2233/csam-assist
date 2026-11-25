@@ -3,6 +3,21 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.9 (2026-11-26)
+
+Small patch: SAM3 in 3D jobs no longer hard-requires 6 GB of free VRAM. Only matters when RT-DETR is not installed
+(with RT-DETR the tool always filters noise with RT-DETR, as in 0.9.8).
+
+- **VRAM threshold follows the card:** the SAM3 camera cross-check ("Suggest cuboids for this frame") loads SAM3 when
+  about 3.5 GB of VRAM is free (small cards: 55% of total VRAM), instead of the fixed 6 GB before (6–8 GB cards almost
+  never had that much free).
+- **New choice in the app's Settings → Backend and GPU → "SAM3 in 3D jobs":** Automatic (default) / Always load when I
+  tick / Don't use SAM3 in 3D jobs. Applies when the backend restarts.
+- **Running out of VRAM no longer breaks suggestions:** if loading or running SAM3 runs out of GPU memory, the tool
+  releases SAM3, frees VRAM, shows a one-line reason and still returns the cuboids (just not cross-checked).
+- **The panel says what filters noise:** the "Noise filter with images" line in the Suggest tab shows RT-DETR / SAM3 /
+  SAM3 if enough VRAM / skipped, with the reason.
+
 ## 0.9.8 (2026-11-25)
 
 Details and test results are in `docs/CHECKLIST_0.9.8.md` (Vietnamese). This release fixes what made 3D jobs label

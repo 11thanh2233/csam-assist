@@ -45,7 +45,8 @@ log = logging.getLogger("sam3-desktop")
 SETTINGS_SCHEMA = 1
 SETTINGS_TYPES = {"sites": list, "recent_jobs": list, "scan_dirs": list, "autostart_backend": bool, "auto_update_check": bool,
                   "auto_restart_backend": bool, "idle_unload_min": (int, float), "start_mode": str, "lang": str, "theme": str,
-                  "llm": dict, "cvat_dir": str}
+                  "llm": dict, "cvat_dir": str, "sam3_3d_mode": str}
+SAM3_3D_MODES = ("auto", "always", "off")      # 0.9.9: SAM3 ở job 3D: tự theo VRAM | luôn nạp khi tick | không dùng
 
 
 class Settings:
@@ -86,6 +87,8 @@ class Settings:
         # LLM soạn guideline (tuỳ chọn): none | anthropic | openai. API key ở Windows Credential Manager, không ở file này.
         self.data.setdefault("llm", {"provider": "none", "model": "", "base_url": ""})
         self.data.setdefault("cvat_dir", "")                # thư mục CVAT (có docker-compose.yml) cho CVAT chạy trên máy này
+        if self.data.get("sam3_3d_mode") not in SAM3_3D_MODES:
+            self.data["sam3_3d_mode"] = "auto"              # 0.9.9: SAM3 ở job 3D (đối chiếu ảnh camera khi chưa có RT-DETR)
         self.data["sites"] = [s for s in self.data["sites"] if isinstance(s, dict) and s.get("url")]
         for site in self.data["sites"]:
             site.setdefault("platform", "cvat")              # cài đặt từ bản trước 0.9: mọi trang đều là CVAT
@@ -261,7 +264,8 @@ class ControlApi:
         self._paths, self._comps, self._backend = paths, comps, backend
         self._settings = Settings(paths.settings)
         comps.extra_dirs = [Path(d) for d in self._settings.data["scan_dirs"]]
-        backend.extra_env = {"SAM3_IDLE_UNLOAD_MIN": str(self._settings.data["idle_unload_min"])}
+        backend.extra_env = {"SAM3_IDLE_UNLOAD_MIN": str(self._settings.data["idle_unload_min"]),
+                             "SAM3_3D_SAM3_MODE": self._settings.data["sam3_3d_mode"]}
         backend.auto_restart = bool(self._settings.data["auto_restart_backend"])
         # 0.9.4: GPU lỗi CUDA (illegal memory access) thì backend tự thoát để app bật lại, chỉ khi app được phép bật lại
         backend.extra_env["SAM3_RESTART_ON_GPU_FAULT"] = "1" if backend.auto_restart else "0"
@@ -305,6 +309,7 @@ class ControlApi:
             "recent_jobs": self._settings.data["recent_jobs"], "start_mode": self._settings.data["start_mode"],
             "cvat_local_pending": self.cvat_local_pending,
             "idle_unload_min": self._settings.data["idle_unload_min"], "sync_dir": self._settings.data.get("sync_dir", ""),
+            "sam3_3d_mode": self._settings.data["sam3_3d_mode"],
             "autostart_backend": bool(self._settings.data.get("autostart_backend")),
             "auto_restart_backend": bool(self._settings.data.get("auto_restart_backend")),
             "auto_update_check": bool(self._settings.data.get("auto_update_check", True)),
@@ -917,12 +922,16 @@ class ControlApi:
     def set_setting(self, key, value):
         """Các cài đặt đơn giản của app (chỉ những khoá biết trước)."""
         allowed = {"start_mode": ("cvat", "control"), "idle_unload_min": None, "autostart_backend": None, "lang": ("vi", "en"),
-                   "auto_restart_backend": None, "theme": ("system", "light", "dark")}
+                   "auto_restart_backend": None, "theme": ("system", "light", "dark"), "sam3_3d_mode": SAM3_3D_MODES}
         if key not in allowed:
             return False
         if key == "idle_unload_min":
             value = max(0, min(240, int(value)))
             self._backend.extra_env["SAM3_IDLE_UNLOAD_MIN"] = str(value)
+        elif key == "sam3_3d_mode":
+            if value not in SAM3_3D_MODES:
+                return False
+            self._backend.extra_env["SAM3_3D_SAM3_MODE"] = value
         elif key in ("autostart_backend", "auto_restart_backend"):
             value = bool(value)
             if key == "auto_restart_backend":

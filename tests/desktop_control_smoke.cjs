@@ -222,6 +222,12 @@ async function main() {
     await until(() => /bao-loi-.*\.zip/.test(doc.getElementById('supportMsg').textContent), 'tạo gói báo lỗi');
     assert.strictEqual(doc.querySelector('#startSeg [aria-pressed="true"]').dataset.v, 'cvat');
     assert.strictEqual(doc.getElementById('idleMin').value, '15');
+    // 0.9.9: SAM3 ở job 3D: mặc định Tự động, đổi được, backend nhận qua biến môi trường
+    assert.strictEqual(doc.getElementById('sam3Mode3d').value, 'auto');
+    await win.setSetting('sam3_3d_mode', 'always');
+    assert.strictEqual((await call('status', [])).sam3_3d_mode, 'always');
+    assert.strictEqual((await call('_test_backend_env', [])).SAM3_3D_SAM3_MODE, 'always');
+    await win.setSetting('sam3_3d_mode', 'auto');
     assert.ok(doc.getElementById('autoRestart').checked && doc.getElementById('autoBackend').checked);
     await win.setSetting('auto_restart_backend', false);
     assert.strictEqual((await call('status', [])).auto_restart_backend, false);

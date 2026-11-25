@@ -24,7 +24,7 @@ Cột: **Làm** = đã code · **Test** = có test tự động · **Lỗi** = l
 | B1b | Toạ độ box chuẩn hoá nhân cỡ ảnh gốc | ✅ | ✅ test + model thật (mèo [10,56,317,474] trên ảnh 640x480) | L3 | ✅ |
 | B1c | Phiên 3D: đối chiếu keyframe rõ nhất CÓ ảnh (thử 2 frame), lặp tới hết track; không ảnh -> `no_image` | ✅ | ✅ 3 test `test_vision_*` | — | — |
 | B2 | "Gợi ý cuboid frame này" dùng RT-DETR nếu có (không đụng SAM3) | ✅ | ✅ qua `test_detect_frame_with_claude` | — | — |
-| B3 | SAM3 chưa nạp: nạp khi VRAM trống ≥ `SAM3_3D_SAM3_MIN_FREE_MB` (6000), không thì báo lý do | ✅ | ⬜ cần GPU thật | — | — |
+| B3 | SAM3 chưa nạp: nạp khi VRAM trống ≥ `SAM3_3D_SAM3_MIN_FREE_MB` (6000), không thì báo lý do (0.9.9: ngưỡng theo card + lựa chọn trong Cài đặt, xem `CHECKLIST_0.9.9.md`) | ✅ | ⬜ cần GPU thật | — | — |
 
 ## C. Rổ và chất lượng nhãn
 

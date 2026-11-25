@@ -1,15 +1,17 @@
 """Thêm bản dịch tiếng Anh cho các chuỗi 0.9.8 (chạy một lần; như scripts/i18n_add_097.py).
 
-Bản dịch nằm ở scripts/i18n_098.json ({tiếng Việt: tiếng Anh}).
+Bản dịch nằm ở scripts/i18n_098.json ({tiếng Việt: tiếng Anh}). Bản sau dùng lại script này với file khác:
+    python scripts/i18n_add_098.py scripts/i18n_099.json
 """
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "backend" / "i18n" / "en.json"
-SOURCE = Path(__file__).with_name("i18n_098.json")
+SOURCE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("i18n_098.json")
 
 
 def main() -> None:
