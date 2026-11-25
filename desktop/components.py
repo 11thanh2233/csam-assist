@@ -36,9 +36,81 @@ COMPONENTS = {
     "reid": {"title": "Nhận lại người (DINOv2)", "required": False},
     "depth": {"title": "Độ sâu: ai đứng trước ai (Depth Anything V2)", "required": False},
     "wholebody": {"title": "Pose toàn thân: tay, bàn chân (RTMW)", "required": False},
+    # 0.9.7: model ONNX cho job 3D (spec 3D v2 mục 2 & 3.2). Tải rời, chỉ dùng khi job 3D cần.
+    "onnx2d": {"title": "Dò vật 2D cho job 3D (ONNX)", "required": False},
+    "onnx3d": {"title": "Dò vật 3D LiDAR (CenterPoint/PointPillars ONNX)", "required": False},
 }
+
+# ---------------------------------------------------------------- ONNX 3D ---
+# Bảng cấu hình rời (spec 3D v2 mục 2.4): địa chỉ tải + giấy phép của từng model, tách khỏi mã xử lý để chốt lại với
+# mentor mà không phải sửa code. Mặc định ưu tiên giấy phép thoáng (Apache-2.0 / MIT). Model không có giấy phép rõ ràng
+# thì ghi "chưa rõ" và tool cảnh báo trước khi tải.
+ONNX_MODELS: dict[str, dict] = {
+    "onnx2d": {
+        "choices": {
+            "rtdetr-l": {
+                "role": "Dò vật 2D (RT-DETR-L, COCO 80 class)",
+                "url": "",                       # để trống: người dùng trỏ tới file .onnx đã có, hoặc điền khi chốt model
+                "license": "Apache-2.0",
+                "classes": "coco80",
+                "input": [1, 3, 640, 640],
+                "note": "Nhanh, ổn định trên GPU; đủ cho xe/người/xe hai bánh.",
+            },
+            "dfine": {
+                "role": "Dò vật 2D (D-FINE, COCO 80 class)",
+                "url": "",
+                "license": "Apache-2.0",
+                "classes": "coco80",
+                "input": [1, 3, 640, 640],
+                "note": "Chính xác hơn ở vật nhỏ, chậm hơn RT-DETR một chút.",
+            },
+        },
+        "default": "rtdetr-l",
+    },
+    "onnx3d": {
+        "choices": {
+            "pointpillars": {
+                "role": "Dò vật 3D LiDAR (PointPillars, KITTI 3 class)",
+                "url": "",
+                "license": "Apache-2.0",
+                "classes": "kitti3",
+                "note": "Nhẹ, chạy tốt trên GPU 4 GB; cần hiệu chỉnh voxel theo dataset.",
+            },
+            "centerpoint": {
+                "role": "Dò vật 3D LiDAR (CenterPoint, nuScenes/KITTI)",
+                "url": "",
+                "license": "Apache-2.0",
+                "classes": "nuscenes10",
+                "note": "Chính xác hơn PointPillars, cần nhiều VRAM hơn.",
+            },
+        },
+        "default": "pointpillars",
+    },
+}
+# Nhãn COCO mà bộ dò 2D dùng cho job 3D (class_key của lidar -> id COCO). Lớp không có ở đây thì bỏ qua.
+COCO_FOR_3D = {"car": 2, "truck": 7, "bus": 5, "trailer": 7, "construction vehicle": 7,
+               "pedestrian": 0, "two wheels": 3, "barrier": 0}
+
+
+def onnx_models(kind: str) -> dict:
+    """Bảng lựa chọn model ONNX của một loại ('onnx2d' / 'onnx3d') kèm giấy phép, để panel hiện và bạn chọn."""
+    spec = ONNX_MODELS.get(kind) or {}
+    return {"kind": kind, "default": spec.get("default"), "choices": spec.get("choices") or {}}
+
+
+def license_warning(kind: str, choice: str) -> str:
+    """Cảnh báo trước khi tải: model chưa rõ giấy phép thì nói rõ để bạn hỏi mentor."""
+    spec = (ONNX_MODELS.get(kind) or {}).get("choices", {}).get(choice) or {}
+    lic = str(spec.get("license") or "chưa rõ")
+    if lic.lower() in ("chưa rõ", "", "unknown"):
+        return f"Model '{choice}' chưa rõ giấy phép: hỏi mentor trước khi dùng cho dữ liệu thật."
+    return ""
+
 FILE_MODELS = ("face", "detector", "wholebody")
 HF_MODELS = ("sam3", "vitpose", "reid", "depth")
+# 0.9.7: model ONNX 3D tải theo file người dùng trỏ tới (hoặc URL chốt sau với mentor) — không nằm trong manifest
+# build vì chưa chốt checkpoint; panel hiện bảng ONNX_MODELS để chọn, tool chỉ dùng khi job 3D cần.
+ONNX_FILE_KINDS = ("onnx2d", "onnx3d")
 ORDER = ("torch", "sam3", "vitpose", "face", "detector", "reid", "depth", "wholebody")          # thành phần là một file tải theo địa chỉ + mã băm trong manifest
 TORCH_EXTRACT = 2.1          # bản cài PyTorch chiếm khoảng 2 lần file tải về
 MIN_DRIVER = 528.0           # driver NVIDIA tối thiểu cho PyTorch CUDA 12 trên Windows
@@ -132,7 +204,11 @@ class Components:
         if self.system:
             import importlib.util
 
-            return importlib.util.find_spec("torch") is not None if key == "torch" else True
+            if key == "torch":
+                return importlib.util.find_spec("torch") is not None
+            if key in ONNX_FILE_KINDS:
+                return importlib.util.find_spec("onnxruntime") is not None
+            return True
         st = self.state().get(key)
         if not st:
             return False
@@ -140,8 +216,28 @@ class Components:
             return (self.paths.packages / "torch" / "__init__.py").exists()
         if key in FILE_MODELS:
             return self._file_path(key).exists()
+        if key in ONNX_FILE_KINDS:
+            path = Path(st.get("path") or "")
+            return bool(path.name) and path.exists()
         folder = self._hf_folder(key)
         return all((folder / f).exists() for f in st.get("files", [])) and bool(st.get("files"))
+
+    def onnx_path(self, kind: str) -> Optional[Path]:
+        """0.9.7: đường dẫn file .onnx đã chọn cho 'onnx2d' / 'onnx3d' (None nếu chưa chọn hoặc file mất)."""
+        path = Path((self.state().get(kind) or {}).get("path") or "")
+        return path if path.name and path.exists() else None
+
+    def use_onnx(self, kind: str, path, choice: Optional[str] = None) -> dict:
+        """Ghi nhận model ONNX người dùng đã chọn (không tải, không kiểm tra giấy phép thay bạn)."""
+        if kind not in ONNX_FILE_KINDS:
+            raise ValueError(f"loại model không hỗ trợ: {kind}")
+        p = Path(path).expanduser()
+        if not p.exists():
+            raise D.DownloadError(f"Không thấy file ONNX: {p}")
+        out = {"path": str(p), "choice": choice or (ONNX_MODELS.get(kind) or {}).get("default"),
+               "license": ((ONNX_MODELS.get(kind) or {}).get("choices", {}).get(choice or "", {}).get("license") or "chưa rõ")}
+        self._save(kind, out)
+        return out
 
     def status(self) -> dict:
         st = self.state()
@@ -489,4 +585,5 @@ def human(n: Optional[float]) -> str:
     return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
 
 
-__all__ = ["COMPONENTS", "Components", "Gpu", "detect_gpu", "seed_user_files", "human", "load_manifest"]
+__all__ = ["COMPONENTS", "ONNX_MODELS", "ONNX_FILE_KINDS", "COCO_FOR_3D", "onnx_models", "license_warning",
+           "Components", "Gpu", "detect_gpu", "seed_user_files", "human", "load_manifest"]

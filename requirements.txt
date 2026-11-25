@@ -6,5 +6,7 @@ numpy>=1.26
 opencv-python-headless>=4.9
 pillow>=10.0
 pyyaml>=6.0
-scipy>=1.11   # ViTPose (skeleton người) của transformers cần scipy để cắt ảnh theo hộp
-onnxruntime>=1.17   # 0.9.6: pose toàn thân RTMW (ONNX, chạy CPU)
+scipy>=1.11   # ViTPose (skeleton người) của transformers cần scipy để cắt ảnh theo hộp; 0.9.7 dùng thêm cKDTree + Hungarian
+onnxruntime>=1.17   # 0.9.6: pose toàn thân RTMW (ONNX, chạy CPU); 0.9.7: bộ dò 2D cho job 3D (gpu: onnxruntime-gpu)
+# numba>=0.59   # 0.9.7 (tuỳ chọn): tăng tốc mặt đất cục bộ cho job 3D lớn. Không cài được thì tool tự chạy bản numpy.
+

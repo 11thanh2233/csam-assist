@@ -3,6 +3,40 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.7 (2026-11-25)
+
+Details and test results are in `docs/CHECKLIST_0.9.7.md` (Vietnamese). This release removes the source of
+`cudaErrorIllegalAddress`, brings cuboid 3D up to the 3D v2 spec, and rebuilds the 3D job panel as a three-step flow.
+
+- **3D jobs no longer crash CUDA:** when a 3D session starts the backend releases the 2D models holding VRAM (SAM3,
+  pose, face, SAM3 Video, re-ID, depth) — no more competing CUDA contexts, the main source of
+  `cudaErrorIllegalAddress`. The camera cross-check only runs when SAM3 is already loaded, never loading it mid-request.
+- **ONNX GPU groundwork:** execution providers picked per machine (optional TensorRT → CUDA with a VRAM limit from free
+  memory → CPU fallback), CUDA/cuDNN DLLs preloaded from torch/lib on Windows, and a warning when both the CPU and GPU
+  onnxruntime builds are installed. 2D/3D ONNX models (RT-DETR / D-FINE, PointPillars / CenterPoint) are declared with
+  license metadata in a separate config table so the choice can be settled with a mentor; without them the pure-LiDAR
+  path runs exactly as before.
+- **Stronger 3D geometry:** L-shape fitting that hugs the object edges (no inflating/shrinking like minAreaRect),
+  cKDTree cluster merging, an optional numba local-ground builder (with a numpy fallback), and track rules read from the
+  guideline (max hidden keyframes, ±% size tolerance, classes whose yaw is locked to the width axis).
+- **QC-grade 3D tracking:** constant-velocity Kalman plus Hungarian matching instead of greedy pairing; size locked to
+  the densest frame (±5%); occluded ≤ N keyframes and outside handled independently, with a hard rule that both are
+  never set on the same keyframe; the track end is outside, never occluded.
+- **Three-tier camera calibration:** CVAT data → standard sensor preset (nuScenes / KITTI / Waymo) → fitted from 2-3
+  hand-drawn sample boxes; anything missing is filled from the tier below.
+- **Camera cross-check with 2D ONNX:** frustum splitting separates merged vehicles using the 2D box; an empty projected
+  area is unticked in advance (suspected noise) and a different class raises a flag — SAM3 is not touched.
+- **Full-track Claude Vision 3D:** Phase 1 recognises, removes noise and assigns labels per track (6-10 tracks per
+  batch, BEV plus numbered camera images); Phase 2 audits the whole trackset and returns three buckets: high confidence,
+  needs review, suspected noise. Network errors are retried.
+- **Batched 3D sessions:** `/lidar/v2/session/*` endpoints (init → frames → geometry → vision → llm_batch → result) with
+  per-batch checkpoints, safe cancel that KEEPS finished work, and retry of only the failed batch.
+- **Rebuilt 3D panel in three steps:** Step 1 quick setup (one status line, Claude toggle, collapsed Advanced section),
+  Step 2 a single primary button with per-phase progress (no scary countdown), Step 3 filter pills, plain-language notes
+  instead of technical flag names, a "go to clearest frame" button and a pinned write bar. The 2D job block is hidden
+  entirely in 3D jobs. The collapsed panel still shows progress.
+- **i18n:** 99 new strings have English translations (2450/2450).
+
 ## 0.9.6 (2026-11-24)
 
 Details and test results are in `docs/CHECKLIST_0.9.6.md` (Vietnamese). This release makes cuboid 3D jobs usable,

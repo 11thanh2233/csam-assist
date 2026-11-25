@@ -66,21 +66,11 @@ def read_context(data: bytes) -> list[tuple[str, np.ndarray]]:
 
 
 def cameras_of(names: list[str], calib: Optional[dict] = None) -> list[dict]:
-    """Thông số từng camera: từ hiệu chỉnh nếu có ({tên: {yaw_deg, fov_deg}}), không thì đoán theo tên."""
-    calib = calib or {}
-    out = []
-    for n in names:
-        c = calib.get(n) or calib.get(camera_key(n) or "")
-        if c:
-            out.append({"name": n, "yaw": float(c.get("yaw_deg", 0)), "fov": float(c.get("fov_deg", DEFAULT_FOV)), "source": "calibration"})
-            continue
-        key = camera_key(n)
-        if key:
-            base = key.split()[0]
-            out.append({"name": n, "yaw": CAMERA_YAW[key], "fov": CAMERA_FOV.get(base, DEFAULT_FOV), "source": "name"})
-    if not out and len(names) == 1:
-        out.append({"name": names[0], "yaw": 0.0, "fov": 90.0, "source": "guess"})
-    return out
+    """Thông số từng camera: từ hiệu chỉnh nếu có ({tên: {yaw_deg, fov_deg}}), không thì theo preset bộ cảm biến
+    chuẩn (nuScenes / KITTI / Waymo), cuối cùng mới đoán theo tên. Chi tiết ở camera_rig (0.9.7)."""
+    from . import camera_rig
+
+    return camera_rig.build_rig(names, calib)["cameras"]
 
 
 def project(center: list[float], size: list[float], cams: list[dict], offset: float) -> Optional[dict]:
@@ -116,10 +106,26 @@ def _masks_x(engine, state, prompt: str, width: int, height: int, thr: float = 0
     return out
 
 
+def engine_ready(engine) -> tuple[bool, str]:
+    """0.9.7: chỉ đối chiếu camera khi SAM3 ĐÃ nằm sẵn trên GPU.
+
+    Trước đây job 3D nạp SAM3 ngay giữa request LiDAR, cùng lúc model 2D đang chạy -> tranh CUDA context và VRAM cạn
+    giữa chừng, sinh `cudaErrorIllegalAddress`. Không nạp mới ở đây thì lỗi đó không còn đường phát sinh."""
+    if engine is None:
+        return False, "Backend chưa có engine SAM3: bỏ qua bước đối chiếu ảnh camera."
+    if hasattr(engine, "loaded") and not engine.loaded:
+        return False, ("SAM3 đang không giữ trong VRAM (đã nhả cho job 3D). Đối chiếu ảnh camera cần SAM3 đã nạp sẵn: "
+                       "mở một job 2D dùng SAM3 rồi quay lại, hoặc đặt SAM3_IDLE_UNLOAD_MIN=0.")
+    return True, ""
+
+
 def check(engine, images: list[tuple[str, np.ndarray]], objects: list[dict], prompts: dict[int, str],
           calib: Optional[dict] = None, offset: Optional[float] = None, lookalikes: Optional[list[str]] = None) -> dict:
     """Đối chiếu cuboid với ảnh camera. objects: [{id, center, size, label_id, cls}].
     Trả {offset, offset_source, cameras, results: {id: {camera, u, verdict, seen}}}."""
+    ok, why = engine_ready(engine)
+    if not ok:
+        return {"offset": offset, "offset_source": "none", "cameras": [], "results": {}, "note": why}
     cams = cameras_of([n for n, _ in images], calib)
     if not cams:
         return {"offset": offset, "offset_source": "none", "cameras": [], "results": {},

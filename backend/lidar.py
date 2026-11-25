@@ -160,7 +160,38 @@ def ground_z(plane: np.ndarray, x: float, y: float) -> float:
     return float(plane[0] * x + plane[1] * y + plane[2])
 
 
-# ------------------------------------------------- mặt đất cục bộ (0.9.6) ---
+# ------------------------------------------------- mặt đất cục bộ (0.9.6, numba 0.9.7) ---
+try:
+    from numba import njit as _njit
+    HAS_NUMBA = True
+except ImportError:  # noqa: BLE001 - numba là tuỳ chọn: máy không cài được vẫn chạy bản numpy
+    _njit = None
+    HAS_NUMBA = False
+
+
+if HAS_NUMBA:
+    @_njit(cache=True)
+    def _ground_cells(ij: np.ndarray, z: np.ndarray, min_pts: int, pct: float) -> tuple[np.ndarray, np.ndarray]:
+        """Mỗi ô lưới: mức thấp percentile của điểm gần mặt phẳng. Numba: nhanh gấp ~20 lần vòng lặp numpy."""
+        # ij đã sort theo (i, j); chạy dò biên từng ô
+        keys = np.empty((len(ij), 2), np.int64)
+        vals = np.empty(len(ij), np.float64)
+        n = 0
+        k = 0
+        while k < len(ij):
+            i0, j0 = ij[k, 0], ij[k, 1]
+            e = k
+            while e < len(ij) and ij[e, 0] == i0 and ij[e, 1] == j0:
+                e += 1
+            if e - k >= min_pts:
+                seg = np.sort(z[k:e])
+                pos = int(pct / 100.0 * (len(seg) - 1))
+                keys[n, 0], keys[n, 1], vals[n] = i0, j0, seg[pos]
+                n += 1
+            k = e
+        return keys[:n], vals[:n]
+
+
 class LocalGround:
     """Mặt đất theo từng ô 8 m (đường dốc, lề cao, bãi đỗ thấp hơn mặt đường): mỗi ô lấy mức thấp của các điểm gần
     mặt phẳng chung; ô ít điểm dùng mặt phẳng chung. Đáy cuboid đặt theo ô dưới vật, không theo một mặt phẳng."""
@@ -178,11 +209,16 @@ class LocalGround:
         ij = np.floor(pts[:, :2] / cell).astype(np.int64)
         order = np.lexsort((ij[:, 1], ij[:, 0]))
         ij, z = ij[order], pts[order, 2]
-        keys, start = np.unique(ij, axis=0, return_index=True)
-        bounds = list(start[1:]) + [len(z)]
-        for k, a, b in zip(keys, start, bounds):
-            if b - a >= 15:
-                self.grid[(int(k[0]), int(k[1]))] = float(np.percentile(z[a:b], 20))
+        if HAS_NUMBA and len(ij) > 2000:               # bản numba chỉ đáng giá khi nhiều ô
+            keys, vals = _ground_cells(np.ascontiguousarray(ij), np.ascontiguousarray(z), 15, 20.0)
+            for (a, b), v in zip(keys, vals):
+                self.grid[(int(a), int(b))] = float(v)
+        else:
+            keys, start = np.unique(ij, axis=0, return_index=True)
+            bounds = list(start[1:]) + [len(z)]
+            for k, a, b in zip(keys, start, bounds):
+                if b - a >= 15:
+                    self.grid[(int(k[0]), int(k[1]))] = float(np.percentile(z[a:b], 20))
 
     def z(self, x, y):
         x, y = np.asarray(x, float), np.asarray(y, float)
@@ -228,7 +264,10 @@ def clusters(points: np.ndarray, ground, *, cell: float = 0.25, max_range: float
 
 def _merge_sparse(groups: list[np.ndarray]) -> list[np.ndarray]:
     """0.9.6: vật ở xa có điểm thưa nên bị vỡ thành nhiều cụm nhỏ: nối các cụm nhỏ nằm sát nhau, khoảng nối tăng theo
-    khoảng cách (25 cm + 1 cm mỗi mét). Cụm lớn (>= 200 điểm) giữ nguyên để không dính hai xe đỗ sát nhau."""
+    khoảng cách (25 cm + 1 cm mỗi mét). Cụm lớn (>= 200 điểm) giữ nguyên để không dính hai xe đỗ sát nhau.
+
+    0.9.7: tìm cặp ứng viên bằng scipy cKDTree thay vì so mọi cặp (O(n²) chậm khi nhiều cụm); kết quả không đổi.
+    """
     small = [i for i, g in enumerate(groups) if len(g) < 200]
     if len(small) < 2:
         return groups
@@ -241,16 +280,33 @@ def _merge_sparse(groups: list[np.ndarray]) -> list[np.ndarray]:
             i = parent[i]
         return i
 
-    for a_i, a in enumerate(small):
-        ba = boxes[a]
-        r = math.hypot((ba[0] + ba[2]) / 2, (ba[1] + ba[3]) / 2)
-        eps = 0.25 + 0.01 * r
-        for b in small[a_i + 1:]:
-            bb = boxes[b]
-            dx = max(bb[0] - ba[2], ba[0] - bb[2], 0.0)
-            dy = max(bb[1] - ba[3], ba[1] - bb[3], 0.0)
-            if math.hypot(dx, dy) <= eps:
-                parent[find(a)] = find(b)
+    def far(i) -> float:
+        b = boxes[i]
+        return math.hypot((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+
+    # ứng viên = cụm có điểm nằm trong bán kính nối lớn nhất có thể (khoảng cách hộp bao >= khoảng cách điểm, nên
+    # lọc bằng KDTree là tập cha của các cặp đủ gần; lọc lại theo hộp bao bên dưới)
+    eps_max = 0.25 + 0.01 * max(far(i) for i in small) + 1e-6
+    try:
+        from scipy.spatial import cKDTree
+
+        pos = {g: n for n, g in enumerate(small)}          # chỉ số cụm -> vị trí trong `small`
+        allp = np.vstack([groups[i][:, :2] for i in small]).astype(np.float64)
+        own = np.concatenate([np.full(len(groups[i]), pos[i], np.int64) for i in small])
+        pairs = cKDTree(allp).query_pairs(eps_max, output_type="ndarray")
+        cand = set()
+        for a, b in pairs:
+            pa, pb = int(own[a]), int(own[b])
+            if pa != pb:
+                cand.add((small[pa], small[pb]) if pa < pb else (small[pb], small[pa]))
+    except (ImportError, ValueError, MemoryError, IndexError):   # thiếu scipy hoặc quá nhiều điểm: giữ cách cũ
+        cand = {(a, b) for pos2, a in enumerate(small) for b in small[pos2 + 1:]}
+    for a, b in sorted(cand):
+        ba, bb = boxes[a], boxes[b]
+        dx = max(bb[0] - ba[2], ba[0] - bb[2], 0.0)
+        dy = max(bb[1] - ba[3], ba[1] - bb[3], 0.0)
+        if math.hypot(dx, dy) <= min(0.25 + 0.01 * far(a), 0.25 + 0.01 * far(b)):
+            parent[find(a)] = find(b)
     merged: dict[int, list[np.ndarray]] = {}
     for i in small:
         merged.setdefault(find(i), []).append(groups[i])
@@ -258,16 +314,82 @@ def _merge_sparse(groups: list[np.ndarray]) -> list[np.ndarray]:
     return big + [np.vstack(v) for v in merged.values()]
 
 
-def fit_box(c: np.ndarray, ground) -> dict:
+def lshape_fit(c: np.ndarray) -> Optional[tuple[float, float, float, float, float]]:
+    """L-shape fitting (0.9.7, spec 3D v2 mục 3.2B): khung chữ nhật ôm sát cạnh vật nhất.
+
+    Lấy bao lồi các điểm nhìn từ trên, thử khung theo từng cạnh bao lồi. Khác cv2.minAreaRect ở chỗ minAreaRect chỉ
+    tối thiểu diện tích nên hay phình/co box khi cụm dính vật khác hoặc thiếu điểm một phía.
+
+    Tiêu chí chấm điểm (trên TẤT CẢ điểm cụm, không chỉ đỉnh bao lồi):
+      - độ khít = trung vị khoảng cách từ điểm tới biên khung gần nhất: khung ôm sát vật thì phần lớn điểm nằm sát
+        biên; khung rộng hơn vật nhiều (chồm qua vật khác) thì trung vị lớn -> loại (0.45 m);
+      - trong các khung đủ khít, chọn diện tích nhỏ nhất (ổn định, ít phụ thuộc nhiễu).
+
+    Trả (cx, cy, dài, rộng, yaw) hoặc None nếu không đủ điểm."""
+    if len(c) < 5:
+        return None
+    pts = c[:, :2].astype(np.float64)
+    try:
+        from scipy.spatial import ConvexHull
+
+        hull = ConvexHull(pts)
+        corners = pts[hull.vertices]
+        edges = np.roll(corners, -1, axis=0) - corners
+    except Exception:  # noqa: BLE001 - điểm thẳng hàng / quá ít: không phải hull
+        return None
+    lens = np.hypot(edges[:, 0], edges[:, 1])
+    good = lens > 0.3                                    # cạnh ngắn hơn 30 cm: bỏ (nhiễu, hoặc mép cắt mẫu)
+    if not good.any():
+        return None
+    best = None
+    for ang in np.arctan2(edges[good, 1], edges[good, 0]):
+        ca, sa = math.cos(ang), math.sin(ang)
+        u = pts @ np.array([ca, sa])
+        v = pts @ np.array([-sa, ca])
+        span_u, span_v = float(u.max() - u.min()), float(v.max() - v.min())
+        if span_u < 0.4 or span_v < 0.4:                 # cụm dẹt thành đường: không phải vật
+            continue
+        area = span_u * span_v
+        # độ khít trên mọi điểm: khoảng cách tới biên khung gần nhất, lấy trung vị
+        du = np.minimum(u.max() - u, u - u.min())
+        dv = np.minimum(v.max() - v, v - v.min())
+        near = np.minimum(du, dv)
+        fit = float(np.median(near))
+        if fit > 0.45:                                   # khung rộng hơn vật nhiều: không phải cạnh vật
+            continue
+        # ổn định hơn diện tích trần: diện tích nhân hệ số phạt theo độ khít
+        score = area * (1.0 + 2.0 * fit)
+        if best is not None and score >= best[0]:
+            continue
+        cu, cv_ = (u.max() + u.min()) / 2, (v.max() + v.min()) / 2
+        cx, cy = cu * ca - cv_ * sa, cu * sa + cv_ * ca
+        length, width, yaw = span_u, span_v, ang
+        if width > length:
+            length, width, yaw = width, length, yaw + math.pi / 2
+        best = (score, cx, cy, length, width, yaw)
+    if best is None:
+        return None
+    _, cx, cy, length, width, yaw = best
+    return float(cx), float(cy), length, width, float(yaw)
+
+
+def fit_box(c: np.ndarray, ground, lshape: bool = True) -> dict:
     """Cuboid cho một cụm: chữ nhật nhỏ nhất bao điểm nhìn từ trên (dài, rộng, yaw), đáy chạm mặt đất cục bộ.
-    `gap`: điểm thấp nhất của cụm cao hơn mặt đất bao nhiêu mét (vật lơ lửng: biển, tán cây)."""
+    `gap`: điểm thấp nhất của cụm cao hơn mặt đất bao nhiêu mét (vật lơ lửng: biển, tán cây).
+
+    0.9.7: mặc định thử L-shape fitting trước (khung ôm sát cạnh vật); cụm quá ít điểm hoặc không khít thì quay về
+    cv2.minAreaRect như cũ."""
     import cv2
 
-    (cx, cy), (a, b), ang = cv2.minAreaRect(c[:, :2].astype(np.float32))
-    yaw = math.radians(ang)
-    length, width = float(a), float(b)
-    if width > length:
-        length, width, yaw = width, length, yaw + math.pi / 2
+    result = lshape_fit(c) if (lshape and len(c) >= 20) else None
+    if result is not None:
+        cx, cy, length, width, yaw = result
+    else:
+        (cx, cy), (a, b), ang = cv2.minAreaRect(c[:, :2].astype(np.float32))
+        yaw = math.radians(ang)
+        length, width = float(a), float(b)
+        if width > length:
+            length, width, yaw = width, length, yaw + math.pi / 2
     base = float(ground.z(cx, cy)) if hasattr(ground, "z") else ground_z(ground, cx, cy)
     top = float(c[:, 2].max())
     height = max(top - base, 0.2)
@@ -339,6 +461,37 @@ def parse_ranges(markdown: str) -> dict[str, float]:
             if word in low:
                 for k in keys:
                     out.setdefault(k, float(m.group(1)))
+    return out
+
+
+def parse_track_rules(markdown: str) -> dict:
+    """Luật track đọc động từ guideline (0.9.7, spec 3D v2 mục 3.2A):
+    số keyframe bị che tối đa, sai lệch kích thước cho phép, và class khoá yaw theo trục bề ngang (rào chắn)."""
+    out: dict = {}
+    text = markdown or ""
+    low = text.lower()
+    m = re.search(r"(?:occlu\w*|bị che|che khuất)[^.\n]{0,60}?(?:tối đa|max|không quá|≤|<=)[^\d\n]{0,12}(\d{1,2})\b", low)
+    if not m:
+        m = re.search(r"(?:occlu\w*|bị che|che khuất)[^.\n]{0,80}?(?:keyframe|frame)[^.\n]{0,20}?(\d{1,2})\b", low)
+    if not m:
+        m = re.search(r"(?:keyframe|frame)[^.\n]{0,30}?(?:tối đa|max|≤|<=)[^\d\n]{0,10}(\d{1,2})\b", low)
+    if m:
+        out["max_occluded_frames"] = int(m.group(1))
+    m = re.search(r"(?:±|\+/-|sai lệch|tolerance)[^\d\n]{0,12}(\d{1,2}(?:[.,]\d+)?)\s*%", low)
+    if m:
+        out["size_tolerance"] = round(float(m.group(1).replace(",", ".")) / 100, 4)
+    by_width = []
+    for sent in re.split(r"(?<=[.!?\n])", text):
+        s = sent.lower()
+        if not re.search(r"yaw|hướng|heading|orientation", s):
+            continue
+        if re.search(r"bề ngang|chiều ngang|width|ngang|bề rộng", s):
+            for name in re.findall(r"[A-Za-z_][A-Za-z_ ]{2,24}", sent):
+                key = class_key(name)
+                if key in DEFAULT_SIZES and key not in by_width:
+                    by_width.append(key)
+    if by_width:
+        out["yaw_by_width"] = by_width
     return out
 
 
@@ -473,8 +626,11 @@ def detect(points: np.ndarray, labels: dict[str, int], table: dict[str, list], r
 
     0.9.6: mặt đất cục bộ, phạm vi gán theo class, số điểm tối thiểu theo khoảng cách, bỏ cụm lơ lửng, tách dãy rào
     chắn, bỏ cụm không khớp class nào, hạ cụm giống vật bạn đã bỏ. debug=True trả thêm điểm nhìn từ trên (BEV) và
-    các cụm bị bỏ kèm lý do (bản đồ nhỏ và mục "Kiểm tra dữ liệu job 3D" ở panel)."""
+    các cụm bị bỏ kèm lý do (bản đồ nhỏ và mục "Kiểm tra dữ liệu job 3D" ở panel).
+
+    0.9.7: L-shape fitting cho khung ôm sát cạnh vật (tắt bằng rule['lshape']=False)."""
     rule = rule or {}
+    lshape = rule.get("lshape", True) is not False
     plane, ratio = ground_plane(points)
     ground = LocalGround(points, plane) if rule.get("local_ground", True) else plane
     ranges = dict(DEFAULT_RANGES, **(rule.get("ranges") or {}))
@@ -506,7 +662,7 @@ def detect(points: np.ndarray, labels: dict[str, int], table: dict[str, list], r
                     if box["size"][0] > lhi * 1.2 and box["size"][1] <= whi * 1.3 and hlo * 0.85 <= box["size"][2] <= hhi * 1.15:
                         for part in split_row(c, box, ground, (llo + lhi) / 2):
                             if len(part) >= 3:
-                                consider(part, fit_box(part, ground), allow_split=False)
+                                consider(part, fit_box(part, ground, lshape=lshape), allow_split=False)
                         return None
             return reject(box, "no_class")
         key = by_label[label_id]
@@ -539,7 +695,7 @@ def detect(points: np.ndarray, labels: dict[str, int], table: dict[str, list], r
         return None
 
     for c in clusters(points, ground, max_range=want_range + (12 if debug else 2)):
-        consider(c, fit_box(c, ground))
+        consider(c, fit_box(c, ground, lshape=lshape))
     res = {"objects": out, "warnings": warnings, "ground_ratio": round(ratio, 3), "stats": stats}
     if debug:
         sample = points[np.hypot(points[:, 0], points[:, 1]) < want_range + 5]

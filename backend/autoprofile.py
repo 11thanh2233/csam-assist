@@ -526,6 +526,12 @@ def build(task_labels: list[dict], profiles: dict[str, dict], *, project: Option
         ranges = lidar.parse_ranges(markdown)       # 0.9.6: phạm vi gán theo class nếu guideline ghi
         if ranges:
             lid["ranges"] = ranges
+        # 0.9.7: luật track đọc động từ guideline (keyframe che tối đa, ±% kích thước, class khoá yaw theo bề ngang)
+        track_rules = lidar.parse_track_rules(markdown)
+        for k, v in track_rules.items():
+            if k == "max_occluded_frames" and isinstance(track_hint, dict) and track_hint.get("max_occluded_keyframes"):
+                continue                             # track_hint của task đã chốt thì thắng guideline
+            lid.setdefault(k, v)
         rules["lidar"] = lid
     for pid in sorted(used_profiles):
         base = profiles.get(pid) or {}

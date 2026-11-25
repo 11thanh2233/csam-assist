@@ -3,6 +3,39 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.7 (2026-11-25)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.7.md`. Bản này triệt tiêu nguồn lỗi `cudaErrorIllegalAddress`, nâng
+cấp dựng cuboid 3D theo spec 3D v2, và làm lại giao diện job 3D theo luồng 3 bước.
+
+- **Job 3D không còn làm sập CUDA:** bắt đầu phiên 3D thì backend chủ động nhả model 2D đang giữ VRAM (SAM3, pose,
+  mặt, SAM3 Video, re-ID, độ sâu) — hết tranh chấp CUDA context, nguồn chính của `cudaErrorIllegalAddress`. Đối chiếu
+  ảnh camera chỉ chạy khi SAM3 đã nạp sẵn, không bao giờ nạp mới giữa request 3D.
+- **Hạ tầng ONNX GPU chuẩn bị sẵn:** chọn Execution Provider theo máy (TensorRT tuỳ chọn → CUDA giới hạn VRAM theo
+  tỉ lệ trống → CPU dự phòng), tự nạp DLL CUDA/cuDNN từ torch/lib trên Windows, cảnh báo khi cài cả onnxruntime CPU
+  và GPU. Model 2D/3D ONNX (RT-DETR / D-FINE, PointPillars / CenterPoint) khai báo kèm giấy phép trong bảng cấu hình
+  rời để chốt với mentor, chưa cài thì luồng hình học thuần vẫn chạy như cũ.
+- **Hình học 3D mạnh hơn:** L-shape fitting khít cạnh vật (không phình/co box như minAreaRect), gom cụm qua cKDTree,
+  mặt đất cục bộ bản numba (tuỳ chọn, có fallback numpy), đọc luật track từ guideline (keyframe che tối đa, ±% kích
+  thước, class khoá yaw theo bề ngang).
+- **Tracking 3D chuẩn QC:** Kalman hằng vận tốc + Hungarian thay ghép tham lam; khoá kích thước theo frame dày điểm
+  nhất (±5%); occluded ≤ N keyframe / outside độc lập, ràng buộc cứng không bao giờ bật đồng thời cả hai; kết thúc
+  track là outside, không occluded.
+- **Hiệu chỉnh camera 3 tầng:** dữ liệu CVAT → preset bộ cảm biến chuẩn (nuScenes / KITTI / Waymo) → căn từ 2-3 box
+  mẫu bạn vẽ tay; thiếu góc nào bù từ tầng dưới.
+- **Đối chiếu camera bằng ONNX 2D:** frustum splitting tách cụm xe dính nhau theo hộp 2D; khu chiếu trống thì bỏ tick
+  sẵn (nghi rác), thấy vật khác class thì gắn cờ — không đụng SAM3.
+- **Claude Vision 3D toàn trình:** Pha 1 nhận diện / lọc rác / gán nhãn theo cấp track (6-10 track/lô, ảnh BEV + camera
+  đánh số), Pha 2 kiểm duyệt toàn bộ trackset; trả về 3 rổ Tin cậy cao / Cần xem / Nghi rác; lỗi mạng tự thử lại.
+- **Phiên 3D chạy theo lô:** endpoint `/lidar/v2/session/*` (init → frames → geometry → vision → llm_batch → result)
+  với checkpoint từng lô, hủy an toàn GIỮ kết quả đã chạy, lỗi giữa chừng chỉ thử lại lô lỗi. Không timeout kiểu chạy
+  nguyên khối nữa.
+- **Giao diện job 3D làm lại theo 3 bước:** Bước 1 thiết lập nhanh (1 dòng trạng thái + công tắc Claude + mục Nâng cao
+  gập kín), Bước 2 một nút chính với tiến độ phân pha (không ước lượng giây còn lại), Bước 3 filter pills (Cần xem /
+  Tin cậy cao / Nghi rác / Tất cả), ghi chú tiếng Việt thay nhãn cờ kỹ thuật, nút "Tới frame rõ nhất", thanh ghi ghim
+  đáy. Mục 2D của job 2D ẩn hoàn toàn trong job 3D. Thu gọn panel thành thanh nhỏ vẫn thấy tiến độ.
+- **i18n:** 99 chuỗi mới có bản tiếng Anh (2450/2450).
+
 ## 0.9.6 (2026-11-24)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.6.md`. Bản này làm cho job cuboid 3D dùng được thật, backend chạy lâu
