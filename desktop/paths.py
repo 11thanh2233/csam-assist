@@ -40,6 +40,7 @@ class Paths:
         self.reid = self.models / "dinov2-small"                 # 0.9.6: nhận lại người
         self.depth = self.models / "depth-anything-v2-small"     # 0.9.6: độ sâu
         self.wholebody = self.models / "rtmw-wholebody.onnx"     # 0.9.6: pose toàn thân
+        self.rtdetr = self.models / "rtdetr_r18vd.onnx"          # 0.9.8: lọc rác job 3D bằng ảnh camera
         self.downloads = self.data / "downloads"
         self.profiles = self.data / "profiles"
         self.library = self.data / "guideline_library"

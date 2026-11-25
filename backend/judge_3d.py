@@ -204,6 +204,27 @@ def ask_llm(llm, text: str, images: list[bytes], retries: int = 2) -> dict:
     raise LLMError(f"Claude lỗi sau {retries + 1} lần thử: {last}")
 
 
+def explain_llm_error(exc: BaseException) -> str:
+    """Lỗi gọi Claude -> một câu tiếng Việt người dùng hiểu và sửa được (0.9.8, D3)."""
+    text = f"{type(exc).__name__}: {exc}"
+    low = text.lower()
+    if "401" in low or "authentication" in low or "invalid x-api-key" in low or ("api key" in low and "invalid" in low):
+        return "API key Anthropic sai hoặc đã bị thu hồi — kiểm tra ở Cài đặt của app."
+    if "429" in low or "rate limit" in low or "rate_limit" in low:
+        return "Claude đang giới hạn tốc độ (429) — đợi vài phút rồi chạy lại."
+    if "credit" in low or "quota" in low or "billing" in low or "insufficient" in low:
+        return "Tài khoản Anthropic hết hạn mức / credit."
+    if "529" in low or "overloaded" in low:
+        return "Máy chủ Claude đang quá tải (529) — thử lại sau."
+    if "timeout" in low or "timed out" in low:
+        return "Claude không trả lời kịp (hết thời gian chờ)."
+    if "json" in low:
+        return "Claude trả lời không đúng định dạng JSON."
+    if "connection" in low or "getaddrinfo" in low or "unreachable" in low:
+        return "Không kết nối được tới Claude (mạng)."
+    return text[:160]
+
+
 def bucket_of(track: dict, phase1: Optional[dict] = None) -> str:
     """3 rổ hiển thị: Tin cậy cao / Cần xem / Nghi rác (ưu tiên dấu hiệu rác > phân vân > tin)."""
     if phase1 is not None:
@@ -250,9 +271,10 @@ def phase1(llm, tracks: list[dict], labels: dict[int, str], autoprofile: dict,
             text += "\n\nIMAGE NOTES:\n" + "\n".join(notes)
         try:
             res = ask_llm(llm, text, images)
-        except Exception:  # noqa: BLE001 - Claude lỗi: track đó thành needs_review, không chặn luồng
+        except Exception as exc:  # noqa: BLE001 - Claude lỗi: track đó thành needs_review, không chặn luồng
+            why = explain_llm_error(exc)                # 0.9.8 (D3): nói rõ lý do (key sai, hết quota, timeout...)
             for t in group:
-                results[t["id"]] = {"keep": None, "reason": "Claude lỗi: cần người xem", "bucket": "needs_review"}
+                results[t["id"]] = {"keep": None, "reason": f"Claude lỗi: {why}", "bucket": "needs_review"}
             continue
         known = {n.lower() for n in labels.values()}
         for entry in res.get("tracks") or []:

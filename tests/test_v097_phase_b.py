@@ -119,6 +119,57 @@ def test_components_status_includes_onnx_kinds():
     assert not comp["onnx2d"]["required"]
 
 
+def test_onnx_components_plan_pick_and_never_block_setup(tmp_path):
+    """Trước đây plan() gọi _plan_onnx2d/_plan_onnx3d không tồn tại -> 'Chưa kiểm được', bị coi là bắt buộc (banner
+    'cần cập nhật'), và bước Thành phần khoá nút cài khi các phần khác đã đủ."""
+    from pathlib import Path
+
+    from desktop.components import Components, Gpu
+    from desktop.control import ControlApi
+    from desktop.paths import Paths
+
+    class Be:
+        state = "stopped"
+
+        def __init__(self):
+            self.extra_env, self.auto_restart, self.restarted = {}, True, 0
+
+        def restart(self):
+            self.restarted += 1
+
+    root = Path(__file__).resolve().parents[1]
+    paths = Paths(tmp_path / "data", app_dir=root).ensure()
+    comps = Components(paths, manifest={"torch": {}, "models": {}})
+    plan = comps.plan(["onnx2d", "onnx3d"], Gpu())
+    for k in ("onnx2d", "onnx3d"):
+        assert plan[k]["action"] == "pick" and not plan[k]["required"], plan[k]
+        assert "Chưa kiểm được" not in plan[k]["reason"]
+    assert comps.estimate(["onnx2d", "onnx3d"], Gpu())["download"] == 0
+
+    be = Be()
+    api = ControlApi(paths, comps, be, open_site=lambda o: None, on_quit=lambda: None)
+    scan = api.scan()
+    assert not set(scan["required"]) & {"onnx2d", "onnx3d"}, "không hiện banner 'cần cập nhật' cho ONNX"
+    assert not set(scan["todo"]) & {"onnx2d", "onnx3d"}
+    assert not api.install(["onnx2d", "onnx3d"])["ok"], "không tải gì: không chạy bộ cài"
+
+    model = tmp_path / "rtdetr.onnx"
+    model.write_bytes(b"onnx")
+    api._pick_onnx_file = lambda: str(model)
+    be.state = "running"
+    r = api.pick_onnx("onnx2d")
+    assert r["ok"] and be.restarted == 1, r
+    assert comps.installed("onnx2d") and comps.plan(["onnx2d"], Gpu())["onnx2d"]["action"] == "none"
+    assert comps.backend_env()["SAM3_ONNX2D_PATH"] == str(model)
+    assert comps.status()["onnx2d"]["installed"] and comps.status()["onnx2d"]["path"] == str(model)
+    api._pick_onnx_file = lambda: str(tmp_path / "x.txt")
+    assert not api.pick_onnx("onnx3d")["ok"]
+    assert not api.pick_onnx("torch")["ok"]
+    api.remove_component("onnx2d")
+    assert not comps.installed("onnx2d") and model.exists(), "bỏ chọn không xoá file của bạn"
+    assert "SAM3_ONNX2D_PATH" not in comps.backend_env()
+
+
 def test_coco_for_3d_maps_classes():
     from desktop.components import COCO_FOR_3D
 

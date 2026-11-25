@@ -640,6 +640,8 @@ def health() -> dict:
         "vision_llm": bool(rt.judge and rt.judge.available()),
         "vram": rt.res.status() if rt.res else None,
         "llm_usage": rt.judge.usage.status() if rt.judge else None,
+        # 0.9.8: job 3D dựng / lọc bằng gì (panel hiện một dòng ở Bước 1)
+        "lidar3d": {"model3d": bool(_onnx3d_path()), "vision2d": bool(_onnx2d_path())},
     }
 
 
@@ -1282,6 +1284,7 @@ class LidarFrame(BaseModel):
 class LidarDetectReq(ResolveReq):
     frames: list[LidarFrame] = Field(default_factory=list, max_length=8)
     debug: bool = False         # 0.9.6: trả thêm điểm nhìn từ trên + cụm bị bỏ (bản đồ nhỏ, Kiểm tra dữ liệu)
+    use_llm: bool = False       # 0.9.8: Claude chấm các cuboid của frame (gợi ý từng frame)
 
 
 class LidarTrackReq(ResolveReq):
@@ -1421,23 +1424,54 @@ def lidar_detect(req: LidarDetectReq) -> dict:
     out, warnings = [], []
     camera_info = None
     offset = info["offset"]
+    model3d = None
+    if _onnx3d_path():
+        model3d = _get_lidar3d(_onnx3d_path())
+        if not model3d.ready:
+            warnings.append(f"Model 3D ONNX không dùng được, dùng hình học: {model3d.error or '?'}")
+            model3d = None
+    vision = None
+    if _onnx2d_path():
+        vision = _get_vision2d(_onnx2d_path())
+        if not vision.ready:
+            warnings.append(f"Bộ dò vật 2D không nạp được: {vision.error or '?'}")
+            vision = None
+    llm = _llm_for_3d() if req.use_llm else None
+    if req.use_llm and llm is None:
+        warnings.append("Claude AI chưa sẵn sàng: cần API key Anthropic trong Cài đặt của app.")
     for item in sorted(req.frames, key=lambda x: x.frame):
         points = _read_cloud(item)
-        res = lidar.detect(points, info["wanted"], table, rule, debug=req.debug)
+        res = None
+        if model3d is not None and not req.debug:
+            try:
+                res = lidar_onnx_detect(model3d, points, info["wanted"], rule)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"Model 3D lỗi ở frame {item.frame}, dùng hình học: {str(exc)[:120]}")
+        if res is None:
+            res = lidar.detect(points, info["wanted"], table, rule, debug=req.debug)
         for i, o in enumerate(res["objects"], 1):
             o["id"] = i
-        if item.context_b64 and res["objects"] and rt.engine is not None:
+        images = []
+        if item.context_b64 and res["objects"]:
             try:
                 images = lidar_assist.read_context(base64.b64decode(item.context_b64.split(",", 1)[-1]))
-                chk = lidar_assist.check(rt.engine, images, res["objects"], info["prompts"], info["calib"], offset)
-                lidar_assist.apply_camera(res["objects"], chk)
-                offset = chk["offset"]          # các frame sau dùng lại hướng đã dò
-                camera_info = {k: chk.get(k) for k in ("offset", "offset_source", "cameras", "note")}
+            except Exception as exc:  # noqa: BLE001 - ảnh camera lỗi thì bỏ bước này, vẫn trả cuboid
+                warnings.append(f"Không đọc được ảnh camera của frame {item.frame}: {str(exc)[:160]}")
+        if images:
+            try:
+                chk = _camera_check_frame(images, res["objects"], info, rule, offset, vision)
+                offset = chk.get("offset", offset)          # các frame sau dùng lại hướng đã dò
+                camera_info = {k: chk.get(k) for k in ("offset", "offset_source", "cameras", "note", "engine")}
                 if chk.get("note") and chk["note"] not in warnings:
                     warnings.append(chk["note"])
-            except Exception as exc:  # noqa: BLE001 - ảnh camera lỗi thì bỏ bước này, vẫn trả cuboid
+            except Exception as exc:  # noqa: BLE001
                 warnings.append(f"Không đối chiếu được ảnh camera của frame {item.frame}: {str(exc)[:160]}")
-        frame_out = {"frame": item.frame, "objects": res["objects"], "points": int(len(points)), "stats": res.get("stats")}
+        if llm is not None and res["objects"]:
+            note = _llm_judge_frame(llm, res["objects"], images, info, rule, offset, req)
+            if note and note not in warnings:
+                warnings.append(note)
+        frame_out = {"frame": item.frame, "objects": res["objects"], "points": int(len(points)), "stats": res.get("stats"),
+                     "engine": res.get("engine", "geometry")}
         for k in ("bev", "rejected", "info"):
             if k in res:
                 frame_out[k] = res[k]
@@ -1450,6 +1484,111 @@ def lidar_detect(req: LidarDetectReq) -> dict:
                      "min_points_scale": rule.get("min_points_scale") or {}, "max_base_gap_m": rule.get("max_base_gap_m", 0.5),
                      "remembered": len(rule.get("dropped") or [])},
             "reasons": lidar.REASONS}
+
+
+def lidar_onnx_detect(model, points, wanted: dict, rule: dict) -> dict:
+    from . import lidar_onnx
+
+    return lidar_onnx.detect(model, points, wanted, rule)
+
+
+def _sam3_for_3d() -> tuple[bool, str]:
+    """B3 (0.9.8): đối chiếu camera bằng SAM3 ở job 3D. SAM3 đã nạp thì dùng; chưa nạp thì chỉ nạp khi VRAM trống đủ
+    (SAM3_3D_SAM3_MIN_FREE_MB, mặc định 6 GB) — VRAM ít thì không nạp, báo lý do (tránh lại cudaErrorIllegalAddress)."""
+    from .runtime_tools import cuda_mem
+
+    if rt.engine is None:
+        return False, "Backend chưa có engine SAM3: bỏ qua bước đối chiếu ảnh camera."
+    if getattr(rt.engine, "loaded", True):
+        return True, ""
+    need = settings.sam3_3d_min_free_mb
+    m = cuda_mem()
+    free = (m or {}).get("free_mb")
+    if need <= 0 or free is None or free < need:
+        return False, (f"SAM3 đang không nạp và VRAM trống {free if free is not None else '?'} MB < {need} MB: bỏ đối chiếu "
+                       "bằng SAM3. Bộ dò vật 2D (RT-DETR) vẫn đối chiếu được nếu đã cài ở trang Thành phần.")
+    try:
+        rt.engine.ensure()
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Không nạp được SAM3 cho đối chiếu camera: {str(exc)[:120]}"
+
+
+def _camera_check_frame(images, objects, info, rule, offset, vision) -> dict:
+    """Đối chiếu cuboid của một frame với ảnh camera: bộ dò 2D ONNX trước (nhẹ, không đụng SAM3); không có thì SAM3."""
+    from . import camera_rig, lidar_assist, lidar_vision
+
+    names = [n for n, _ in images]
+    if vision is not None:
+        rig = camera_rig.build_rig(names, info["calib"], None)
+        if not rig["cameras"]:
+            return {"offset": offset, "note": "Không nhận ra tên camera (CAM_FRONT, CAM_BACK...). Nhập hướng camera ở tab Label."}
+        allowed = {lidar_vision.COCO_FOR_3D[k] for k in info["wanted"] if k in lidar_vision.COCO_FOR_3D} or None
+        res = lidar_vision.verify(vision, images, objects, rig, float(offset or 0.0), allowed)
+        lidar_vision.apply(res, objects)
+        for o in objects:                                   # panel đọc o.camera (chip "camera ✓ / ?")
+            r = (res.get("results") or {}).get(o["id"])
+            if r:
+                o["camera"] = {"verdict": {"confirmed": "confirmed", "none": "contradicted"}.get(r["verdict"], "unknown"),
+                               "camera": r.get("camera"), "prompt": o.get("cls"), "seen": "không có xe / người",
+                               "engine": "rtdetr"}
+        return {"offset": offset, "offset_source": rig["source"], "cameras": names, "engine": "rtdetr",
+                "note": "; ".join(rig.get("notes") or [])}
+    ok, why = _sam3_for_3d()
+    if not ok:
+        return {"offset": offset, "offset_source": "none", "cameras": names, "note": why}
+    chk = lidar_assist.check(rt.engine, images, objects, info["prompts"], info["calib"], offset)
+    lidar_assist.apply_camera(objects, chk)
+    chk["engine"] = "sam3"
+    return chk
+
+
+def _llm_for_3d():
+    return rt.guide.llm if (rt.guide is not None and rt.guide.llm is not None) else None
+
+
+def _llm_judge_frame(llm, objects, images, info, rule, offset, req) -> str:
+    """D2 (0.9.8): Claude chấm các cuboid của MỘT frame (gợi ý từng frame) bằng ảnh camera có khung chiếu + BEV.
+    Claude bảo bỏ -> bỏ tick; đổi class -> đổi label (nếu task có label đó). Trả câu ghi chú cho panel."""
+    from . import camera_rig, judge_3d
+
+    profile, _rule, _table, _info = _lidar_setup(req)
+    names = info["names"]
+    tracks, cams = [], {}
+    rig = camera_rig.build_rig([n for n, _ in images], info["calib"], None) if images else {"cameras": []}
+    for o in objects:
+        tracks.append({"id": o["id"], "center": o["center"], "size": o["size"], "yaw": o.get("yaw", 0.0),
+                       "points": o.get("points", 0), "cls": o.get("cls"), "label_name": names.get(o["label_id"]),
+                       "start": 0, "end": 0, "flags": o.get("flags") or [], "checked": o.get("checked", True)})
+        p = camera_rig.project(o["center"], o["size"], rig["cameras"], float(offset or 0.0)) if rig["cameras"] else None
+        img = dict(images).get(p["camera"]) if p else None
+        if img is not None:
+            h, w = img.shape[:2]
+            cams[o["id"]] = {p["camera"]: (img, [max(0.0, (p["u"] - p["half"]) * w), 0.3 * h, min(float(w), (p["u"] + p["half"]) * w), 0.7 * h])}
+    try:
+        res = judge_3d.phase1(llm, tracks, names, profile, cams, None, 8)
+    except Exception as exc:  # noqa: BLE001 - D3: lỗi Claude không làm hỏng gợi ý
+        return f"Claude lỗi: {type(exc).__name__}: {str(exc)[:120]}"
+    by_name = {str(n).strip().lower(): i for i, n in names.items()}
+    changed = dropped = 0
+    errors = set()
+    for o in objects:
+        r = res.get(o["id"]) or {}
+        if str(r.get("reason") or "").startswith("Claude lỗi"):
+            errors.add(r["reason"])
+            continue
+        o["llm"] = {k: r.get(k) for k in ("keep", "label", "confidence", "reason", "bucket")}
+        if r.get("keep") is False:
+            o["checked"] = False
+            o.setdefault("flags", []).append({"code": "UNCERTAIN_CLASS", "message": f"Claude: {r.get('reason') or 'không phải vật cần gán'}"})
+            dropped += 1
+        elif r.get("label") and by_name.get(str(r["label"]).strip().lower()) not in (None, o["label_id"]):
+            o["label_id"] = by_name[str(r["label"]).strip().lower()]
+            o.setdefault("flags", []).append({"code": "UNCERTAIN_CLASS", "message": f"Claude đổi class: {r['label']} ({r.get('reason') or ''})"})
+            changed += 1
+    if errors:
+        return sorted(errors)[0]
+    return f"Claude đã xem {len(objects)} cuboid: đổi class {changed}, đề nghị bỏ {dropped}."
 
 
 @app.post("/lidar/track", dependencies=[Depends(require_key)])
@@ -1516,7 +1655,7 @@ def _session_of(sid: str, req) -> tuple[Any, dict, dict, dict, Any]:
 @app.post("/lidar/v2/session/init", dependencies=[Depends(require_key)])
 def lidar_v2_init(req: LidarSessionInitReq) -> dict:
     """Mở phiên 3D: nhận lô frame đầu, trả session_id + tóm tắt (số frame, camera, hướng chiếu, GPU)."""
-    from . import camera_rig, lidar, lidar_session
+    from . import camera_rig, lidar_assist, lidar_session    # 0.9.8: thiếu lidar_assist làm mất mọi ảnh camera
 
     profile, rule, table, info = _lidar_setup(req)
     if not info["wanted"]:
@@ -1548,7 +1687,7 @@ def lidar_v2_init(req: LidarSessionInitReq) -> dict:
 @app.post("/lidar/v2/session/{sid}/frames", dependencies=[Depends(require_key)])
 def lidar_v2_frames(sid: str, req: LidarSessionFramesReq) -> dict:
     """Nhận thêm lô frame (point cloud + ảnh camera). Gọi nhiều lần cho tới khi đủ cả job."""
-    from . import lidar_session
+    from . import lidar_assist, lidar_session
 
     sess, _profile, _rule, _table, info = _session_of(sid, req)
     batch, contexts = [], {}
@@ -1575,7 +1714,8 @@ def lidar_v2_geometry(sid: str, req: LidarSessionStepReq) -> dict:
     if req.offset_deg is not None:
         sess.rule["offset_deg"] = float(req.offset_deg)
     sess.cancelled = False
-    return lidar_session.run_geometry(sess, req.frames, req.limit,
+    predict = _lidar_predict(sess)
+    return lidar_session.run_geometry(sess, req.frames, req.limit, predict=predict,
                                       after=lambda _f: rt.res.after_heavy())
 
 
@@ -1585,14 +1725,25 @@ def lidar_v2_vision(sid: str, req: LidarSessionStepReq) -> dict:
     from . import camera_rig, lidar_session, lidar_vision
 
     sess, profile, rule, table, info = _session_of(sid, req)
+    if not sess.contexts:
+        return {"session_id": sess.id, "skipped": "job không có ảnh camera — bỏ qua đối chiếu camera"}
     path = _onnx2d_path()
     if not path:
-        return {"session_id": sess.id, "skipped": "chưa chọn model 2D ONNX trong app desktop — bỏ qua đối chiếu camera"}
+        return {"session_id": sess.id, "skipped": "chưa có bộ dò vật 2D (RT-DETR) — cài ở trang Thành phần của app"}
     vision = _get_vision2d(path)
+    if not getattr(vision, "ready", False):
+        return {"session_id": sess.id, "skipped": f"bộ dò vật 2D không nạp được: {vision.error or '?'}"}
     cams = sorted({n for ctx in sess.contexts.values() for n, _ in ctx})
     rig = camera_rig.build_rig(cams, sess.rule.get("cameras") or {}, sess.rule.get("camera_meta"))
     offset = req.offset_deg if req.offset_deg is not None else sess.rule.get("offset_deg")
-    return lidar_session.run_vision(sess, vision, rig, offset, req.limit)
+    try:
+        return lidar_session.run_vision(sess, vision, rig, offset, req.limit)
+    except Exception as exc:  # noqa: BLE001 - A3: lỗi bất ngờ không làm phiên trả 500, panel đi tiếp
+        log.exception("Đối chiếu camera phiên 3D lỗi")
+        sess.errors.append(f"đối chiếu camera lỗi: {type(exc).__name__}: {str(exc)[:120]}")
+        for t in (sess.track or {}).get("tracks") or []:
+            t.setdefault("vision2d", {"verdict": "no_image"})
+        return {"session_id": sess.id, "error": str(exc)[:200], "remaining": 0, "done": dict(sess.done)}
 
 
 @app.post("/lidar/v2/session/{sid}/llm_batch", dependencies=[Depends(require_key)])
@@ -1601,7 +1752,9 @@ def lidar_v2_llm(sid: str, req: LidarSessionLlmReq) -> dict:
     from . import lidar_session
 
     sess, profile, rule, table, info = _session_of(sid, req)
-    llm = rt.guide.llm if (rt.guide and rt.guide.llm is not None) else None
+    if not req.use_llm:
+        return {"session_id": sess.id, "skipped": "bạn đã tắt Claude AI cho job này"}
+    llm = _llm_for_3d()
     mem = None
     if rt.memory is not None:
         try:
@@ -1648,11 +1801,65 @@ _vision2d: dict = {"path": None, "obj": None}
 
 
 def _onnx2d_path() -> Optional[str]:
-    """Đường dẫn model 2D ONNX người dùng đã chọn trong app desktop (None nếu chưa chọn)."""
+    """Đường dẫn model 2D ONNX (None nếu chưa có). 0.9.8: file bạn chọn trong app (SAM3_ONNX2D_PATH) thắng, không thì
+    RT-DETR mà bộ cài tải về (SAM3_RTDETR_MODEL), cuối cùng models/rtdetr_r18vd.onnx khi chạy từ mã nguồn."""
     import os
+    from pathlib import Path
 
-    p = os.getenv("SAM3_ONNX2D_PATH", "")
-    return p or None
+    for p in (os.getenv("SAM3_ONNX2D_PATH", ""), os.getenv("SAM3_RTDETR_MODEL", ""), str(settings.rtdetr_model)):
+        if p and Path(p).is_file():
+            return p
+    return None
+
+
+def _onnx3d_path() -> Optional[str]:
+    """0.9.8: model LiDAR ONNX (CenterPoint pillar nuScenes) bạn chọn trong app; None thì dùng hình học như cũ."""
+    import os
+    from pathlib import Path
+
+    p = os.getenv("SAM3_ONNX3D_PATH", "")
+    return p if p and Path(p).is_file() else None
+
+
+_lidar3d: dict = {"path": None, "obj": None}
+
+
+def _get_lidar3d(path: str):
+    """Bộ dò 3D ONNX dùng chung (nạp một lần, đổi file thì nạp lại)."""
+    from . import lidar_onnx, runtime_tools
+
+    if _lidar3d["obj"] is not None and _lidar3d["path"] == path:
+        return _lidar3d["obj"]
+    if _lidar3d["obj"] is not None:
+        _lidar3d["obj"].release("đổi model")
+    providers, options = runtime_tools.pick_onnx_providers()
+    m = lidar_onnx.CenterPointONNX(path, providers, options).load()
+    _lidar3d["path"], _lidar3d["obj"] = path, m
+    if m.error:
+        log.warning("Model 3D ONNX: %s", m.error)
+    return m
+
+
+def _lidar_predict(sess):
+    """0.9.8 (F1): có model CenterPoint thì dựng cuboid bằng model, lỗi một frame thì frame đó quay về hình học."""
+    from . import lidar, lidar_onnx
+
+    path = _onnx3d_path()
+    if not path:
+        return None
+    model = _get_lidar3d(path)
+    if not model.ready:
+        sess.errors.append(f"model 3D ONNX không dùng được, dùng hình học: {model.error or '?'}")
+        return None
+
+    def predict(points):
+        try:
+            return lidar_onnx.detect(model, points, sess.labels, sess.rule)
+        except Exception as exc:  # noqa: BLE001
+            sess.errors.append(f"model 3D lỗi, frame này dùng hình học: {type(exc).__name__}: {str(exc)[:100]}")
+            return lidar.detect(points, sess.labels, sess.table, sess.rule, debug=False)
+
+    return predict
 
 
 def _get_vision2d(path: str):

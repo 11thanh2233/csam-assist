@@ -70,6 +70,10 @@ class Settings:
         self.reid_model = os.getenv("SAM3_REID_MODEL", "facebook/dinov2-small")
         self.depth_model = os.getenv("SAM3_DEPTH_MODEL", "depth-anything/Depth-Anything-V2-Small-hf")
         self.wholebody_model = Path(os.getenv("SAM3_WHOLEBODY_MODEL") or str(ROOT / "models" / "rtmw-wholebody.onnx"))
+        # 0.9.8: bộ dò vật 2D cho job 3D (RT-DETR r18vd COCO, Apache-2.0): lọc box 3D không phải xe / người
+        self.rtdetr_model = Path(os.getenv("SAM3_RTDETR_MODEL") or str(ROOT / "models" / "rtdetr_r18vd.onnx"))
+        # 0.9.8: đối chiếu camera bằng SAM3 ở job 3D được phép nạp SAM3 khi VRAM trống >= số MB này (0 = không bao giờ)
+        self.sam3_3d_min_free_mb = int(os.getenv("SAM3_3D_SAM3_MIN_FREE_MB", "6000") or 0)
 
 
 settings = Settings()

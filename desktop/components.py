@@ -7,6 +7,8 @@
   reid     DINOv2-small: nhận lại đúng người sau khi khuất (0.9.6)                      tuỳ chọn
   depth    Depth Anything V2 Small: ai đứng trước ai (0.9.6)                            tuỳ chọn
   wholebody RTMW (ONNX): pose toàn thân 133 điểm, có bàn tay, bàn chân (0.9.6)           tuỳ chọn
+  rtdetr   RT-DETR r18vd (ONNX, COCO): job 3D lọc box không phải xe / người bằng ảnh camera (0.9.8)   tuỳ chọn
+  onnx2d / onnx3d   file .onnx bạn tự chọn: bộ dò 2D khác (thay RT-DETR), CenterPoint LiDAR (0.9.8 dùng thật)
 
 Danh sách file, địa chỉ và mã băm của PyTorch và model khuôn mặt do bước build ghim sẵn trong
 desktop/manifest.lock.json. Trọng số trên Hugging Face được ghim theo commit lúc tải, mỗi file kiểm tra theo
@@ -36,9 +38,11 @@ COMPONENTS = {
     "reid": {"title": "Nhận lại người (DINOv2)", "required": False},
     "depth": {"title": "Độ sâu: ai đứng trước ai (Depth Anything V2)", "required": False},
     "wholebody": {"title": "Pose toàn thân: tay, bàn chân (RTMW)", "required": False},
-    # 0.9.7: model ONNX cho job 3D (spec 3D v2 mục 2 & 3.2). Tải rời, chỉ dùng khi job 3D cần.
-    "onnx2d": {"title": "Dò vật 2D cho job 3D (ONNX)", "required": False},
-    "onnx3d": {"title": "Dò vật 3D LiDAR (CenterPoint/PointPillars ONNX)", "required": False},
+    # 0.9.8: bộ dò vật 2D tải tự động cho job 3D (lọc thùng rác, cột, tường bằng ảnh camera)
+    "rtdetr": {"title": "Lọc rác job 3D bằng ảnh camera (RT-DETR)", "required": False},
+    # 0.9.7: model ONNX cho job 3D do bạn chọn file. 0.9.8: CenterPoint được dùng thật để dựng cuboid.
+    "onnx2d": {"title": "Bộ dò 2D khác cho job 3D (file ONNX)", "required": False},
+    "onnx3d": {"title": "Dò vật 3D LiDAR (CenterPoint ONNX)", "required": False},
 }
 
 # ---------------------------------------------------------------- ONNX 3D ---
@@ -69,22 +73,15 @@ ONNX_MODELS: dict[str, dict] = {
     },
     "onnx3d": {
         "choices": {
-            "pointpillars": {
-                "role": "Dò vật 3D LiDAR (PointPillars, KITTI 3 class)",
-                "url": "",
-                "license": "Apache-2.0",
-                "classes": "kitti3",
-                "note": "Nhẹ, chạy tốt trên GPU 4 GB; cần hiệu chỉnh voxel theo dataset.",
-            },
             "centerpoint": {
-                "role": "Dò vật 3D LiDAR (CenterPoint, nuScenes/KITTI)",
-                "url": "",
-                "license": "Apache-2.0",
+                "role": "Dò vật 3D LiDAR (CenterPoint pillar 0.2 m, nuScenes 10 class)",
+                "url": "",                       # xuất bằng scripts/export_centerpoint_onnx.py (Colab)
+                "license": "Apache-2.0 (code); dữ liệu nuScenes: phi thương mại / nghiên cứu",
                 "classes": "nuscenes10",
-                "note": "Chính xác hơn PointPillars, cần nhiều VRAM hơn.",
+                "note": "0.9.8 dùng thật: chia pillar, chạy model, giải mã, circle NMS trong backend/lidar_onnx.py.",
             },
         },
-        "default": "pointpillars",
+        "default": "centerpoint",
     },
 }
 # Nhãn COCO mà bộ dò 2D dùng cho job 3D (class_key của lidar -> id COCO). Lớp không có ở đây thì bỏ qua.
@@ -106,12 +103,11 @@ def license_warning(kind: str, choice: str) -> str:
         return f"Model '{choice}' chưa rõ giấy phép: hỏi mentor trước khi dùng cho dữ liệu thật."
     return ""
 
-FILE_MODELS = ("face", "detector", "wholebody")
+FILE_MODELS = ("face", "detector", "wholebody", "rtdetr")
 HF_MODELS = ("sam3", "vitpose", "reid", "depth")
-# 0.9.7: model ONNX 3D tải theo file người dùng trỏ tới (hoặc URL chốt sau với mentor) — không nằm trong manifest
-# build vì chưa chốt checkpoint; panel hiện bảng ONNX_MODELS để chọn, tool chỉ dùng khi job 3D cần.
+# model ONNX bạn tự chọn file (không tải qua bộ cài): bộ dò 2D thay RT-DETR, và CenterPoint LiDAR
 ONNX_FILE_KINDS = ("onnx2d", "onnx3d")
-ORDER = ("torch", "sam3", "vitpose", "face", "detector", "reid", "depth", "wholebody")          # thành phần là một file tải theo địa chỉ + mã băm trong manifest
+ORDER = ("torch", "sam3", "vitpose", "face", "detector", "reid", "depth", "wholebody", "rtdetr")
 TORCH_EXTRACT = 2.1          # bản cài PyTorch chiếm khoảng 2 lần file tải về
 MIN_DRIVER = 528.0           # driver NVIDIA tối thiểu cho PyTorch CUDA 12 trên Windows
 
@@ -201,13 +197,13 @@ class Components:
         tmp.replace(self.paths.state)
 
     def installed(self, key: str) -> bool:
+        if key in ONNX_FILE_KINDS:               # model ONNX của job 3D: có khi bạn đã chọn file và file còn đó
+            return self.onnx_path(key) is not None
         if self.system:
             import importlib.util
 
             if key == "torch":
                 return importlib.util.find_spec("torch") is not None
-            if key in ONNX_FILE_KINDS:
-                return importlib.util.find_spec("onnxruntime") is not None
             return True
         st = self.state().get(key)
         if not st:
@@ -216,9 +212,6 @@ class Components:
             return (self.paths.packages / "torch" / "__init__.py").exists()
         if key in FILE_MODELS:
             return self._file_path(key).exists()
-        if key in ONNX_FILE_KINDS:
-            path = Path(st.get("path") or "")
-            return bool(path.name) and path.exists()
         folder = self._hf_folder(key)
         return all((folder / f).exists() for f in st.get("files", [])) and bool(st.get("files"))
 
@@ -267,16 +260,18 @@ class Components:
         return self._tool_dirs
 
     def plan(self, keys: list[str], gpu: Gpu, token: str = "", check_hash: bool = False) -> dict:
-        if self.system:
-            return {k: {"action": "none" if self.installed(k) else "install", "download": 0, "reuse": 0, "required": k == "torch",
-                        "reason": "chạy từ mã nguồn: tự cài bằng pip (xem README)" if not self.installed(k) else "dùng bản cài trên máy"} for k in keys}
         """Việc cần làm cho từng thành phần: none (đã có, đúng bản), install (chưa có), update (có nhưng cần bản khác).
         Kèm số byte phải tải và số byte dùng lại được từ file có sẵn trên máy.
         check_hash=False: chỉ so dung lượng (nhanh); khi cài thật mọi file đều được kiểm mã băm."""
+        if self.system:
+            return {k: self._plan_onnx(k, gpu, token, check_hash) if k in ONNX_FILE_KINDS else
+                    {"action": "none" if self.installed(k) else "install", "download": 0, "reuse": 0, "required": k == "torch",
+                     "reason": "chạy từ mã nguồn: tự cài bằng pip (xem README)" if not self.installed(k) else "dùng bản cài trên máy"}
+                    for k in keys}
         out = {}
         for key in keys:
             try:
-                kind = "hf" if key in HF_MODELS else ("file" if key in FILE_MODELS else key)
+                kind = "hf" if key in HF_MODELS else ("file" if key in FILE_MODELS else "onnx" if key in ONNX_FILE_KINDS else key)
                 out[key] = getattr(self, f"_plan_{kind}")(key, gpu, token, check_hash)
             except Exception as exc:  # noqa: BLE001 - không kiểm được thì báo, không chặn
                 out[key] = {"action": "install" if not self.installed(key) else "none", "download": 0, "reuse": 0,
@@ -304,7 +299,7 @@ class Components:
         return [d / "models" for d in self.tool_dirs()] + [self.paths.models]
 
     def _file_path(self, key: str) -> Path:
-        return {"face": self.paths.face, "wholebody": self.paths.wholebody}.get(key, self.paths.detector)
+        return {"face": self.paths.face, "wholebody": self.paths.wholebody, "rtdetr": self.paths.rtdetr}.get(key, self.paths.detector)
 
     def _plan_file(self, key, gpu, token, check_hash) -> dict:
         f = (self.manifest.get("models") or {}).get(key)
@@ -323,6 +318,15 @@ class Components:
                 "reason": ("model khuôn mặt bản mới" if key == "face" else "bản mới") if action == "update" else ""}
 
     _plan_face = _plan_file
+
+    def _plan_onnx(self, key, gpu, token, check_hash) -> dict:
+        """0.9.7: model ONNX của job 3D không tải qua bộ cài (chưa chốt checkpoint): bạn chọn file .onnx có sẵn ở trang
+        Thành phần. Không bao giờ bắt buộc, không chặn bước cài, không tính vào dung lượng tải."""
+        path = self.onnx_path(key)
+        if path is not None:
+            return {"action": "none", "download": 0, "reuse": 0, "required": False, "reason": f"dùng file {path.name}"}
+        return {"action": "pick", "download": 0, "reuse": 0, "required": False,
+                "reason": "tuỳ chọn cho job 3D: chọn file .onnx có sẵn ở trang Thành phần"}
 
     def _hf_folder(self, key: str) -> Path:
         return {"sam3": self.paths.sam3, "reid": self.paths.reid, "depth": self.paths.depth}.get(key, self.paths.vitpose)
@@ -364,7 +368,7 @@ class Components:
         plan = self.plan(keys, gpu, token)
         download = disk = 0
         for key, p in plan.items():
-            if p["action"] == "none":
+            if p["action"] in ("none", "pick"):
                 continue
             download += p["download"]
             disk += int(p["download"] * (1 + TORCH_EXTRACT)) if key == "torch" else p["download"]
@@ -379,6 +383,8 @@ class Components:
     # ------------------------------------------------------------ install ---
     def install(self, key: str, *, gpu: Gpu, token: str = "", progress: Optional[Callable] = None, cancel=None) -> dict:
         progress = progress or (lambda **_: None)
+        if key in ONNX_FILE_KINDS:
+            raise D.DownloadError(f"{COMPONENTS[key]['title']}: không tải qua bộ cài, chọn file .onnx ở trang Thành phần.")
         if key == "torch":
             return self._install_torch(gpu, progress, cancel)
         if key in FILE_MODELS:
@@ -423,7 +429,7 @@ class Components:
         if not f:
             raise D.DownloadError(f"Bản cài này chưa có thành phần {COMPONENTS[key]['title']}: cập nhật app lên bản mới.")
         dest = self._file_path(key)
-        what = {"face": "model khuôn mặt", "wholebody": "model pose toàn thân"}.get(key, "trọng số khởi đầu")
+        what = {"face": "model khuôn mặt", "wholebody": "model pose toàn thân", "rtdetr": "bộ dò vật 2D (RT-DETR)"}.get(key, "trọng số khởi đầu")
         if f.get("zip_member") is not None:      # 0.9.6: model nằm trong file zip (RTMW của OpenMMLab)
             return self._install_zip(key, f, dest, what, progress, cancel)
         item = {"path": dest.name, "sha256": f["sha256"], "size": f.get("size")}
@@ -512,6 +518,8 @@ class Components:
             self.paths.packages.mkdir(parents=True, exist_ok=True)
         elif key in FILE_MODELS:
             self._file_path(key).unlink(missing_ok=True)
+        elif key in ONNX_FILE_KINDS:
+            pass                                  # file .onnx là của bạn: chỉ bỏ chọn, không xoá file
         else:
             final = self._hf_folder(key)
             shutil.rmtree(final, ignore_errors=True)
@@ -521,9 +529,13 @@ class Components:
     def backend_env(self) -> dict:
         """Biến môi trường cho backend: chạy hoàn toàn offline, mọi model lấy từ thư mục dữ liệu."""
         p = self.paths
+        # 0.9.7: model ONNX của job 3D bạn đã chọn (backend đọc SAM3_ONNX2D_PATH ở bước đối chiếu camera)
+        onnx = {f"SAM3_{k.upper()}_PATH": str(path) for k in ONNX_FILE_KINDS if (path := self.onnx_path(k)) is not None}
         if self.system:          # chạy từ mã nguồn: model lấy như bản cài tay (Hugging Face cache)
-            return {"SAM3_PROFILES_DIR": str(p.profiles), "SAM3_LIBRARY_DIR": str(p.library), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+            return {"SAM3_PROFILES_DIR": str(p.profiles), "SAM3_LIBRARY_DIR": str(p.library), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+                    **onnx}
         return {
+            **onnx,
             "SAM3_ENGINE": "transformers",
             "SAM3_HF_MODEL": str(p.sam3),
             "SAM3_POSE_MODEL": str(p.vitpose),
@@ -532,6 +544,7 @@ class Components:
             "SAM3_REID_MODEL": str(p.reid),
             "SAM3_DEPTH_MODEL": str(p.depth),
             "SAM3_WHOLEBODY_MODEL": str(p.wholebody),
+            "SAM3_RTDETR_MODEL": str(p.rtdetr),
             "SAM3_PROFILES_DIR": str(p.profiles),
             "SAM3_LIBRARY_DIR": str(p.library),
             "SAM3_NO_AUTO_DOWNLOAD": "1",

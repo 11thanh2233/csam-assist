@@ -3,6 +3,39 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.8 (2026-11-25)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.8.md`. Bản này sửa các lỗi làm job 3D "đánh loạn" ở 0.9.7 và cho các
+bước kiểm tra (ảnh camera, Claude) chạy thật.
+
+- **Ảnh camera không còn bị mất:** 0.9.7 báo "frame … ảnh camera lỗi: name 'lidar_assist' is not defined" cho mọi
+  frame (thiếu import trong phiên 3D), nên panel ghi "không có ảnh camera" và bước đối chiếu đứng ở 0/40. Đã sửa.
+- **Bật Claude không còn lỗi 500 `KeyError: 'center'`:** track gửi cho Claude và cho bước đối chiếu camera giờ có đủ
+  tâm, hướng, số điểm, ảnh của keyframe rõ nhất. Claude lỗi (key sai, hết quota, 429, quá tải) thì báo một dòng lý do
+  rõ ràng, các track đó vào rổ "Cần xem", phiên không dừng.
+- **Rổ trung thực:** track chưa được camera hay Claude kiểm thì vào "Cần xem", không còn tự vào "Tin cậy cao" (0.9.7:
+  109/109 track "Tin cậy cao" dù không ai kiểm). Trailer nhỏ và construction vehicle chỉ "Tin cậy cao" khi camera xác
+  nhận (trailer: hoặc xe kéo ngay trước đã được xác nhận). Track chỉ thấy ở 1–2 frame của job dài, hoặc luôn rất ít
+  điểm, vào "Nghi rác".
+- **Lọc rác bằng ảnh camera (RT-DETR):** bộ dò vật 2D RT-DETR r18vd (COCO, Apache-2.0, ~83 MB) tải ở trang Thành phần.
+  Box 3D chiếu lên ảnh mà không có xe / người thì vào "Nghi rác" (thùng rác, nhà vệ sinh di động, cột, tường). Dùng cho
+  cả "Gợi ý cuboid frame này" lẫn cả job. Sửa luôn bộ đọc kết quả: điểm sigmoid (trước dùng softmax nên gần như không
+  box nào qua ngưỡng) và toạ độ chuẩn hoá (trước bị co về góc trái trên).
+- **Đối chiếu bằng SAM3 ở job 3D:** SAM3 chưa nạp thì nạp khi VRAM trống đủ (mặc định 6 GB, đổi bằng
+  `SAM3_3D_SAM3_MIN_FREE_MB`), không đủ thì báo lý do thay vì lặng lẽ bỏ qua.
+- **Model 3D thật (CenterPoint, nuScenes):** chọn file `.onnx` ở trang Thành phần thì tool dựng cuboid bằng model nhận
+  ra xe / người trong point cloud thay cho gom cụm + đoán theo kích thước. Backend tự chia pillar, giải mã, lọc trùng
+  (circle NMS), dời độ cao mặt đất về như nuScenes; một frame lỗi thì frame đó quay về hình học. File xuất bằng
+  `scripts/export_centerpoint_onnx.py` (chạy trên Colab). Trọng số học trên nuScenes: chỉ dùng cho nghiên cứu.
+- **Claude cho từng frame ở job 3D:** ô "Dùng Claude AI cho frame này" ở tab Gợi ý: Claude xem ảnh camera có khung
+  chiếu, bỏ tick vật không phải xe / người, sửa class. Chip "Claude AI: bật/tắt" giờ theo ô tick của bạn.
+- **Panel nói rõ đang dùng gì:** một dòng "Dựng cuboid: model 3D / hình học · Lọc rác bằng ảnh: RT-DETR / chưa có";
+  lỗi lặp lại (40 frame cùng một lỗi) gộp thành một dòng có đếm; bước đối chiếu camera chạy hết mọi track (trước chỉ
+  50 track đầu).
+- **App desktop:** trang Thành phần có ONNX 2D / 3D, setup không còn kẹt khi đã đủ thành phần, banner "cần cập nhật"
+  không còn hiện sai cho ONNX.
+- **Cho người phát triển:** `AGENTS.md` + `docs/agents/` (issue tracker GitHub, domain docs).
+
 ## 0.9.7 (2026-11-25)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.7.md`. Bản này triệt tiêu nguồn lỗi `cudaErrorIllegalAddress`, nâng

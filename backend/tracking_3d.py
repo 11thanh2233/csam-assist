@@ -101,8 +101,11 @@ def _match(tracks: list[dict], kfs: list[Kf2d], objs: list[dict], f: int, gate: 
 
 
 # ------------------------------------------------------------ dựng ---
-def build(frames: list[dict], rule: Optional[dict] = None, names: Optional[dict] = None) -> dict:
-    """frames: [{frame, objects}] -> {tracks, warnings, engine}. Tương thích output của lidar.build_tracks."""
+def build(frames: list[dict], rule: Optional[dict] = None, names: Optional[dict] = None, keep_obs: bool = False) -> dict:
+    """frames: [{frame, objects}] -> {tracks, warnings, engine}. Tương thích output của lidar.build_tracks.
+
+    0.9.8: keep_obs=True giữ vật thể từng frame của track ở khoá `_obs` ({frame: object}) để bước đối chiếu camera và
+    Claude lấy đúng tâm / hướng / số điểm của keyframe rõ nhất. Khoá bắt đầu bằng `_` không gửi về panel."""
     rule = rule or {}
     names = names or {}
     max_hidden = int(rule.get("max_occluded_frames", 6))
@@ -194,12 +197,15 @@ def build(frames: list[dict], rule: Optional[dict] = None, names: Optional[dict]
                                          "xem có phải vật đổi hình (mở cửa, bốc hàng) hay cụm điểm dính vật khác."})
                 break
         keys = _keyframes(shapes)
-        out.append({"tid": i, "label_id": t["label_id"], "label_name": names.get(t["label_id"], str(t["label_id"])),
-                    "start": fs[0], "end": fs[-1], "size": [round(v, 2) for v in size], "ref_frame": ref,
-                    "shapes": keys, "keyframes": len(keys), "flags": flags + _merge_flags(t),
-                    "checked": sum(1 for f in fs if obs[f].get("checked", True)) >= 0.5 * len(fs),
-                    "confidence": round(float(np.mean([obs[f].get("confidence", obs[f].get("score", 0.5)) for f in fs])), 3),
-                    "cls": key_cls})
+        item = {"tid": i, "label_id": t["label_id"], "label_name": names.get(t["label_id"], str(t["label_id"])),
+                "start": fs[0], "end": fs[-1], "size": [round(v, 2) for v in size], "ref_frame": ref,
+                "shapes": keys, "keyframes": len(keys), "flags": flags + _merge_flags(t),
+                "checked": sum(1 for f in fs if obs[f].get("checked", True)) >= 0.5 * len(fs),
+                "confidence": round(float(np.mean([obs[f].get("confidence", obs[f].get("score", 0.5)) for f in fs])), 3),
+                "cls": key_cls}
+        if keep_obs:
+            item["_obs"] = {int(f): obs[f] for f in fs}
+        out.append(item)
     return {"tracks": out, "warnings": [] if out else ["Không dựng được track cuboid nào."], "engine": "kalman+hungarian"}
 
 

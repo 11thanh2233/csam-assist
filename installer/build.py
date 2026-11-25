@@ -39,6 +39,12 @@ WHOLEBODY_URL = ("https://download.openmmlab.com/mmpose/v1/projects/rtmw/onnx_sd
                  "rtmw-dw-x-l_simcc-cocktail14_270e-256x192_20231122.zip")
 # 0.9.4: trọng số khởi đầu (COCO) cho model riêng ở tab Tự học; torchvision, giấy phép BSD-3-Clause
 DETECTOR_URL = "https://download.pytorch.org/models/fasterrcnn_mobilenet_v3_large_fpn-fb6a3cc7.pth"
+# 0.9.8: bộ dò vật 2D cho job 3D: RT-DETR r18vd (COCO, Apache-2.0), bản ONNX của onnx-community, ghim theo commit +
+# mã băm công bố trên Hugging Face (kiểm khi build và khi tải trên máy người dùng)
+RTDETR_URL = ("https://huggingface.co/onnx-community/rtdetr_r18vd/resolve/"
+              "f2bee7444f4c29003df7e9ef07c4c1c6632eca6f/onnx/model.onnx")
+RTDETR_SHA256 = "11843b02455cc24009aed24d4c40db721b1093be5ccd6bbe7b9c441abb1d0558"
+RTDETR_SIZE = 82_572_357
 PLATFORM = ["--platform", "win_amd64", "--python-version", "3.12", "--implementation", "cp", "--abi", "cp312",
             "--only-binary=:all:"]
 HEAVY = {"torch", "torchvision"}
@@ -312,6 +318,7 @@ def main() -> None:
             "depth": {"repo": "depth-anything/Depth-Anything-V2-Small-hf", "revision": "main", "approx_size": 100_000_000},
             "wholebody": {"url": WHOLEBODY_URL, "sha256": sha256(wholebody), "size": wholebody.stat().st_size,
                           "filename": "rtmw-wholebody.zip", "zip_member": wb_member},
+            "rtdetr": {"url": RTDETR_URL, "sha256": RTDETR_SHA256, "size": RTDETR_SIZE},
         },
     }
     (app / "desktop" / "manifest.lock.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

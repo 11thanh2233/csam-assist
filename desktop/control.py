@@ -23,7 +23,8 @@ from .bridge import is_local, normalize_site
 from . import changelog
 from . import cvat_local
 from . import updater as U
-from .components import ORDER, COMPONENTS, Components, Gpu, detect_gpu, human, seed_user_files
+from .components import (ORDER, COMPONENTS, ONNX_FILE_KINDS, Components, Gpu, detect_gpu, human, license_warning,
+                         seed_user_files)
 from .paths import Paths
 
 DEFAULT_SITES = [
@@ -270,6 +271,7 @@ class ControlApi:
         self._update_info: dict = self._settings.data.get("update_cache") or {}
         self._pick_folder: Optional[Callable[[], Optional[str]]] = None
         self._pick_file: Optional[Callable[[bool, str], Optional[str]]] = None      # (lưu?, tên gợi ý) -> đường dẫn
+        self._pick_onnx_file: Optional[Callable[[], Optional[str]]] = None           # 0.9.7: hộp chọn file .onnx
         st = self._settings.data
         if st.get("lan_share") and st.get("lan_key"):
             backend.share_key = st["lan_key"]
@@ -508,7 +510,7 @@ class ControlApi:
     def install(self, keys):
         keys = [k for k in keys if k in COMPONENTS]
         plan = self._comps.plan(keys, self._gpu_info(), self._token)
-        todo = [k for k in keys if plan[k]["action"] != "none"]
+        todo = [k for k in keys if plan[k]["action"] not in ("none", "pick")]    # pick: model ONNX chọn file, không tải
         if not todo:
             return {"ok": False, "message": "Các thành phần đã chọn đều đã có và đúng bản, không cần tải gì."}
         if "sam3" in todo and not self._settings.data.get("license_accepted"):
@@ -554,6 +556,25 @@ class ControlApi:
             self._backend.stop()
         self._comps.remove(key)
         return True
+
+    def pick_onnx(self, kind):
+        """0.9.7: chọn file .onnx có sẵn cho job 3D ('onnx2d' bộ dò 2D, 'onnx3d' bộ dò LiDAR). Backend đang chạy thì
+        bật lại để nhận đường dẫn mới."""
+        if kind not in ONNX_FILE_KINDS:
+            return {"ok": False, "message": "Loại model không hỗ trợ."}
+        src = self._pick_onnx_file() if self._pick_onnx_file else None
+        if not src:
+            return {"ok": False, "message": ""}
+        if Path(src).suffix.lower() != ".onnx":
+            return {"ok": False, "message": "Cần chọn file .onnx."}
+        try:
+            info = self._comps.use_onnx(kind, src)
+        except Exception as exc:  # noqa: BLE001 - file mất giữa chừng
+            return {"ok": False, "message": str(exc)}
+        warn = license_warning(kind, info.get("choice") or "")
+        if self._backend.state in ("running", "starting"):
+            self._backend.restart()
+        return {"ok": True, "message": f"Đã chọn {Path(src).name}." + (f" {warn}" if warn else ""), "path": info["path"]}
 
     def backend(self, action):
         if action == "start":

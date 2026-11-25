@@ -14,3 +14,4 @@ profiles/auto_*.yaml
 guideline_library/learning/
 build/
 dist/
+settings.local.json

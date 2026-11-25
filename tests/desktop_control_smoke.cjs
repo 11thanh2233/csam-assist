@@ -63,7 +63,12 @@ async function main() {
     await until(() => !doc.getElementById('todoBanner').classList.contains('hidden'), 'báo cần cập nhật PyTorch');
     assert.match(doc.getElementById('todoBanner').textContent, /PyTorch 2\.14\.1, máy đang có 2\.13\.0/);
     assert.match(doc.getElementById('comps').textContent, /Có bản mới/);
-    assert.strictEqual(doc.querySelectorAll('#comps .ccard').length, 8, 'mỗi thành phần một thẻ (0.9.6: thêm nhận lại người, độ sâu, pose toàn thân)');
+    // 0.9.6: nhận lại người, độ sâu, pose toàn thân; 0.9.8: RT-DETR (tải), ONNX 2D / 3D (chọn file)
+    assert.strictEqual(doc.querySelectorAll('#comps .ccard').length, 11, 'mỗi thành phần một thẻ');
+    assert.strictEqual([...doc.querySelectorAll('#comps .ccard button')].filter((b) => /Chọn file \.onnx/.test(b.textContent)).length, 2,
+      '0.9.8: hai thẻ ONNX có nút chọn file .onnx (không tải qua bộ cài)');
+    assert.match(doc.getElementById('comps').textContent, /Lọc rác job 3D bằng ảnh camera \(RT-DETR\)/);
+    assert.doesNotMatch(doc.getElementById('todoBanner').textContent, /ONNX|onnx|RT-DETR/, 'ONNX / RT-DETR không làm hiện banner cần cập nhật');
     await until(() => /Có bản mới 99\.0\.0/.test(doc.getElementById('updDetail').textContent), 'thông tin bản mới');
     assert.ok(doc.querySelector('#updDetail .notes b'), 'ghi chú bản mới hiện dạng định dạng');
     assert.ok(!doc.getElementById('updBadge').classList.contains('hidden'));
@@ -81,13 +86,17 @@ async function main() {
 
     // Trình cài: bước quét liệt kê từng thành phần, bước chọn chỉ chọn sẵn cái cần
     win.openWizard(1);
-    await until(() => doc.querySelectorAll('#scanBox tr').length === 8, 'kết quả quét');
+    await until(() => doc.querySelectorAll('#scanBox tr').length === 11, 'kết quả quét');
     assert.match(doc.getElementById('scanBox').textContent, /cần cập nhật/);
     assert.match(doc.getElementById('scanBox').textContent, /đã có, đúng bản|chưa có/);
     win.go(4);
-    await until(() => doc.querySelectorAll('#pick input[data-k]').length === 8, 'bảng chọn thành phần');
+    await until(() => doc.querySelectorAll('#pick input[data-k]').length === 11, 'bảng chọn thành phần');
     const torch = doc.querySelector('#pick input[data-k="torch"]');
     assert.ok(torch.checked && torch.disabled, 'PyTorch bắt buộc cập nhật: chọn sẵn, không bỏ được');
+    for (const k of ['onnx2d', 'onnx3d']) {
+      const box = doc.querySelector(`#pick input[data-k="${k}"]`);
+      assert.ok(!box.checked && box.disabled, `${k}: chọn file ở trang Thành phần, không tải ở bước cài`);
+    }
     await until(() => /Tải về khoảng/.test(doc.getElementById('estimate').textContent), 'ước lượng dung lượng');
     // 0.8.3: cột trái hiện các bước (bước qua có dấu ✓, bước đang làm đánh dấu), trang hoàn tất, mục lục ở bảng điều khiển
     assert.ok(!doc.getElementById('stepbar').classList.contains('hidden') && doc.getElementById('dashnav').classList.contains('hidden'));

@@ -131,6 +131,27 @@ TRANSLATIONS = {
     "Sang bước 2 (cả job)": "Go to step 2 (whole job)",
     "{0} track · {1} cần xem": "{0} tracks · {1} to review",
     "Khoảng frame {0}–{1}": "Frame range {0}–{1}",
+    # --- app desktop: model ONNX của job 3D (chọn file, không tải qua bộ cài) ---
+    "tuỳ chọn cho job 3D: chọn file .onnx có sẵn ở trang Thành phần":
+        "optional for 3D jobs: choose an existing .onnx file on the Components page",
+    "dùng file {0}": "using file {0}",
+    "{0}: không tải qua bộ cài, chọn file .onnx ở trang Thành phần.":
+        "{0}: not downloaded by the installer, choose an .onnx file on the Components page.",
+    "Đã chọn {0}.{1}": "Selected {0}.{1}",
+    "Loại model không hỗ trợ.": "Unsupported model type.",
+    "Cần chọn file .onnx.": "Please choose an .onnx file.",
+    "tuỳ chọn, chưa chọn file": "optional, no file chosen",
+    "job 3D: đối chiếu ảnh camera": "3D jobs: camera image cross-check",
+    "job 3D: dò vật trong point cloud": "3D jobs: detect objects in the point cloud",
+    "Tuỳ chọn · job 3D: đối chiếu ảnh camera (RT-DETR / D-FINE, Apache-2.0). Chọn file .onnx có sẵn":
+        "Optional · 3D jobs: camera image cross-check (RT-DETR / D-FINE, Apache-2.0). Choose an existing .onnx file",
+    "Tuỳ chọn · job 3D: dò vật trong point cloud (PointPillars / CenterPoint, Apache-2.0). Chọn file .onnx có sẵn":
+        "Optional · 3D jobs: detect objects in the point cloud (PointPillars / CenterPoint, Apache-2.0). Choose an existing .onnx file",
+    "<span class=\"tag\">Chưa chọn</span>": "<span class=\"tag\">Not chosen</span>",
+    "Đổi file": "Change file",
+    "Chọn file .onnx": "Choose .onnx file",
+    " <button class=\"quiet\" onclick=\"removeComp('{0}')\">Bỏ chọn</button>":
+        " <button class=\"quiet\" onclick=\"removeComp('{0}')\">Unselect</button>",
     # --- biểu thức chính quy: giữ nguyên văn, chỉ để công cụ không báo thiếu ---
     "(?:occlu\\w*|bị che|che khuất)[^.\\n]{0,60}?(?:tối đa|max|không quá|≤|<=)[^\\d\\n]{0,12}(\\d{1,2})\\b":
         "(?:occlu\\w*|bị che|che khuất)[^.\\n]{0,60}?(?:tối đa|max|không quá|≤|<=)[^\\d\\n]{0,12}(\\d{1,2})\\b",

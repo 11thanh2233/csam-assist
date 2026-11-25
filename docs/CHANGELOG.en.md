@@ -3,6 +3,44 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.8 (2026-11-25)
+
+Details and test results are in `docs/CHECKLIST_0.9.8.md` (Vietnamese). This release fixes what made 3D jobs label
+"all over the place" in 0.9.7 and makes the checks (camera images, Claude) actually run.
+
+- **Camera images are no longer lost:** 0.9.7 reported "frame … camera image error: name 'lidar_assist' is not
+  defined" for every frame (missing import in the 3D session), so the panel said "no camera images" and the cross-check
+  stayed at 0/40. Fixed.
+- **Turning on Claude no longer fails with a 500 `KeyError: 'center'`:** tracks sent to Claude and to the camera
+  cross-check now carry the centre, heading, point count and images of their clearest keyframe. When Claude fails (bad
+  key, out of quota, 429, overloaded) the panel shows a one-line reason, those tracks go to "To review", and the session
+  keeps going.
+- **Honest buckets:** a track nobody checked (no camera, no Claude) goes to "To review" instead of "High confidence"
+  (0.9.7: 109/109 tracks "High confidence" with no check at all). Small trailers and construction vehicles are only
+  "High confidence" when the camera confirms them (trailers: or a confirmed towing vehicle right in front). Tracks seen
+  in only 1–2 frames of a long job, or always with very few points, go to "Suspected noise".
+- **Noise filtering with camera images (RT-DETR):** the RT-DETR r18vd 2D detector (COCO, Apache-2.0, ~83 MB) is
+  downloaded from the Components page. A 3D box whose projection shows no vehicle / person goes to "Suspected noise"
+  (dumpsters, portable toilets, poles, walls). Used both by "Suggest cuboids for this frame" and the whole job. The
+  output reader is fixed too: sigmoid scores (softmax kept almost every box under the threshold) and normalised
+  coordinates (boxes used to collapse into the top-left corner).
+- **SAM3 cross-check in 3D jobs:** when SAM3 is not loaded it is loaded if enough VRAM is free (6 GB by default,
+  `SAM3_3D_SAM3_MIN_FREE_MB`); otherwise the panel says why instead of silently skipping.
+- **A real 3D model (CenterPoint, nuScenes):** choose an `.onnx` file on the Components page and cuboids are built by a
+  model that recognises vehicles / people in the point cloud instead of clustering + guessing by size. The backend
+  does the pillar split, decoding, duplicate removal (circle NMS) and moves the ground to nuScenes height; a frame that
+  fails falls back to geometry. Export the file with `scripts/export_centerpoint_onnx.py` (runs on Colab). Weights
+  trained on nuScenes: research use only.
+- **Claude per frame in 3D jobs:** "Use Claude AI for this frame" on the Suggest tab: Claude looks at the camera
+  images with the projected boxes, unticks objects that are not vehicles / people and fixes classes. The "Claude AI:
+  on/off" chip now follows your checkbox.
+- **The panel says what it uses:** one line "Build cuboids: 3D model / geometry · Noise filter with images: RT-DETR /
+  none"; repeated errors (the same error on 40 frames) are grouped into one counted line; the camera cross-check now
+  covers every track (it used to stop after the first 50).
+- **Desktop app:** the Components page lists 2D / 3D ONNX, setup no longer gets stuck when everything is installed,
+  and the false "needs update" banner for ONNX is gone.
+- **For developers:** `AGENTS.md` + `docs/agents/` (GitHub issue tracker, domain docs).
+
 ## 0.9.7 (2026-11-25)
 
 Details and test results are in `docs/CHECKLIST_0.9.7.md` (Vietnamese). This release removes the source of

@@ -143,19 +143,94 @@ def run_geometry(sess: Session, frames: Optional[list[int]] = None, limit: int =
         done += 1
         if after:
             after(f)
-    # dựng lại track trên toàn bộ frame đã có (rẻ: thuần số học)
+    # dựng lại track trên toàn bộ frame đã có (rẻ: thuần số học). 0.9.8: giữ vật thể từng frame (`_obs`) cho bước
+    # đối chiếu camera / Claude, và gắn gợi ý rổ cho track vụn (C3).
     with sess.lock:
         frames_in = [{"frame": f, "objects": sess.detected[f]["objects"]} for f in sorted(sess.detected)]
-        sess.track = tracking_3d.build(frames_in, sess.rule, sess.names)
+        sess.track = tracking_3d.build(frames_in, sess.rule, sess.names, keep_obs=True)
+        mark_debris(sess.track.get("tracks") or [], len(sess.detected))
         sess.touch()
         return {"session_id": sess.id, "ran": done, "done": dict(sess.done),
                 "tracks": len(sess.track.get("tracks") or []), "remaining": max(0, len(todo) - done),
                 "cancelled": sess.cancelled, "warnings": sess.track.get("warnings") or []}
 
 
+# ------------------------------------------------------ 0.9.8: track cho Claude / camera ---
+def ref_frame(t: dict) -> Optional[int]:
+    """Keyframe rõ nhất của track: nhiều điểm LiDAR nhất, hoà thì gần cảm biến nhất."""
+    import math
+
+    obs = t.get("_obs") or {}
+    if not obs:
+        return t.get("ref_frame")
+    return max(obs, key=lambda f: (obs[f].get("points", 0), -math.hypot(*obs[f]["center"][:2])))
+
+
+def view(t: dict) -> dict:
+    """Track (dạng tracking_3d.build) -> dạng judge_3d / lidar_vision cần: id, center, yaw, size, points, speed, obs.
+
+    Trước 0.9.8 hai bước đó đọc t['center'] / t['id'] / t['obs'] mà track không có -> KeyError: 'center' khi bật
+    Claude, và đối chiếu camera không tìm được keyframe nào."""
+    import math
+
+    obs = t.get("_obs") or {}
+    f = ref_frame(t)
+    o = obs.get(f) if f is not None else None
+    fs = sorted(obs)
+    speed = 0.0
+    if len(fs) >= 2:
+        a, b = obs[fs[0]]["center"], obs[fs[-1]]["center"]
+        speed = math.hypot(b[0] - a[0], b[1] - a[1]) / max(fs[-1] - fs[0], 1) / float(t.get("frame_dt_s") or 0.5)
+    out = {k: v for k, v in t.items() if not k.startswith("_")}
+    out.update(id=t.get("tid"), obs=obs, ref_frame=f, speed=round(speed, 2),
+               center=list(o["center"]) if o else [0.0, 0.0, 0.0], yaw=float(o.get("yaw", 0.0)) if o else 0.0,
+               points=int(o.get("points", 0)) if o else 0, frames_seen=len(fs))
+    return out
+
+
+def mark_debris(tracks: list[dict], n_frames: int) -> int:
+    """C3: track vụn (thấy ở rất ít frame của một job dài, hoặc luôn quá ít điểm) -> gợi ý rổ, không xoá.
+
+    Người duyệt vẫn thấy chúng trong rổ Nghi rác / Cần xem và tick lại được."""
+    marked = 0
+    for t in tracks:
+        obs = t.get("_obs") or {}
+        seen = len(obs)
+        if not seen:
+            continue
+        low = all(any(fl.get("code") == "LOW_VISIBILITY" for fl in (o.get("flags") or [])) for o in obs.values())
+        if n_frames >= 8 and seen <= 2:
+            t["bucket_hint"] = "suspected_noise"
+            t["checked"] = False
+            t.setdefault("notes", []).append(f"Chỉ thấy ở {seen}/{n_frames} frame: có thể là mảnh vụn (cây, tường, cột).")
+            marked += 1
+        elif low and seen <= max(3, n_frames // 4):
+            t["bucket_hint"] = "suspected_noise"
+            t["checked"] = False
+            t.setdefault("notes", []).append("Luôn rất ít điểm LiDAR và chỉ thấy ở vài frame: nghi rác.")
+            marked += 1
+        elif n_frames >= 8 and seen < 0.15 * n_frames:
+            t.setdefault("bucket_hint", "needs_review")
+            t.setdefault("notes", []).append(f"Chỉ thấy ở {seen}/{n_frames} frame: xem có phải vật thật không.")
+            marked += 1
+    return marked
+
+
+def _frames_with_image(sess: Session, t: dict) -> list[int]:
+    """Các frame của track có ảnh camera, rõ nhất trước (nhiều điểm, gần cảm biến)."""
+    import math
+
+    obs = t.get("_obs") or {}
+    return sorted((f for f in obs if sess.contexts.get(int(f))),
+                  key=lambda f: (-obs[f].get("points", 0), math.hypot(*obs[f]["center"][:2])))
+
+
 def run_vision(sess: Session, vision, rig: dict, offset: Optional[float] = None, limit: int = 10,
                after=None) -> dict:
-    """Đối chiếu camera cho các track đã dựng, theo lô track. Không có bộ dò 2D thì bỏ qua, không lỗi."""
+    """Đối chiếu camera cho các track đã dựng, theo lô track. Không có bộ dò 2D thì bỏ qua, không lỗi.
+
+    0.9.8: chiếu ở keyframe rõ nhất CÓ ảnh camera (thử tối đa 2 frame, lấy kết quả tốt hơn); track không có ảnh nào
+    vẫn được đánh dấu đã xét (verdict no_image) để vòng lặp của panel kết thúc."""
     from . import lidar_vision
 
     if not sess.track:
@@ -167,20 +242,30 @@ def run_vision(sess: Session, vision, rig: dict, offset: Optional[float] = None,
     for t in todo:
         if sess.cancelled:
             break
-        # keyframe rõ nhất của track: chiếu cuboid ở frame đó lấy box 2D để đối chiếu
-        obs = t.get("obs") or {}
-        f = max(obs, key=lambda k: obs[k].get("points", 0)) if obs else t.get("ref_frame")
-        ctx = sess.contexts.get(int(f)) if f is not None else None
-        if not ctx:
-            continue
-        objs = [{"id": 1, "center": obs[f]["center"], "size": obs[f]["size"], "cls": obs[f].get("cls")}]
-        res = lidar_vision.verify(vision, ctx, objs, rig, offset or 0.0, allowed)
-        r = (res.get("results") or {}).get(1)
-        if r:
-            t["vision2d"] = r
-            if r["verdict"] == "none":
+        obs = t.get("_obs") or {}
+        best = None
+        for f in _frames_with_image(sess, t)[:2]:
+            o = obs[f]
+            try:
+                res = lidar_vision.verify(vision, sess.contexts[int(f)],
+                                          [{"id": 1, "center": o["center"], "size": o["size"], "cls": o.get("cls") or t.get("cls")}],
+                                          rig, offset or 0.0, allowed)
+            except Exception as exc:  # noqa: BLE001 - một track lỗi không làm hỏng cả lô
+                sess.errors.append(f"track {t.get('tid')}: đối chiếu camera lỗi: {str(exc)[:120]}")
+                continue
+            r = (res.get("results") or {}).get(1)
+            if r and (best is None or lidar_vision._VERDICT_RANK[r["verdict"]] > lidar_vision._VERDICT_RANK[best["verdict"]]):
+                best = dict(r, frame=int(f))
+            if best and best["verdict"] == "confirmed":
+                break
+        if best is None:
+            t["vision2d"] = {"verdict": "no_image"}
+        else:
+            t["vision2d"] = best
+            if best["verdict"] == "none":
                 t["bucket_hint"] = "suspected_noise"
-            elif r["verdict"] == "unknown":
+                t["checked"] = False
+            elif best["verdict"] in ("unknown", "partial") and t.get("bucket_hint") != "suspected_noise":
                 t["bucket_hint"] = "needs_review"
             changed += 1
         with sess.lock:
@@ -201,40 +286,53 @@ def run_llm(sess: Session, llm, autoprofile: dict, memory: Optional[dict] = None
         return {"session_id": sess.id, "skipped": "chưa bật Claude (cần ANTHROPIC_API_KEY hoặc LLM local)"}
     if not sess.track:
         return {"session_id": sess.id, "skipped": "chưa dựng geometry"}
-    tracks = [dict(t) for t in sess.track.get("tracks") or []]
-    # ảnh của keyframe rõ nhất từng track, kèm box 2D đã chiếu
-    from . import camera_rig
-
-    cam_images: dict[int, dict] = {}
-    rig = camera_rig.build_rig(sorted({n for ctx in sess.contexts.values() for n, _ in ctx}),
-                               sess.rule.get("cameras") or {}, sess.rule.get("camera_meta"))
-    for t in tracks:
-        obs = t.get("obs") or {}
-        f = max(obs, key=lambda k: obs[k].get("points", 0)) if obs else None
-        ctx = sess.contexts.get(int(f)) if f is not None else None
-        if not ctx or f is None:
-            continue
-        o = obs[f]
-        p = camera_rig.project(o["center"], o["size"], rig["cameras"], float(sess.rule.get("offset_deg") or 0.0))
-        box = None
-        if p:
-            img = dict(ctx).get(p["camera"])
-            if img is not None:
-                h, w = img.shape[:2]
-                box = [(p["u"] - p["half"]) * w, 0.3 * h, (p["u"] + p["half"]) * w, 0.7 * h]
-                cam_images[t["tid"]] = {p["camera"]: (img, box)}
-    p1 = judge_3d.phase1(llm, tracks, sess.label_ids, autoprofile, cam_images, memory, batch_size)
-    with sess.lock:
-        sess.llm = dict(p1)
-        sess.done["llm"] = len(p1)
-    if after:
-        after(None)
-    p2 = judge_3d.phase2(llm, tracks, sess.label_ids, p1, sess.rule)
+    raw = list(sess.track.get("tracks") or [])
+    tracks = [view(t) for t in raw]                   # 0.9.8: đủ id / center / yaw / points cho judge_3d
+    try:
+        cam_images = _camera_images(sess, raw)
+        p1 = judge_3d.phase1(llm, tracks, sess.label_ids, autoprofile, cam_images, memory, batch_size)
+        with sess.lock:
+            sess.llm = dict(p1)
+            sess.done["llm"] = len(p1)
+        if after:
+            after(None)
+        p2 = judge_3d.phase2(llm, tracks, sess.label_ids, p1, sess.rule)
+    except Exception as exc:  # noqa: BLE001 - lỗi bất ngờ: mọi track vào Cần xem kèm lý do, phiên không trả 500
+        msg = f"Claude không chạy được: {type(exc).__name__}: {str(exc)[:160]}"
+        sess.errors.append(msg)
+        with sess.lock:
+            sess.llm = {t["id"]: {"keep": None, "bucket": "needs_review", "reason": msg} for t in tracks}
+        return {"session_id": sess.id, "error": msg, "judged": 0, "done": dict(sess.done), "cancelled": sess.cancelled}
     with sess.lock:
         sess.llm = p2
         sess.touch()
+    errors = sorted({str(r.get("reason")) for r in p2.values() if str(r.get("reason") or "").startswith("Claude lỗi")})
     return {"session_id": sess.id, "judged": len(p2), "buckets": judge_3d.summarize(p2),
-            "done": dict(sess.done), "cancelled": sess.cancelled}
+            "done": dict(sess.done), "cancelled": sess.cancelled, "errors": errors[:3]}
+
+
+def _camera_images(sess: Session, raw_tracks: list[dict]) -> dict[int, dict]:
+    """Ảnh camera của keyframe rõ nhất (có ảnh) từng track, kèm box 2D đã chiếu: {tid: {camera: (ảnh, box)}}."""
+    from . import camera_rig
+
+    rig = camera_rig.build_rig(sorted({n for ctx in sess.contexts.values() for n, _ in ctx}),
+                               sess.rule.get("cameras") or {}, sess.rule.get("camera_meta"))
+    offset = float(sess.rule.get("offset_deg") or 0.0)
+    out: dict[int, dict] = {}
+    for t in raw_tracks:
+        obs = t.get("_obs") or {}
+        for f in _frames_with_image(sess, t)[:1]:
+            o = obs[f]
+            p = camera_rig.project(o["center"], o["size"], rig["cameras"], offset)
+            if not p:
+                continue
+            img = dict(sess.contexts[int(f)]).get(p["camera"])
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            box = [max(0.0, (p["u"] - p["half"]) * w), 0.3 * h, min(float(w), (p["u"] + p["half"]) * w), 0.7 * h]
+            out[t["tid"]] = {p["camera"]: (img, box)}
+    return out
 
 
 def result(sess: Session, limit: Optional[int] = None) -> dict:
@@ -245,11 +343,15 @@ def result(sess: Session, limit: Optional[int] = None) -> dict:
     out = []
     for t in tracks:
         r = sess.llm.get(t.get("tid")) or {}
-        item = dict(t)
-        item["bucket"] = r.get("bucket") or t.get("bucket_hint") or (
-            "needs_review" if t.get("checked") is False else "high_confidence")
+        item = {k: v for k, v in t.items() if not k.startswith("_")}      # `_obs` chỉ nằm trong RAM backend
+        item["bucket"] = r.get("bucket") or default_bucket(t, sess.track.get("tracks") or [])
+        if t.get("notes"):
+            item["notes"] = list(t["notes"])
         if r.get("final_label"):
             item["label_name"] = r["final_label"]
+            match = next((i for i, n in sess.names.items() if str(n).strip().lower() == str(r["final_label"]).strip().lower()), None)
+            if match is not None:
+                item["label_id"] = match                                   # Claude đổi class: ghi đúng label
         if r.get("reason"):
             item["llm_reason"] = r["reason"]
         if r.get("heading_hint"):
@@ -263,6 +365,68 @@ def result(sess: Session, limit: Optional[int] = None) -> dict:
     for item in out:
         if item["bucket"] in buckets:
             buckets[item["bucket"]] += 1
+    rule = {k: v for k, v in sess.rule.items() if k not in ("dropped",)}
     return {"session_id": sess.id, "tracks": out, "buckets": buckets,
-            "warnings": list((sess.track or {}).get("warnings") or []) + sess.errors[-3:],
-            "frames": sorted(sess.detected), "rule": sess.rule, "engine": (sess.track or {}).get("engine")}
+            "warnings": list((sess.track or {}).get("warnings") or []) + _error_summary(sess.errors),
+            "frames": sorted(sess.detected), "rule": rule, "engine": (sess.track or {}).get("engine"),
+            "checked_by": {"camera": sum(1 for t in tracks if (t.get("vision2d") or {}).get("verdict") not in (None, "no_image")),
+                           "claude": sum(1 for t in tracks if t.get("tid") in sess.llm)}}
+
+
+# Class mà kích thước một mình không đủ phân biệt với vật cố định (thùng rác, container, nhà vệ sinh di động, tường):
+# chỉ vào "Tin cậy cao" khi camera hoặc Claude xác nhận (0.9.8, C2).
+NEEDS_PROOF = ("trailer", "construction vehicle")
+
+
+def default_bucket(t: dict, all_tracks: Optional[list] = None) -> str:
+    """Rổ khi Claude chưa chấm (0.9.8, C1): không có bằng chứng thì không 'Tin cậy cao'.
+
+    - gợi ý từ bước đối chiếu camera / lọc mảnh vụn thắng trước
+    - camera xác nhận đúng class -> Tin cậy cao
+    - bỏ tick / cờ nghi ngờ / class cần bằng chứng (trailer, construction vehicle) -> Cần xem
+    - chưa ai kiểm (không ảnh, không model 2D) -> Cần xem"""
+    if t.get("bucket_hint"):
+        return t["bucket_hint"]
+    if t.get("checked") is False:
+        return "needs_review"
+    codes = {str(f.get("code") or "") for f in (t.get("flags") or [])}
+    if codes & {"UNCERTAIN_CLASS", "LEARNED"}:
+        return "needs_review"
+    if (t.get("vision2d") or {}).get("verdict") == "confirmed":
+        return "high_confidence"
+    # trailer nhỏ (C2): không có ảnh xác nhận chính nó, nhưng xe kéo đứng ngay trước ĐÃ được camera xác nhận
+    if str(t.get("cls") or "").lower() == "trailer" and _tow_vehicle_ahead(t, all_tracks or []):
+        return "high_confidence"
+    return "needs_review"
+
+
+def _tow_vehicle_ahead(t: dict, tracks: list[dict]) -> bool:
+    """Trailer có xe kéo (car / truck, đã được camera xác nhận) đứng sát (≤ 3 m tính từ mép) ở cùng frame chuẩn."""
+    import math
+
+    mine = (t.get("_obs") or {}).get(t.get("ref_frame"))
+    if not mine:
+        return False
+    for o in tracks:
+        if o is t or str(o.get("cls") or "").lower() not in ("car", "truck"):
+            continue
+        if (o.get("vision2d") or {}).get("verdict") != "confirmed":
+            continue
+        other = (o.get("_obs") or {}).get(t.get("ref_frame"))
+        if not other:
+            continue
+        gap = math.hypot(mine["center"][0] - other["center"][0], mine["center"][1] - other["center"][1])
+        if gap <= (mine["size"][0] + other["size"][0]) / 2 + 3.0:
+            return True
+    return False
+
+
+def _error_summary(errors: list[str]) -> list[str]:
+    """Gộp lỗi lặp (40 frame cùng một lỗi ảnh camera) thành một dòng có đếm."""
+    import re
+
+    counts: dict[str, int] = {}
+    for e in errors:
+        key = re.sub(r"^(frame|track) \d+:?\s*", "", e)
+        counts[key] = counts.get(key, 0) + 1
+    return [f"{k} (×{n})" if n > 1 else k for k, n in list(counts.items())[-4:]]

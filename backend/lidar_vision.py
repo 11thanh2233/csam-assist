@@ -52,8 +52,9 @@ class Vision2D:
         try:
             self.session = ort.InferenceSession(self.path, **kwargs)
             shape = self.session.get_inputs()[0].shape
-            h = shape[2] if isinstance(shape[2], int) else 640
-            w = shape[3] if isinstance(shape[3], int) else 640
+            # cạnh ảnh động ("height"/"width"): RT-DETR / D-FINE huấn luyện ở 640x640
+            h = shape[2] if len(shape) > 3 and isinstance(shape[2], int) and shape[2] > 0 else 640
+            w = shape[3] if len(shape) > 3 and isinstance(shape[3], int) and shape[3] > 0 else 640
             self.in_hw = (int(h), int(w))
         except Exception as exc:  # noqa: BLE001 - model hỏng / thiếu DLL: báo lỗi, không làm sập request
             self.error = f"không nạp được model ONNX: {exc}"
@@ -81,9 +82,14 @@ class Vision2D:
         except Exception as exc:  # noqa: BLE001
             self.error = f"suy luận lỗi: {exc}"
             return []
-        sx, sy = w / iw, h / ih
+        dets = _decode(out, thr)
+        # 0.9.8: họ DETR trả toạ độ CHUẨN HOÁ 0..1 (cxcywh) -> nhân thẳng với cỡ ảnh gốc. Bản cũ nhân w/iw (coi là pixel
+        # của ảnh 640) nên mọi box co về góc trái trên và không khớp khu chiếu nào. Bản export trả pixel đầu vào thì
+        # vẫn quy đổi như cũ.
+        normalized = all(max(d["box"]) <= 1.5 for d in dets)
+        sx, sy = (w, h) if normalized else (w / iw, h / ih)
         return [{"box": [d["box"][0] * sx, d["box"][1] * sy, d["box"][2] * sx, d["box"][3] * sy],
-                 "score": d["score"], "coco_id": d["id"]} for d in _decode(out, thr)]
+                 "score": d["score"], "coco_id": d["id"]} for d in dets]
 
     def detect_batch(self, images: list[np.ndarray], thr: float = 0.35) -> list[list[dict]]:
         """Nhiều ảnh một lượt (mỗi ảnh một lần chạy; ONNX Runtime tự xếp hàng trên cùng session)."""
@@ -114,14 +120,23 @@ class MockVision:
 
 
 def _decode(out: list, thr: float) -> list[dict]:
-    """Đọc output họ DETR: [boxes (1,N,4) chuẩn hoá cxcywh, logits (1,N,số lớp)]."""
+    """Đọc output họ DETR (RT-DETR / D-FINE): boxes (1,N,4) chuẩn hoá cxcywh và logits (1,N,số lớp).
+
+    0.9.8: thứ tự output khác nhau giữa các bản export (bản onnx-community/rtdetr_r18vd trả [logits, pred_boxes]) nên
+    nhận theo hình dạng: mảng có chiều cuối = 4 là box. Điểm dùng sigmoid (RT-DETR / D-FINE học bằng focal loss, mỗi
+    lớp độc lập, không có lớp nền); softmax trên 80 lớp làm điểm bị bóp nhỏ, gần như không box nào qua ngưỡng."""
     if not out or len(out) < 2:
         return []
-    boxes = np.asarray(out[0], dtype=float).reshape(-1, 4)
-    logits = np.asarray(out[1], dtype=float).reshape(len(boxes), -1)
-    if logits.shape[0] != len(boxes) and logits.size:
-        logits = logits.reshape(-1, logits.shape[-1])[:len(boxes)]
-    probs = _softmax(logits)
+    arrs = [np.asarray(o, dtype=float) for o in out[:2]]
+    if arrs[0].shape[-1] != 4 and arrs[1].shape[-1] == 4:
+        arrs = arrs[::-1]
+    if arrs[0].shape[-1] != 4:
+        return []
+    boxes = arrs[0].reshape(-1, 4)
+    logits = arrs[1].reshape(-1, arrs[1].shape[-1])[:len(boxes)]
+    if len(logits) != len(boxes) or not logits.size:
+        return []
+    probs = _sigmoid(logits)
     best, ids = probs.max(axis=1), probs.argmax(axis=1)
     res = []
     for (cx, cy, bw, bh), s, i in zip(boxes, best, ids):
@@ -135,6 +150,10 @@ def _decode(out: list, thr: float) -> list[dict]:
 def _softmax(x: np.ndarray) -> np.ndarray:
     e = np.exp(x - x.max(axis=1, keepdims=True))
     return e / np.maximum(e.sum(axis=1, keepdims=True), 1e-9)
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -60, 60)))
 
 
 # ------------------------------------------------------ frustum splitting ---

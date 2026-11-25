@@ -120,6 +120,7 @@ class DesktopApp:
             self.notify("Đã quay về bản cũ", f"Bản {note.get('to', '?')} không mở được nên app đã quay về bản {__version__}.")
         self.api._pick_folder = self._pick_folder
         self.api._pick_file = self._pick_file
+        self.api._pick_onnx_file = self._pick_onnx_file
         try:
             self.api._prepare()
         except Exception:  # noqa: BLE001
@@ -140,6 +141,14 @@ class DesktopApp:
         kind = (getattr(fd, "SAVE", None) if save else getattr(fd, "OPEN", None)) or \
             (self.webview.SAVE_DIALOG if save else self.webview.OPEN_DIALOG)
         res = self.control.create_file_dialog(kind, save_filename=name or "", file_types=("Zip (*.zip)",))
+        if not res:
+            return None
+        return res if isinstance(res, str) else res[0]
+
+    def _pick_onnx_file(self):
+        fd = getattr(self.webview, "FileDialog", None)
+        kind = getattr(fd, "OPEN", None) or self.webview.OPEN_DIALOG
+        res = self.control.create_file_dialog(kind, file_types=("ONNX (*.onnx)",))
         if not res:
             return None
         return res if isinstance(res, str) else res[0]
