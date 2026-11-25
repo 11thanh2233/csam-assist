@@ -702,6 +702,8 @@ async function lidarScenario(frameBytes) {
   // 0.9.7: luồng 3 bước — một nút chính chạy phiên theo lô (init -> geometry -> vision -> result)
   button('Bắt đầu dựng Cuboid 3D').click();
   await until(() => /2 track:/.test(status()), 'track cuboid: ' + status());
+  // status đặt trong run() trước lần render cuối: chờ nút ghi ở thanh ghim đáy xuất hiện và bấm được
+  await until(() => button('Ghi 2 track') && !button('Ghi 2 track').disabled, 'nút ghi track cuboid: ' + status());
   button('Ghi 2 track').click();
   const patch2 = await until(() => store.calls.filter((c) => c.method === 'PATCH' && c.path.includes('create'))[1], 'ghi track cuboid: ' + status());
   assert.strictEqual(patch2.body.tracks.length, 2);

@@ -615,6 +615,31 @@ def test_lidar_api(client):
     assert bad.status_code == 400
 
 
+def test_lidar_v2_session_uses_path_id(client):
+    """0.9.7: panel chỉ đặt session_id trong đường dẫn, body không kèm: backend phải lấy phiên theo đường dẫn
+    (trước đây tra theo body rỗng -> 404, luồng 3 bước treo ở 'Đang dựng cuboid 3D theo lô…')."""
+    import base64
+
+    labels = [{"id": 1, "name": "Car", "type": "cuboid"}, {"id": 2, "name": "Pedestrian", "type": "cuboid"}]
+    frames = [{"frame": f, "data_b64": base64.b64encode(_pcd(_scene(car_x=2 + f, seed=f))).decode()} for f in range(4)]
+    init = client.post("/lidar/v2/session/init", json={"labels": labels, "frames": frames[:2]})
+    assert init.status_code == 200, init.text
+    sid = init.json()["session_id"]
+    more = client.post(f"/lidar/v2/session/{sid}/frames", json={"labels": labels, "frames": frames[2:]})
+    assert more.status_code == 200, more.text
+    geo = client.post(f"/lidar/v2/session/{sid}/geometry", json={"labels": labels, "limit": 20})
+    assert geo.status_code == 200, geo.text
+    assert geo.json().get("remaining", 0) == 0
+    assert client.post(f"/lidar/v2/session/{sid}/vision", json={"labels": labels, "limit": 50}).status_code == 200
+    res = client.post(f"/lidar/v2/session/{sid}/result", json={"labels": labels}).json()
+    assert len(res["tracks"]) == 2, res
+    # có gửi session_id trong body thì phải khớp đường dẫn
+    wrong = client.post(f"/lidar/v2/session/{sid}/geometry", json={"labels": labels, "session_id": "khac"})
+    assert wrong.status_code == 400
+    assert client.post("/lidar/v2/session/khongco/geometry", json={"labels": labels}).status_code == 404
+    client.post(f"/lidar/v2/session/{sid}/close", json={"labels": labels})
+
+
 # ------------------------------------------------------------ F: kiểm tra máy, bộ cài ---
 def test_machine_check_rows(tmp_path):
     from desktop import machine

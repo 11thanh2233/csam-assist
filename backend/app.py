@@ -1496,11 +1496,16 @@ def lidar_feedback(req: LidarFeedbackReq) -> dict:
 
 
 # --------------------------- 0.9.7: phiên 3D theo lô (/lidar/v2/session/*) ---------------------------
-def _session_of(req) -> tuple[Any, dict, dict, dict, Any]:
-    """Nạp phiên + profile. Lỗi khi session_id sai hoặc phiên đã bị dọn."""
+def _session_of(sid: str, req) -> tuple[Any, dict, dict, dict, Any]:
+    """Nạp phiên + profile. Lỗi khi session_id sai hoặc phiên đã bị dọn.
+
+    Phiên lấy theo `sid` trong đường dẫn: `session_id` trong body là tuỳ chọn (panel không gửi, mặc định ""),
+    có gửi thì phải khớp với đường dẫn."""
     from . import lidar_session
 
-    sess = lidar_session.get(req.session_id)
+    if getattr(req, "session_id", "") and req.session_id != sid:
+        raise HTTPException(status_code=400, detail="session_id trong đường dẫn và thân request không khớp.")
+    sess = lidar_session.get(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail="Phiên 3D không còn trong bộ nhớ (backend đã khởi động lại, hoặc "
                                                     "quá 8 phiên). Hãy tạo phiên mới.")
@@ -1545,9 +1550,7 @@ def lidar_v2_frames(sid: str, req: LidarSessionFramesReq) -> dict:
     """Nhận thêm lô frame (point cloud + ảnh camera). Gọi nhiều lần cho tới khi đủ cả job."""
     from . import lidar_session
 
-    if req.session_id and req.session_id != sid:
-        raise HTTPException(status_code=400, detail="session_id trong đường dẫn và thân request không khớp.")
-    sess, _profile, _rule, _table, info = _session_of(req)
+    sess, _profile, _rule, _table, info = _session_of(sid, req)
     batch, contexts = [], {}
     for item in req.frames:
         pts = _read_cloud(item)
@@ -1568,7 +1571,7 @@ def lidar_v2_geometry(sid: str, req: LidarSessionStepReq) -> dict:
     """Dựng cuboid + tracking theo lô frame. Gọi lại tới khi remaining == 0. Hủy an toàn giữa chừng."""
     from . import lidar_session
 
-    sess, profile, rule, table, info = _session_of(req)
+    sess, profile, rule, table, info = _session_of(sid, req)
     if req.offset_deg is not None:
         sess.rule["offset_deg"] = float(req.offset_deg)
     sess.cancelled = False
@@ -1581,7 +1584,7 @@ def lidar_v2_vision(sid: str, req: LidarSessionStepReq) -> dict:
     """Đối chiếu camera (bộ dò 2D ONNX) theo lô track. Chưa chọn model ONNX thì bỏ qua, không lỗi."""
     from . import camera_rig, lidar_session, lidar_vision
 
-    sess, profile, rule, table, info = _session_of(req)
+    sess, profile, rule, table, info = _session_of(sid, req)
     path = _onnx2d_path()
     if not path:
         return {"session_id": sess.id, "skipped": "chưa chọn model 2D ONNX trong app desktop — bỏ qua đối chiếu camera"}
@@ -1597,7 +1600,7 @@ def lidar_v2_llm(sid: str, req: LidarSessionLlmReq) -> dict:
     """Claude Pha 1+2 trên cấp track (chỉ gọi khi người dùng bật LLM). Không có LLM thì trả lý do."""
     from . import lidar_session
 
-    sess, profile, rule, table, info = _session_of(req)
+    sess, profile, rule, table, info = _session_of(sid, req)
     llm = rt.guide.llm if (rt.guide and rt.guide.llm is not None) else None
     mem = None
     if rt.memory is not None:
