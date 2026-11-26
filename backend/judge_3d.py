@@ -289,23 +289,35 @@ def guideline_context(guide: Optional[dict], labels: dict[int, str], mode: str =
 def ask_llm(llm, text: str, images: list[bytes], retries: int = 2, context: str = "") -> dict:
     """Gọi Claude với thử lại exponential backoff khi lỗi mạng tạm thời / 429 / 5xx (spec 3D v2 mục 4.2).
 
-    Lỗi JSON hỏng là lỗi cứng: không thử lại, báo ngay."""
+    Lỗi API (LLMError khi gọi) báo ngay. 0.9.12: câu trả lời không đọc được JSON thì ghi nhật ký và thử lại một lần."""
     import time as _t
 
-    from .guideline.llm import LLMError, parse_json
+    from .guideline.llm import LLMError, log_bad_reply, parse_json
 
     last: Optional[Exception] = None
+    bad_json = 0
     for attempt in range(retries + 1):
+        raw = None
         try:
-            # 0.9.11: guideline đi riêng (context) để Anthropic cache được; không có thì gọi y như trước
+            # 0.9.11: guideline đi riêng (context) để Anthropic cache được; không có thì gọi y như trước.
+            # 0.9.12: không giới hạn token ở đây — AnthropicLLM dùng mức tối đa của model
             raw = (llm.complete(SYSTEM, text, images, max_tokens=4000, context=context) if context
                    else llm.complete(SYSTEM, text, images, max_tokens=4000))
             out = parse_json(raw)
             if not isinstance(out, dict):
                 raise LLMError("Claude không trả về JSON dạng object.")
             return out
-        except LLMError:
-            raise
+        except LLMError as exc:
+            if raw is None:
+                raise                                   # lỗi API (key sai, hết quota...): báo ngay
+            # 0.9.12: câu trả lời đọc không được: ghi nhật ký (model, effort, stop_reason, đầu câu trả lời), thử lại
+            # đúng một lần — đôi khi Claude trả lời kèm chữ thừa hay bị cắt; lần hai vẫn hỏng thì báo
+            log_bad_reply(llm, raw, "3D", str(exc))
+            bad_json += 1
+            if bad_json > 1:
+                stop = getattr(llm, "last_stop_reason", None)
+                raise LLMError(f"Claude trả lời không đúng định dạng JSON (stop_reason={stop or '?'}). "
+                               "Chi tiết trong nhật ký backend.") from exc
         except Exception as exc:  # noqa: BLE001 - lỗi mạng / 429 / 5xx: chờ rồi thử lại
             last = exc
             if attempt < retries:

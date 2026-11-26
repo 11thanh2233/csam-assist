@@ -3,6 +3,26 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.12 (2026-11-26)
+
+Patch: Claude in 3D jobs no longer reports "Claude's reply is not valid JSON". Details in `docs/CHECKLIST_0.9.12.md`
+(Vietnamese).
+
+- **Cause:** the tool called Claude with a 4,000-token limit for the reply. Current models always think before they
+  answer, and thinking counts toward that limit: with Claude Fable 5.2 (high thinking by default) Claude used up the
+  room before finishing the JSON, the reply was cut off, every batch failed and only the geometry result was left.
+- **No token limit in the tool any more:** every Claude call uses the model's maximum; you only pay for what Claude
+  actually writes. Calls are streamed so long replies don't time out.
+- **Default is Claude Opus 5.5, effort medium.** **Settings → AI guideline drafting** has a **Model** box (suggests
+  Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.2) and an **Effort** box (Low / Medium / High / Max / Model default).
+  Changing model or effort **applies immediately**, no backend restart. If you had typed a model yourself (for example
+  `claude-fable-5-2`) it is kept; pick another one if you want to change it.
+- **The panel shows which Claude is running:** the chip "Claude AI: on · claude-opus-5-5 · effort medium" in 3D jobs,
+  and the same text on the "Claude views images" box in the Suggest tab.
+- **Log when Claude's reply is broken:** the backend logs model, effort, stop reason (`stop_reason`), token counts
+  (including thinking) and the first 300 characters of the reply; never the API key. An unreadable reply is retried
+  once; if it is still broken, the panel reports it with the stop reason.
+
 ## 0.9.11 (2026-11-26)
 
 Details and test results are in `docs/CHECKLIST_0.9.11.md` (Vietnamese).

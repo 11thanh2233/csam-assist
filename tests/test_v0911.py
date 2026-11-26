@@ -251,6 +251,7 @@ def test_anthropic_caches_guideline_block(monkeypatch):
                 "choices": [{"message": {"content": "{}"}}]}
 
     monkeypatch.setattr(L, "_post", fake_post)
+    monkeypatch.setattr(L, "_post_stream", fake_post)       # 0.9.12: Anthropic gọi kiểu streaming
     a = L.AnthropicLLM("k", "m")
     a.complete("SYS", "hi", None, context="GUIDE TEXT")
     assert sent["system"] == [{"type": "text", "text": "SYS"},

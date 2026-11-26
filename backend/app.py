@@ -647,6 +647,29 @@ def health() -> dict:
     }
 
 
+class LlmConfigReq(BaseModel):
+    model: str = ""             # "" = giữ model đang dùng
+    effort: Optional[str] = None  # low | medium | high | max | "" (mặc định của model); None = giữ
+
+
+@app.post("/llm/config", dependencies=[Depends(require_key)])
+def llm_config(req: LlmConfigReq) -> dict:
+    """0.9.12: đổi model / effort của Claude khi backend đang chạy (Cài đặt của app gọi ngay khi bạn lưu)."""
+    from .guideline import llm as L
+
+    llm = rt.guide.llm if rt.guide is not None else None
+    if llm is None or not hasattr(llm, "configure"):
+        raise HTTPException(status_code=400, detail="Backend chưa bật Claude (Anthropic API key trong Cài đặt của app).")
+    model = req.model.strip()
+    if model and not re.fullmatch(r"[A-Za-z0-9._:\-]{3,80}", model):
+        raise HTTPException(status_code=400, detail="Tên model không hợp lệ.")
+    if req.effort not in (None, "") and req.effort not in L.EFFORTS:
+        raise HTTPException(status_code=400, detail="Mức effort không hợp lệ.")
+    llm.configure(model or None, req.effort)
+    log.info("Claude: model %s, effort %s", llm.model, llm.effort or "default")
+    return {"model": llm.model, "effort": llm.effort}
+
+
 @app.post("/selftest", dependencies=[Depends(require_key)])
 def selftest() -> dict:
     """Kiểm tra nhanh sau khi cài: chạy model thật một lượt trên ảnh mẫu tự vẽ (vòng tròn đỏ trên nền sáng).

@@ -404,7 +404,7 @@ class Judge:
         return self.llm is not None and getattr(self.llm, "sees_images", True)
 
     def ask(self, text: str, images: list[bytes]) -> dict:
-        from .guideline.llm import LLMError, parse_json
+        from .guideline.llm import LLMError, log_bad_reply, parse_json
 
         key = hashlib.sha1(text.encode() + b"".join(hashlib.sha1(i).digest() for i in images)).hexdigest()
         if key in self.cache:
@@ -414,9 +414,13 @@ class Judge:
             raise LLMError(f"Đã dùng hết {self.usage.limit} lượt Claude hôm nay (đổi giới hạn trong Cài đặt của app).")
         raw = self.llm.complete(SYSTEM, text, images, max_tokens=4000)
         self.usage.add(getattr(self.llm, "last_usage", None))
-        out = parse_json(raw)
-        if not isinstance(out, dict):
-            raise LLMError("Claude không trả về JSON dạng object.")
+        try:
+            out = parse_json(raw)
+            if not isinstance(out, dict):
+                raise LLMError("Claude không trả về JSON dạng object.")
+        except LLMError as exc:
+            log_bad_reply(self.llm, raw, "2D", str(exc))           # 0.9.12: ghi nhật ký để biết vì sao
+            raise
         self.cache[key] = out
         while len(self.cache) > 64:
             self.cache.popitem(last=False)

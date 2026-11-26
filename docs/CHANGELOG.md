@@ -3,6 +3,25 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.12 (2026-11-26)
+
+Bản vá: Claude ở job 3D không còn báo "Claude trả lời không đúng định dạng JSON". Chi tiết ở `docs/CHECKLIST_0.9.12.md`.
+
+- **Nguyên nhân:** tool gọi Claude với giới hạn 4.000 token cho câu trả lời. Các model mới luôn suy nghĩ trước khi trả
+  lời, và phần suy nghĩ cũng tính vào giới hạn đó: với Claude Fable 5.2 (mức suy nghĩ mặc định cao) Claude dùng hết chỗ
+  trước khi viết xong JSON, câu trả lời bị cắt cụt nên mọi lô đều lỗi và kết quả chỉ còn phần hình học.
+- **Không còn giới hạn token ở tool:** mỗi lần gọi cho Claude dùng mức tối đa của model; chỉ phần Claude thật sự viết
+  mới tính tiền. Gọi kiểu streaming để câu trả lời dài không bị hết giờ.
+- **Mặc định Claude Opus 5.5, effort medium.** Ở **Cài đặt → AI soạn guideline** có ô **Model** (gợi ý sẵn Opus 5.5,
+  Sonnet 5.5, Haiku 5.5, Fable 5.2) và ô **Effort** (Thấp / Vừa / Cao / Tối đa / Mặc định của model). Đổi model hoặc
+  effort thì **áp dụng ngay**, không cần bật lại backend. Ai đã điền model riêng (ví dụ `claude-fable-5-2`) vẫn giữ
+  model đó, chỉ cần chọn lại nếu muốn đổi.
+- **Panel ghi rõ Claude nào đang chạy:** chip "Claude AI: bật · claude-opus-5-5 · effort medium" ở job 3D, và cùng dòng
+  đó ở ô "Claude xem ảnh" tab Gợi ý.
+- **Nhật ký khi Claude trả lời hỏng:** backend ghi model, effort, lý do dừng (`stop_reason`), số token (cả phần suy
+  nghĩ) và 300 ký tự đầu câu trả lời; không ghi API key. Câu trả lời đọc không được thì thử lại một lần; lần hai vẫn
+  hỏng thì panel báo kèm lý do dừng.
+
 ## 0.9.11 (2026-11-26)
 
 Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.11.md`.

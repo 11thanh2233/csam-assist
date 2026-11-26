@@ -138,11 +138,12 @@ def test_llm_settings_go_to_backend_env_and_key_stays_out_of_files(tmp_path, key
     assert keyring_mem[credstore.LLM_USER] == "sk-ant-test" and keyring_mem.get(credstore.USER) is None, "không đụng token Hugging Face"
     assert "sk-ant" not in api._paths.settings.read_text(encoding="utf-8"), "key không ghi ra settings.json"
     assert be.extra_env["GUIDELINE_LLM"] == "anthropic" and be.extra_env["ANTHROPIC_API_KEY"] == "sk-ant-test"
-    assert be.extra_env["GUIDELINE_LLM_MODEL"] == "claude-sonnet-5-5"
+    # 0.9.12: mặc định Claude Opus 5.5, effort medium
+    assert be.extra_env["GUIDELINE_LLM_MODEL"] == "claude-opus-5-5" and be.extra_env["GUIDELINE_LLM_EFFORT"] == "medium"
     for k, v in be.extra_env.items():
         monkeypatch.setenv(k, v)
     got = L.from_env()
-    assert isinstance(got, L.AnthropicLLM) and got.model == "claude-sonnet-5-5", "backend đọc đúng cấu hình của app"
+    assert isinstance(got, L.AnthropicLLM) and got.model == "claude-opus-5-5" and got.effort == "medium", "backend đọc đúng cấu hình của app"
     st = api.llm_settings()
     assert st["active"] and st["has_key"] and "sk-ant" not in json.dumps(st), "giao diện không nhận lại key"
 
@@ -175,7 +176,7 @@ def test_llm_settings_survive_restart_and_test_button(tmp_path, keyring_mem, mon
     seen = {}
 
     class FakeLLM:
-        def __init__(self, key, model, timeout=0):
+        def __init__(self, key, model, timeout=0, effort=""):
             seen.update(key=key, model=model)
 
         def complete(self, system, text, images=None, max_tokens=0):

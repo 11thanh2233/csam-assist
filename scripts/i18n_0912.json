@@ -1,0 +1,25 @@
+{
+"backend": {
+"Backend chưa bật Claude (Anthropic API key trong Cài đặt của app).": "Claude is not enabled in the backend (Anthropic API key in the app Settings).",
+"Tên model không hợp lệ.": "Invalid model name.",
+"Mức effort không hợp lệ.": "Invalid effort level.",
+"Claude trả lời không đúng định dạng JSON (stop_reason={0}). Chi tiết trong nhật ký backend.": "Claude's reply is not valid JSON (stop_reason={0}). Details in the backend log.",
+"Đã áp dụng ngay: {0}, effort {1}.": "Applied now: {0}, effort {1}.",
+"mặc định": "default"
+},
+"userscript": {
+"Claude AI: bật · {0}": "Claude AI: on · {0}",
+"Claude xem ảnh: duyệt theo guideline, điền thuộc tính, tag, tìm vật sót{0}{1}": "Claude views images: reviews against the guideline, fills attributes, tags, finds missed objects{0}{1}",
+"Claude: {0}": "Claude: {0}"
+},
+"desktop": {
+"Đang bật.{0}": "On.{0}",
+"Thấp (low)": "Low",
+"Vừa (medium, mặc định)": "Medium (default)",
+"Cao (high)": "High",
+"Tối đa (max)": "Max",
+"Mặc định của model": "Model default",
+"<p class=\"small-text mut\" style=\"margin:4px 0 0\">Opus / Fable đắt hơn Sonnet nhiều lần. Xem giá ở trang Pricing của Anthropic.</p>": "<p class=\"small-text mut\" style=\"margin:4px 0 0\">Opus / Fable cost several times more than Sonnet. See Anthropic's Pricing page.</p>",
+"<div class=\"setrow\"><div class=\"t\"><b>API key của Anthropic</b><small>Lưu trong Windows Credential Manager, không ghi ra file. <button class=\"link\" onclick=\"link('anthropic_keys')\">Lấy API key</button></small></div>\n        <input type=\"password\" id=\"llmKey\" style=\"width:260px\" autocomplete=\"off\" aria-label=\"API key của Anthropic\" placeholder=\"{0}\"></div>\n      <div class=\"setrow\"><div class=\"t\"><b>Model</b><small>Để trống: {1}. Đổi bất cứ lúc nào, áp dụng ngay</small></div>\n        <input type=\"text\" id=\"llmModel\" list=\"llmModels\" style=\"width:260px\" aria-label=\"Model\" placeholder=\"{2}\" value=\"{3}\">\n        <datalist id=\"llmModels\">{4}</datalist></div>\n      <div class=\"setrow\"><div class=\"t\"><b>Effort</b><small>Claude suy nghĩ bao nhiêu trước khi trả lời. Cao hơn: kỹ hơn nhưng chậm và tốn hơn. Áp dụng ngay</small></div>\n        <select id=\"llmEffort\" aria-label=\"Effort\" style=\"width:260px\">{5}</select></div>\n      {6}\n      <div class=\"setrow\"><div class=\"t\"><b>Giới hạn mỗi ngày</b><small>Số lần Claude xem ảnh tối đa mỗi ngày, để không tốn tiền ngoài ý muốn. 0 = không giới hạn</small></div>\n        <input type=\"number\" id=\"llmLimit\" min=\"0\" step=\"50\" style=\"width:120px\" aria-label=\"Giới hạn mỗi ngày\" value=\"{7}\"></div>\n      <p class=\"small-text warn\" style=\"margin:4px 0 0\">Khi ô \"Claude xem ảnh\" trong panel đang bật (bật sẵn khi có key), mỗi lần gợi ý gửi ảnh frame thu nhỏ và vài ảnh cắt nhỏ tới Anthropic: ảnh rời máy bạn. Tắt ô đó trong panel để không gửi.</p>": "<div class=\"setrow\"><div class=\"t\"><b>Anthropic API key</b><small>Stored in Windows Credential Manager, never written to a file. <button class=\"link\" onclick=\"link('anthropic_keys')\">Get an API key</button></small></div>\n        <input type=\"password\" id=\"llmKey\" style=\"width:260px\" autocomplete=\"off\" aria-label=\"Anthropic API key\" placeholder=\"{0}\"></div>\n      <div class=\"setrow\"><div class=\"t\"><b>Model</b><small>Leave empty: {1}. Change any time, applies immediately</small></div>\n        <input type=\"text\" id=\"llmModel\" list=\"llmModels\" style=\"width:260px\" aria-label=\"Model\" placeholder=\"{2}\" value=\"{3}\">\n        <datalist id=\"llmModels\">{4}</datalist></div>\n      <div class=\"setrow\"><div class=\"t\"><b>Effort</b><small>How much Claude thinks before answering. Higher: more thorough but slower and costlier. Applies immediately</small></div>\n        <select id=\"llmEffort\" aria-label=\"Effort\" style=\"width:260px\">{5}</select></div>\n      {6}\n      <div class=\"setrow\"><div class=\"t\"><b>Daily limit</b><small>Maximum Claude image reviews per day, so nothing costs more than you expect. 0 = no limit</small></div>\n        <input type=\"number\" id=\"llmLimit\" min=\"0\" step=\"50\" style=\"width:120px\" aria-label=\"Daily limit\" value=\"{7}\"></div>\n      <p class=\"small-text warn\" style=\"margin:4px 0 0\">When the \"Claude views images\" box in the panel is on (on by default with a key), each suggestion sends a downscaled frame and a few small crops to Anthropic: images leave your computer. Turn that box off in the panel to stop sending.</p>"
+}
+}

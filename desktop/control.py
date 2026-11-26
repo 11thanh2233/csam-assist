@@ -666,10 +666,14 @@ class ControlApi:
         return {"ok": True, "cvat_dir": str(folder)}
 
     # ----------------------------------------------------- LLM soạn guideline ---
-    LLM_DEFAULT_MODEL = {"anthropic": "claude-sonnet-5-5", "openai": ""}
+    # 0.9.12: mặc định Claude Opus 5.5, effort medium. Model / effort đổi được bất cứ lúc nào, áp dụng ngay.
+    LLM_DEFAULT_MODEL = {"anthropic": "claude-opus-5-5", "openai": ""}
+    LLM_DEFAULT_EFFORT = "medium"
+    LLM_EFFORTS = ("low", "medium", "high", "max", "")      # "" = mặc định của model
+    LLM_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2")
 
     LLM_ENV_KEYS = ("GUIDELINE_LLM", "ANTHROPIC_API_KEY", "GUIDELINE_OPENAI_BASE_URL", "GUIDELINE_OPENAI_API_KEY", "GUIDELINE_LLM_MODEL",
-                    "SAM3_LLM_DAILY_LIMIT")
+                    "GUIDELINE_LLM_EFFORT", "SAM3_LLM_DAILY_LIMIT")
     LLM_DEFAULT_LIMIT = 500
 
     def _llm_env(self) -> dict:
@@ -681,7 +685,8 @@ class ControlApi:
         key = credstore.get(credstore.LLM_USER) if prov in ("anthropic", "openai") else ""
         if prov == "anthropic" and key:
             env = dict.fromkeys(self.LLM_ENV_KEYS, "")
-            env.update(GUIDELINE_LLM="anthropic", ANTHROPIC_API_KEY=key, GUIDELINE_LLM_MODEL=cfg.get("model") or self.LLM_DEFAULT_MODEL["anthropic"])
+            env.update(GUIDELINE_LLM="anthropic", ANTHROPIC_API_KEY=key, GUIDELINE_LLM_MODEL=cfg.get("model") or self.LLM_DEFAULT_MODEL["anthropic"],
+                       GUIDELINE_LLM_EFFORT=self._llm_effort(cfg))
         elif prov == "openai" and cfg.get("base_url") and cfg.get("model"):
             env = dict.fromkeys(self.LLM_ENV_KEYS, "")
             env.update(GUIDELINE_LLM="openai", GUIDELINE_OPENAI_BASE_URL=cfg["base_url"], GUIDELINE_OPENAI_API_KEY=key,
@@ -691,18 +696,39 @@ class ControlApi:
             env["SAM3_LLM_DAILY_LIMIT"] = str(int(cfg.get("daily_limit", self.LLM_DEFAULT_LIMIT)))
         return env
 
+    def _llm_effort(self, cfg: dict) -> str:
+        effort = cfg.get("effort", self.LLM_DEFAULT_EFFORT)
+        return effort if effort in self.LLM_EFFORTS else self.LLM_DEFAULT_EFFORT
+
     def llm_settings(self):
         cfg = dict(self._settings.data.get("llm") or {})
         cfg["has_key"] = bool(credstore.get(credstore.LLM_USER))
         cfg["keyring"] = credstore.available()
         cfg["active"] = bool(self._llm_env())
         cfg.setdefault("daily_limit", self.LLM_DEFAULT_LIMIT)
+        cfg["effort"] = self._llm_effort(cfg)
+        cfg["default_model"] = self.LLM_DEFAULT_MODEL["anthropic"]
+        cfg["models"] = list(self.LLM_MODELS)
+        cfg["efforts"] = list(self.LLM_EFFORTS)
         return cfg
 
-    def set_llm(self, provider, model="", base_url="", api_key=None, daily_limit=None):
-        """Lưu cấu hình. api_key: None = giữ key cũ, "" = xoá key. Áp dụng khi bật lại backend."""
+    def _apply_llm_live(self, model: str, effort: str) -> bool:
+        """0.9.12: backend đang chạy với Claude -> đổi model / effort ngay (không phải bật lại). True nếu đã áp dụng."""
+        if self._backend.state != "running" or not hasattr(self._backend, "request"):
+            return False
+        try:
+            code, _ = self._backend.request("POST", "/llm/config", json.dumps({"model": model, "effort": effort}), timeout=10)
+        except Exception:  # noqa: BLE001 - backend bận / lỗi mạng: lần bật lại sau vẫn nhận cấu hình
+            return False
+        return code == 200
+
+    def set_llm(self, provider, model="", base_url="", api_key=None, daily_limit=None, effort=None):
+        """Lưu cấu hình. api_key: None = giữ key cũ, "" = xoá key.
+        0.9.12: chỉ đổi model / effort (cùng nhà cung cấp, cùng key) thì áp dụng ngay cho backend đang chạy."""
         if provider not in ("none", "anthropic", "openai"):
             return {"ok": False, "message": "Nhà cung cấp không hợp lệ."}
+        if effort is not None and effort not in self.LLM_EFFORTS:
+            return {"ok": False, "message": "Mức effort không hợp lệ."}
         base_url = (base_url or "").strip()
         if provider == "openai":
             if not re.match(r"^https?://", base_url):
@@ -718,16 +744,26 @@ class ControlApi:
                 credstore.delete(credstore.LLM_USER)
         if provider == "anthropic" and not credstore.get(credstore.LLM_USER):
             return {"ok": False, "message": "Cần API key của Anthropic (bắt đầu bằng sk-ant-)."}
-        old_limit = (self._settings.data.get("llm") or {}).get("daily_limit", self.LLM_DEFAULT_LIMIT)
+        old = dict(self._settings.data.get("llm") or {})
+        old_limit = old.get("daily_limit", self.LLM_DEFAULT_LIMIT)
         try:
             limit = max(0, min(100000, int(daily_limit))) if daily_limit not in (None, "") else int(old_limit)
         except (TypeError, ValueError):
             return {"ok": False, "message": "Giới hạn mỗi ngày phải là số (0 = không giới hạn)."}
-        self._settings.data["llm"] = {"provider": provider, "model": (model or "").strip(), "base_url": base_url, "daily_limit": limit}
+        old_env = self._llm_env()
+        self._settings.data["llm"] = {"provider": provider, "model": (model or "").strip(), "base_url": base_url, "daily_limit": limit,
+                                      "effort": self._llm_effort(old) if effort is None else effort}
         self._settings.save()
         for k in self.LLM_ENV_KEYS:
             self._backend.extra_env.pop(k, None)
-        self._backend.extra_env.update(self._llm_env())
+        new_env = self._llm_env()
+        self._backend.extra_env.update(new_env)
+        # chỉ đổi model / effort: backend đang chạy nhận ngay; đổi nhà cung cấp, key hay giới hạn: cần bật lại backend
+        only_model = bool(old_env) and provider == "anthropic" and old_env.get("GUIDELINE_LLM") == "anthropic" and all(
+            old_env.get(k) == new_env.get(k) for k in self.LLM_ENV_KEYS if k not in ("GUIDELINE_LLM_MODEL", "GUIDELINE_LLM_EFFORT"))
+        if only_model and self._apply_llm_live(new_env["GUIDELINE_LLM_MODEL"], new_env["GUIDELINE_LLM_EFFORT"]):
+            return {"ok": True, "restart": False, "live": True,
+                    "message": f"Đã áp dụng ngay: {new_env['GUIDELINE_LLM_MODEL']}, effort {new_env['GUIDELINE_LLM_EFFORT'] or 'mặc định'}."}
         return {"ok": True, "message": "Đã lưu. Bật lại backend để áp dụng.", "restart": self._backend.state == "running"}
 
     def test_llm(self):
@@ -738,7 +774,7 @@ class ControlApi:
         from backend.guideline import llm as L
 
         try:
-            model = (L.AnthropicLLM(env["ANTHROPIC_API_KEY"], env["GUIDELINE_LLM_MODEL"], timeout=30) if env["GUIDELINE_LLM"] == "anthropic"
+            model = (L.AnthropicLLM(env["ANTHROPIC_API_KEY"], env["GUIDELINE_LLM_MODEL"], timeout=60, effort="low") if env["GUIDELINE_LLM"] == "anthropic"
                      else L.OpenAICompatLLM(env["GUIDELINE_OPENAI_BASE_URL"], env["GUIDELINE_LLM_MODEL"], env["GUIDELINE_OPENAI_API_KEY"], timeout=60))
             reply = model.complete("Reply with the single word OK.", "ping", max_tokens=10)
         except Exception as exc:  # noqa: BLE001 - báo lại nguyên nhân cho người dùng
