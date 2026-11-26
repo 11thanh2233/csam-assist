@@ -205,6 +205,10 @@ def build(frames: list[dict], rule: Optional[dict] = None, names: Optional[dict]
                 "cls": key_cls}
         if keep_obs:
             item["_obs"] = {int(f): obs[f] for f in fs}
+            # 0.9.11: cuboid của MỌI frame (trước khi rút keyframe) để ghi dạng "shape từng frame":
+            # seen=True khi tool thật sự thấy vật ở frame đó, False khi chỉ là nội suy lúc bị che
+            item["_frames"] = [{"frame": int(s["frame"]), "points": s["points"], "seen": int(s["frame"]) in obs}
+                               for s in shapes if not s.get("outside")]
         out.append(item)
     return {"tracks": out, "warnings": [] if out else ["Không dựng được track cuboid nào."], "engine": "kalman+hungarian"}
 

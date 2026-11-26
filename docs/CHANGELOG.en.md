@@ -3,6 +3,27 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.11 (2026-11-26)
+
+Details and test results are in `docs/CHECKLIST_0.9.11.md` (Vietnamese).
+
+- **Write "Shape per frame" in 3D jobs:** step 3 of the Whole job tab has **Write as: Track / Shape per frame**. Shapes
+  use the same session (cameras, Claude, 3 buckets): each ticked track becomes one cuboid on every frame where the tool
+  saw the object, size locked from the clearest frame. Occluded (interpolated) frames are only written when "Also write
+  interpolated frames" is ticked. Cuboids already in the job (same label, under 1 m apart) are not duplicated. Objects
+  seen in only one frame appear in Suspected noise, unticked. Default: image jobs write shapes, video jobs write tracks;
+  the whole write can be undone.
+- **Claude reads the project's guideline:** the guideline you imported in the Guideline tab (project profile, or
+  "Import guideline") is sent to Claude in 3D jobs: each label's definition and the relevant excerpts (about 6,000
+  characters). The "Claude reads guideline" line under the Claude box lets you choose **Relevant excerpts / Whole
+  guideline / Don't send**. Jobs without a guideline work as before and the panel suggests importing one. With
+  Anthropic, the guideline part is cached between batches (cheaper after the first).
+- **CenterPoint models exported on Colab now load:** files exported from mmdet3d failed with `MatMulBnFusion_Gemm`;
+  the backend retries with graph optimization off. If the 3D model still fails, the panel says "3D model failed —
+  using geometry" with the reason.
+- **New CenterPoint export instructions:** Colab now runs Python 3.13, so the old `mim install` steps failed. The
+  script and the new notebook `scripts/export_centerpoint_onnx.ipynb` create a separate Python 3.10 with uv, on CPU.
+
 ## 0.9.10 (2026-11-26)
 
 Patch: a 3D cuboid session can now continue from where it stopped. Details in `docs/CHECKLIST_0.9.10.md` (Vietnamese).

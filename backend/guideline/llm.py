@@ -37,9 +37,13 @@ class LLM:
     provider = "none"
     model = ""
     sees_images = True
+    # 0.9.11: complete() nhận `context` = khối chữ dài giống hệt nhau giữa nhiều lần gọi (guideline của project).
+    # Anthropic: gửi thành khối system riêng có cache_control (các lô sau đọc từ cache, rẻ hơn).
+    supports_context = True
     last_usage: Optional[dict] = None    # {input_tokens, output_tokens} của lần gọi gần nhất (0.9.5: đếm lượt dùng)
 
-    def complete(self, system: str, text: str, images: Optional[list[bytes]] = None, max_tokens: int = 3000) -> str:
+    def complete(self, system: str, text: str, images: Optional[list[bytes]] = None, max_tokens: int = 3000,
+                 context: str = "") -> str:
         raise NotImplementedError
 
     def describe(self) -> dict:
@@ -52,13 +56,17 @@ class AnthropicLLM(LLM):
     def __init__(self, api_key: str, model: str, timeout: int = 180):
         self.api_key, self.model, self.timeout = api_key, model, timeout
 
-    def complete(self, system, text, images=None, max_tokens=3000):
+    def complete(self, system, text, images=None, max_tokens=3000, context=""):
         content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                                 "data": base64.b64encode(img).decode()}} for img in images or []]
         content.append({"type": "text", "text": text})
+        # 0.9.11: guideline lặp lại ở mọi lô -> khối system riêng, đánh dấu cache (prompt caching). Khối ngắn hơn mức
+        # tối thiểu của model thì API chỉ không cache, vẫn chạy bình thường.
+        sys_field = ([{"type": "text", "text": system},
+                      {"type": "text", "text": context, "cache_control": {"type": "ephemeral"}}] if context else system)
         data = _post("https://api.anthropic.com/v1/messages",
                      {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
-                     {"model": self.model, "max_tokens": max_tokens, "system": system,
+                     {"model": self.model, "max_tokens": max_tokens, "system": sys_field,
                       "messages": [{"role": "user", "content": content}]}, self.timeout)
         self.last_usage = data.get("usage") or None
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
@@ -72,7 +80,9 @@ class OpenAICompatLLM(LLM):
         if not re.search(r"//(127\.0\.0\.1|localhost|\[::1\])[:/]", self.base_url + "/"):
             self.provider = "openai-compatible"
 
-    def complete(self, system, text, images=None, max_tokens=3000):
+    def complete(self, system, text, images=None, max_tokens=3000, context=""):
+        if context:                      # máy chủ OpenAI-compatible: không có cache, ghép thẳng vào system
+            system = f"{system}\n\n{context}"
         content = [{"type": "text", "text": text}]
         for img in images or []:
             content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(img).decode()}})

@@ -641,7 +641,9 @@ def health() -> dict:
         "vram": rt.res.status() if rt.res else None,
         "llm_usage": rt.judge.usage.status() if rt.judge else None,
         # 0.9.8: job 3D dựng / lọc bằng gì (panel hiện một dòng ở Bước 1)
-        "lidar3d": {"model3d": bool(_onnx3d_path()), "vision2d": bool(_onnx2d_path()), "sam3_mode": settings.sam3_3d_mode},
+        "lidar3d": {"model3d": bool(_onnx3d_path()), "vision2d": bool(_onnx2d_path()), "sam3_mode": settings.sam3_3d_mode,
+                    # 0.9.11: đã thử nạp model 3D mà lỗi -> panel ghi "model 3D lỗi — đang dùng hình học" kèm lý do
+                    "model3d_error": _model3d_error()},
     }
 
 
@@ -1285,6 +1287,7 @@ class LidarDetectReq(ResolveReq):
     frames: list[LidarFrame] = Field(default_factory=list, max_length=8)
     debug: bool = False         # 0.9.6: trả thêm điểm nhìn từ trên + cụm bị bỏ (bản đồ nhỏ, Kiểm tra dữ liệu)
     use_llm: bool = False       # 0.9.8: Claude chấm các cuboid của frame (gợi ý từng frame)
+    guide_mode: str = "related"  # 0.9.11: Claude đọc guideline: related | full | off
 
 
 class LidarTrackReq(ResolveReq):
@@ -1327,6 +1330,11 @@ class LidarSessionLlmReq(ResolveReq):
     # 0.9.10: số lô Claude trong request này (panel gửi 1: mỗi request ngắn, không còn hết giờ). None = chạy hết như cũ
     max_batches: Optional[int] = Field(default=None, ge=1, le=50)
     retry_failed: bool = False              # "Tiếp tục từ chỗ dừng": chấm lại các track lần trước Claude lỗi
+    guide_mode: str = "related"             # 0.9.11: Claude đọc guideline: related | full | off
+
+
+class LidarSessionResultReq(ResolveReq):
+    per_frame: bool = False                 # 0.9.11: kèm cuboid từng frame (ghi dạng shape thay cho track)
 
 
 class LidarSessionCancelReq(BaseModel):
@@ -1411,7 +1419,23 @@ def lidar_config(req: ResolveReq) -> dict:
     return {"profile_id": profile["id"], "labels": rows, "sizes_source": "guideline" if from_guide else "default",
             "min_points_by_range": rule.get("min_points_by_range") or lidar.DEFAULT_MIN_POINTS,
             "max_base_gap_m": float(rule.get("max_base_gap_m", 0.5)), "remembered": len(rule.get("dropped") or []),
-            "lookalikes": lidar_assist.LOOKALIKES}
+            "lookalikes": lidar_assist.LOOKALIKES,
+            # 0.9.11: guideline Claude sẽ đọc ở job này (panel hiện dưới ô "Dùng Claude AI hỗ trợ")
+            "guideline": _guide_summary(profile, info["names"])}
+
+
+def _guide_summary(profile: dict, names: dict) -> Optional[dict]:
+    try:
+        guide = _guideline_for(profile)
+    except Exception:  # noqa: BLE001
+        return None
+    if guide is None:
+        return None
+    from . import judge_3d
+
+    _text, info = judge_3d.guideline_context(guide, names, "related")
+    return {"id": guide["id"], "title": guide["title"], "definitions": (info or {}).get("definitions", 0),
+            "chars": len(guide.get("markdown") or "")}
 
 
 @app.post("/lidar/detect", dependencies=[Depends(require_key)])
@@ -1481,7 +1505,9 @@ def lidar_detect(req: LidarDetectReq) -> dict:
         out.append(frame_out)
         warnings += [w for w in res["warnings"] if w not in warnings]
     rt.res.after_heavy()
+    guide_info = _guide_for_3d(profile, info["names"], req.guide_mode)[1] if llm is not None else None
     return {"profile_id": profile["id"], "frames": out, "warnings": warnings, "camera": camera_info, "freed": released,
+            "guideline": guide_info,
             "rule": {"ranges": dict(lidar.DEFAULT_RANGES, **(rule.get("ranges") or {})),
                      "min_points_by_range": rule.get("min_points_by_range") or lidar.DEFAULT_MIN_POINTS,
                      "min_points_scale": rule.get("min_points_scale") or {}, "max_base_gap_m": rule.get("max_base_gap_m", 0.5),
@@ -1599,6 +1625,62 @@ def _llm_for_3d():
     return rt.guide.llm if (rt.guide is not None and rt.guide.llm is not None) else None
 
 
+def _guideline_for(profile: dict) -> Optional[dict]:
+    """0.9.11: guideline của job: {id, title, markdown, definitions}, hoặc None.
+
+    Tìm theo profile đang dùng: profile của project (`guideline_id`), profile sinh khi nạp guideline (`gl_<id>`), hoặc
+    `guideline` trỏ tới một id có trong thư viện. Đọc nguyên văn ở guideline_library/reference/<id>.md và định nghĩa
+    label ở imported/<id>.yaml (cả hai được ghi khi bạn nạp guideline ở tab Guideline)."""
+    import yaml
+
+    from .guideline.importer import slug
+
+    if rt.guide is None or not profile:
+        return None
+    lib = rt.guide.lib
+    pid = str(profile.get("id") or "")
+    raw_file = str(profile.get("guideline") or "")
+    cands = [profile.get("guideline_id"), pid[3:] if pid.startswith("gl_") else None, raw_file,
+             raw_file.rsplit(".", 1)[0] if "." in raw_file else None]
+    for raw in cands:
+        if not raw:
+            continue
+        gid = slug(str(raw))                 # chỉ chữ thường / số / _: không đọc được file ngoài thư mục guideline
+        if not gid:
+            continue
+        ref = lib.root / "reference" / f"{gid}.md"
+        rec_path = lib.root / "imported" / f"{gid}.yaml"
+        if not ref.exists() and not rec_path.exists():
+            continue
+        rec = {}
+        if rec_path.exists():
+            try:
+                rec = yaml.safe_load(rec_path.read_text(encoding="utf-8")) or {}
+            except (yaml.YAMLError, OSError):
+                rec = {}
+        md = ref.read_text(encoding="utf-8") if ref.exists() else ""
+        defs = {l["name"]: l.get("definition") for l in rec.get("labels") or [] if l.get("name") and l.get("definition")}
+        return {"id": gid, "title": rec.get("title") or rec.get("file") or profile.get("guideline") or gid,
+                "markdown": md, "definitions": defs}
+    return None
+
+
+def _guide_for_3d(profile: dict, names: dict, mode: str) -> tuple[str, Optional[dict]]:
+    """Phần guideline gửi Claude ở job 3D + thông tin cho panel. Lỗi đọc guideline không chặn Claude."""
+    from . import judge_3d
+
+    mode = mode if mode in judge_3d.GUIDE_MODES else "related"
+    try:
+        guide = _guideline_for(profile)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Không đọc được guideline cho job 3D: %s", exc)
+        guide = None
+    if guide is None:
+        return "", {"id": None, "mode": mode, "chars": 0, "missing": True}
+    text, info = judge_3d.guideline_context(guide, names, mode)
+    return text, info or {"id": guide["id"], "title": guide["title"], "mode": mode, "chars": 0, "missing": mode != "off"}
+
+
 def _llm_judge_frame(llm, objects, images, info, rule, offset, req) -> str:
     """D2 (0.9.8): Claude chấm các cuboid của MỘT frame (gợi ý từng frame) bằng ảnh camera có khung chiếu + BEV.
     Claude bảo bỏ -> bỏ tick; đổi class -> đổi label (nếu task có label đó). Trả câu ghi chú cho panel."""
@@ -1617,8 +1699,9 @@ def _llm_judge_frame(llm, objects, images, info, rule, offset, req) -> str:
         if img is not None:
             h, w = img.shape[:2]
             cams[o["id"]] = {p["camera"]: (img, [max(0.0, (p["u"] - p["half"]) * w), 0.3 * h, min(float(w), (p["u"] + p["half"]) * w), 0.7 * h])}
+    guide_text, _guide_info = _guide_for_3d(profile, names, getattr(req, "guide_mode", "related"))
     try:
-        res = judge_3d.phase1(llm, tracks, names, profile, cams, None, 8)
+        res = judge_3d.phase1(llm, tracks, names, profile, cams, None, 8, guide=guide_text)
     except Exception as exc:  # noqa: BLE001 - D3: lỗi Claude không làm hỏng gợi ý
         return f"Claude lỗi: {type(exc).__name__}: {str(exc)[:120]}"
     by_name = {str(n).strip().lower(): i for i, n in names.items()}
@@ -1815,8 +1898,11 @@ def lidar_v2_llm(sid: str, req: LidarSessionLlmReq) -> dict:
             mem = {"lessons": rt.memory.lessons(profile["id"])}
         except Exception:  # noqa: BLE001 - trí nhớ lỗi: vẫn chạy Claude không lessons
             mem = None
-    return lidar_session.run_llm(sess, llm, profile, mem, max(4, min(10, req.batch_size)),
-                                 max_batches=req.max_batches, retry_failed=req.retry_failed)
+    guide_text, guide_info = _guide_for_3d(profile, info["names"], req.guide_mode)
+    out = lidar_session.run_llm(sess, llm, profile, mem, max(4, min(10, req.batch_size)),
+                                max_batches=req.max_batches, retry_failed=req.retry_failed, guide=guide_text)
+    out["guideline"] = guide_info
+    return out
 
 
 @app.get("/lidar/v2/session/{sid}/progress", dependencies=[Depends(require_key)])
@@ -1833,14 +1919,15 @@ def lidar_v2_progress(sid: str) -> dict:
 
 
 @app.post("/lidar/v2/session/{sid}/result", dependencies=[Depends(require_key)])
-def lidar_v2_result(sid: str, req: ResolveReq) -> dict:
-    """Kết quả gộp của phiên: tracks + 3 rổ + cảnh báo, để panel duyệt rồi ghi vào CVAT."""
+def lidar_v2_result(sid: str, req: LidarSessionResultReq) -> dict:
+    """Kết quả gộp của phiên: tracks + 3 rổ + cảnh báo, để panel duyệt rồi ghi vào CVAT.
+    0.9.11: per_frame=True thêm cuboid từng frame của mỗi track (ghi dạng shape thay cho track)."""
     from . import lidar_session
 
     sess = lidar_session.get(sid)
     if sess is None:
         raise HTTPException(status_code=404, detail="Phiên 3D không còn trong bộ nhớ. Hãy tạo phiên mới.")
-    return lidar_session.result(sess)
+    return lidar_session.result(sess, per_frame=req.per_frame)
 
 
 @app.post("/lidar/v2/session/{sid}/cancel", dependencies=[Depends(require_key)])
@@ -1890,6 +1977,14 @@ def _onnx3d_path() -> Optional[str]:
 
 
 _lidar3d: dict = {"path": None, "obj": None}
+
+
+def _model3d_error() -> str:
+    """Lỗi của lần nạp model 3D gần nhất (chỉ khi đúng file đang chọn). Chưa thử nạp thì rỗng: không nạp ở /health."""
+    m, path = _lidar3d["obj"], _onnx3d_path()
+    if m is None or not path or _lidar3d["path"] != path:
+        return ""
+    return str(m.error or "")[:200]
 
 
 def _get_lidar3d(path: str):

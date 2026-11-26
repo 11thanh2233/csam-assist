@@ -3,6 +3,24 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.11 (2026-11-26)
+
+Chi tiết và kết quả test ở `docs/CHECKLIST_0.9.11.md`.
+
+- **Ghi "Shape từng frame" ở job 3D:** Bước 3 của tab Cả job có lựa chọn **Ghi dạng: Track / Shape từng frame**. Shape
+  dùng chung phiên (camera, Claude, 3 rổ): mỗi track đã tick thành một cuboid ở mỗi frame tool thấy vật, kích thước khoá
+  theo frame rõ nhất. Frame bị che (nội suy) chỉ ghi khi tick "Ghi cả frame nội suy". Cuboid đã có trong job (cùng
+  label, cách dưới 1 m) không ghi trùng. Vật chỉ thấy ở 1 frame hiện ở rổ Nghi rác, không tick sẵn. Mặc định: job ảnh
+  rời ghi shape, job video ghi track; hoàn tác được cả lần ghi.
+- **Claude đọc guideline của project:** guideline bạn nạp ở tab Guideline (profile của project, hoặc "Nạp guideline")
+  được gửi cho Claude ở job 3D: định nghĩa từng label và các đoạn liên quan (khoảng 6.000 ký tự). Dòng "Claude đọc
+  guideline" dưới ô Claude cho chọn **Đoạn liên quan / Cả guideline / Không gửi**. Job chưa có guideline vẫn chạy như
+  trước, panel nhắc nạp ở tab Guideline. Với Anthropic, phần guideline được cache giữa các lô (rẻ hơn ở lô sau).
+- **Model CenterPoint xuất từ Colab nạp được:** file xuất từ mmdet3d báo lỗi `MatMulBnFusion_Gemm` khi nạp; backend
+  thử lại với tối ưu đồ thị tắt. Nếu model 3D vẫn lỗi, panel ghi "model 3D lỗi — đang dùng hình học" kèm lý do.
+- **Hướng dẫn xuất CenterPoint mới:** Colab dùng Python 3.13 nên cách cũ (`mim install`) không chạy. Script và notebook
+  mới `scripts/export_centerpoint_onnx.ipynb` tạo Python 3.10 riêng bằng uv, chạy CPU.
+
 ## 0.9.10 (2026-11-26)
 
 Bản vá: phiên dựng cuboid 3D tiếp tục được từ chỗ dừng. Chi tiết ở `docs/CHECKLIST_0.9.10.md`.

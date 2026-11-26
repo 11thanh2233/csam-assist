@@ -176,8 +176,17 @@ Mở job 3D, tab **Gợi ý** đổi thành mục cuboid:
   Chiều cao phải khớp bảng; cụm không khớp class nào bị bỏ. Có ảnh camera thì SAM3 đối chiếu thêm.
 - Dưới nút là **bản đồ nhìn từ trên** (hướng trước của xe ở trên); bấm một hộp để chọn đề xuất. Đề xuất nhóm theo
   class, xếp theo độ tin; đề xuất yếu ẩn sẵn, bấm **Hiện … đề xuất yếu** để xem.
-- **Dựng track cả job:** mỗi vật một track, kích thước khoá theo frame nhiều điểm nhất, bị che tối đa 6 frame thì
-  nội suy và bật `occluded`.
+- **Dựng cả job (tab Cả job):** mỗi vật một track, kích thước khoá theo frame nhiều điểm nhất, bị che tối đa 6 frame
+  thì nội suy và bật `occluded`. Bước 3 chọn **Ghi dạng** (0.9.11):
+  - **Track:** keyframe + nội suy (mặc định cho job video);
+  - **Shape từng frame:** một cuboid ở mỗi frame tool thấy vật (mặc định cho job ảnh rời). Frame bị che chỉ ghi khi
+    tick "Ghi cả frame nội suy"; cuboid đã có trong job không bị ghi trùng.
+- **Claude đọc guideline (0.9.11):** khi bật Claude, dòng "Claude đọc guideline" cho biết guideline nào được gửi (định
+  nghĩa label + đoạn liên quan, hoặc cả guideline, hoặc không gửi). Nạp guideline ở tab **Guideline** (Profile của
+  project) để Claude chấm theo định nghĩa của project; chưa nạp thì Claude vẫn chạy như trước.
+- **Model 3D (tuỳ chọn):** chọn file CenterPoint `.onnx` ở trang Thành phần của app. Cách xuất file trên Google Colab:
+  mở `scripts/export_centerpoint_onnx.ipynb`, tải `scripts/export_centerpoint_onnx.py` lên rồi bấm Run all. Trọng số
+  học trên nuScenes: chỉ dùng phi thương mại / nghiên cứu.
 - **Công cụ job 3D:**
   - **Kiểm tra dữ liệu job 3D:** số điểm, hệ toạ độ, ảnh camera, vì sao các cụm bị bỏ, việc nên làm;
   - **Tự chỉnh theo cuboid bạn đã đánh:** đánh tay vài frame trước, tool so với cuboid của bạn rồi đề nghị chỉnh số

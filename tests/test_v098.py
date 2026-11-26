@@ -371,7 +371,8 @@ def test_session_api_keeps_camera_images(client):
 
 def test_health_reports_3d_engines(client):
     h = client.get("/health").json()
-    assert set(h["lidar3d"]) == {"model3d", "vision2d", "sam3_mode"}     # 0.9.9: + chế độ SAM3 ở job 3D
+    # 0.9.9: + chế độ SAM3 ở job 3D; 0.9.11: + lỗi nạp model 3D
+    assert set(h["lidar3d"]) == {"model3d", "vision2d", "sam3_mode", "model3d_error"}
 
 
 def test_detect_frame_with_claude(client, monkeypatch):

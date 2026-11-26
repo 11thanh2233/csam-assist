@@ -178,8 +178,115 @@ def build_audit_prompt(labels: dict[int, str], conflicts: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ------------------------------------------------- 0.9.11: guideline của project ---
+GUIDE_MODES = ("related", "full", "off")
+GUIDE_LIMITS = {"related": 6000, "full": 20000}
+# từ khoá tìm đoạn guideline liên quan tới job 3D (so trên chữ đã bỏ dấu: "che khuat" khớp "che khuất")
+GUIDE_KEYWORDS = ("3d", "cuboid", "lidar", "point cloud", "pointcloud", "track", "occlu", "che khuat", "bi che", "outside",
+                  "noise", "rac", "khong gan", "do not", "don't", "exclude", "ignore", "bo qua", "kich thuoc", "size",
+                  "class", "label", "yaw", "heading", "khoang cach", "range", "distance")
+PREFIX_KEYWORDS = ("occlu",)    # khớp đầu từ (occluded, occlusion); còn lại khớp nguyên từ ("rac" không khớp "trach")
+
+
+def _count(key: str, text: str) -> int:
+    import re
+
+    tail = "" if key in PREFIX_KEYWORDS else r"(?![a-z0-9])"
+    return len(re.findall(r"(?<![a-z0-9])" + re.escape(key) + tail, text))
+SECTION_MAX = 1800              # một đoạn dài quá thì chỉ lấy phần đầu, để chừa chỗ cho đoạn khác
+GUIDE_NOTE = ("Follow the PROJECT GUIDELINE given in the system prompt: its class definitions and rules win over general "
+              "knowledge. When a guideline rule decides a track, name that rule briefly in \"reason\".")
+
+
+def _norm(s: str) -> str:
+    """Chữ thường, bỏ dấu tiếng Việt, gộp khoảng trắng: để so tên label và từ khoá với guideline."""
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", str(s or "").lower().replace("đ", "d"))
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return " ".join(text.replace("_", " ").split())
+
+
+def _sections(markdown: str) -> list[tuple[str, str]]:
+    """Chia guideline theo tiêu đề markdown: [(tiêu đề, cả đoạn kèm tiêu đề)]. Phần trước tiêu đề đầu là ''."""
+    out, title, buf = [], "", []
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("#"):
+            if any(x.strip() for x in buf):
+                out.append((title, "\n".join(buf).strip()))
+            title, buf = line.strip("# ").strip(), [line]
+        else:
+            buf.append(line)
+    if any(x.strip() for x in buf):
+        out.append((title, "\n".join(buf).strip()))
+    return out
+
+
+def guideline_context(guide: Optional[dict], labels: dict[int, str], mode: str = "related") -> tuple[str, Optional[dict]]:
+    """Phần guideline gửi Claude (đặt ở system, giống hệt nhau mọi lô để cache được).
+
+    guide = {id, title, markdown, definitions: {tên label: định nghĩa}} (app._guideline_for đọc từ thư viện guideline).
+    mode: related = định nghĩa label của task + các đoạn nhắc tới 3D / cuboid / tên label (~6.000 ký tự);
+          full = nguyên văn (cắt ~20.000 ký tự); off = không gửi.
+    Trả (chữ, thông tin cho panel) — không có guideline / off thì ("", None): prompt giữ như trước 0.9.11."""
+    if not guide or mode not in ("related", "full"):
+        return "", None
+    limit = GUIDE_LIMITS[mode]
+    names = [n for _, n in sorted(labels.items()) if n]
+    defs = guide.get("definitions") or {}
+    by_norm = {_norm(k): v for k, v in defs.items() if v}
+    lines = [f'PROJECT GUIDELINE "{guide.get("title") or guide.get("id")}" '
+             f'({"full text" if mode == "full" else "class definitions and relevant excerpts"}):']
+    shown = 0
+    def_lines = []
+    for n in names:
+        d = by_norm.get(_norm(n))
+        if d:
+            def_lines.append(f"- {n}: {' '.join(str(d).split())[:600]}")
+            shown += 1
+    if def_lines:
+        lines += ["CLASS DEFINITIONS:"] + def_lines
+    md = str(guide.get("markdown") or "")
+    md = "\n".join(l for l in md.splitlines() if not l.strip().startswith("<!--"))
+    head = "\n".join(lines)
+    room = max(0, limit - len(head) - 40)
+    body = ""
+    if md.strip() and room:
+        if mode == "full":
+            body = md.strip()[:room]
+        else:
+            label_keys = [_norm(n) for n in names if _norm(n)]
+            scored = []
+            for i, (title, text) in enumerate(_sections(md)):
+                low_title, low = _norm(title), _norm(text)
+                # đoạn có tên label ở tiêu đề quan trọng nhất; còn lại tính mật độ (số lần nhắc / độ dài), để đoạn
+                # dài chung chung không chiếm hết chỗ
+                hits = sum(_count(k, low) for k in label_keys) * 2 + sum(_count(k, low) for k in GUIDE_KEYWORDS)
+                score = 10 * sum(1 for k in label_keys if _count(k, low_title)) \
+                    + 3 * sum(1 for k in GUIDE_KEYWORDS if _count(k, low_title)) + 1000.0 * hits / max(200, len(text))
+                if score:
+                    scored.append((score, i, text[:SECTION_MAX]))
+            picked, used = [], 0
+            for score, i, text in sorted(scored, key=lambda x: (-x[0], x[1])):
+                piece = text[:max(0, room - used)]
+                if len(piece) < len(text) and len(piece) < 200:
+                    continue                    # chỉ còn chỗ cho một mẩu cụt: bỏ, thử đoạn ngắn hơn
+                if not piece:
+                    continue
+                picked.append((i, piece))
+                used += len(piece) + 2
+                if used >= room:
+                    break
+            body = "\n\n".join(p for _, p in sorted(picked))
+    if not def_lines and not body:
+        return "", None
+    text = head + ("\n\nGUIDELINE TEXT:\n" + body if body else "")
+    return text, {"id": guide.get("id"), "title": guide.get("title") or guide.get("id"), "mode": mode,
+                  "chars": len(text), "definitions": shown}
+
+
 # ------------------------------------------------------------- gọi LLM ---
-def ask_llm(llm, text: str, images: list[bytes], retries: int = 2) -> dict:
+def ask_llm(llm, text: str, images: list[bytes], retries: int = 2, context: str = "") -> dict:
     """Gọi Claude với thử lại exponential backoff khi lỗi mạng tạm thời / 429 / 5xx (spec 3D v2 mục 4.2).
 
     Lỗi JSON hỏng là lỗi cứng: không thử lại, báo ngay."""
@@ -190,7 +297,9 @@ def ask_llm(llm, text: str, images: list[bytes], retries: int = 2) -> dict:
     last: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
-            raw = llm.complete(SYSTEM, text, images, max_tokens=4000)
+            # 0.9.11: guideline đi riêng (context) để Anthropic cache được; không có thì gọi y như trước
+            raw = (llm.complete(SYSTEM, text, images, max_tokens=4000, context=context) if context
+                   else llm.complete(SYSTEM, text, images, max_tokens=4000))
             out = parse_json(raw)
             if not isinstance(out, dict):
                 raise LLMError("Claude không trả về JSON dạng object.")
@@ -241,8 +350,9 @@ def bucket_of(track: dict, phase1: Optional[dict] = None) -> str:
 # ----------------------------------------------------------- hai pha ---
 def phase1(llm, tracks: list[dict], labels: dict[int, str], autoprofile: dict,
            camera_images: Optional[dict[int, dict[str, Any]]] = None, memory: Optional[dict] = None,
-           batch_size: int = MAX_TRACKS_PER_BATCH) -> dict[int, dict]:
+           batch_size: int = MAX_TRACKS_PER_BATCH, guide: str = "") -> dict[int, dict]:
     """Pha 1: gửi 6-10 track/lô. camera_images: {track_id: {tên camera: (ảnh RGB, box2d)}} của keyframe rõ nhất.
+    guide (0.9.11): phần guideline của project (guideline_context), gửi ở system, giống nhau mọi lô.
 
     Trả {track_id: {keep, label, heading_hint, confidence, uncertain, reason, bucket}}."""
     camera_images = camera_images or {}
@@ -250,6 +360,8 @@ def phase1(llm, tracks: list[dict], labels: dict[int, str], autoprofile: dict,
     for start in range(0, len(tracks), batch_size):
         group = tracks[start:start + batch_size]
         text = build_track_prompt(group, labels, autoprofile, memory)
+        if guide:
+            text = GUIDE_NOTE + "\n\n" + text
         images: list[bytes] = []
         notes: list[str] = []
         bev = bev_image([{"id": t["id"], "center": t["center"], "size": t["size"], "yaw": t.get("yaw", 0.0)} for t in group])
@@ -270,7 +382,7 @@ def phase1(llm, tracks: list[dict], labels: dict[int, str], autoprofile: dict,
         if notes:
             text += "\n\nIMAGE NOTES:\n" + "\n".join(notes)
         try:
-            res = ask_llm(llm, text, images)
+            res = ask_llm(llm, text, images, context=guide)
         except Exception as exc:  # noqa: BLE001 - Claude lỗi: track đó thành needs_review, không chặn luồng
             why = explain_llm_error(exc)                # 0.9.8 (D3): nói rõ lý do (key sai, hết quota, timeout...)
             for t in group:
@@ -294,8 +406,9 @@ def phase1(llm, tracks: list[dict], labels: dict[int, str], autoprofile: dict,
 
 
 def phase2(llm, tracks: list[dict], labels: dict[int, str], phase1_results: dict[int, dict],
-           rule: Optional[dict] = None) -> dict[int, dict]:
-    """Pha 2: kiểm luật bằng code trước, các ca mâu thuẫn gửi Claude chốt. Trả {track_id: bucket + final_label}."""
+           rule: Optional[dict] = None, guide: str = "") -> dict[int, dict]:
+    """Pha 2: kiểm luật bằng code trước, các ca mâu thuẫn gửi Claude chốt. Trả {track_id: bucket + final_label}.
+    guide (0.9.11): cùng phần guideline như Pha 1, để Claude chốt ca mâu thuẫn theo định nghĩa của project."""
     rule = rule or {}
     audits: list[dict] = []
     out: dict[int, dict] = {}
@@ -315,8 +428,10 @@ def phase2(llm, tracks: list[dict], labels: dict[int, str], phase1_results: dict
         out[t["id"]] = dict(p1, bucket=bucket, final_label=final)
     if audits and llm is not None:
         text = build_audit_prompt(labels, audits)
+        if guide:
+            text = GUIDE_NOTE + "\n\n" + text
         try:
-            res = ask_llm(llm, text, [])
+            res = ask_llm(llm, text, [], context=guide)
         except Exception:  # noqa: BLE001 - Claude lỗi: giữ kết quả Pha 1
             res = {}
         for entry in res.get("tracks") or []:

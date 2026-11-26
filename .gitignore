@@ -7,6 +7,7 @@ node_modules/
 third_party/
 *.pt
 *.safetensors
+*.onnx
 models/
 guideline_library/lessons.jsonl
 guideline_library/runs/

@@ -297,7 +297,7 @@ def _llm_failed(r: dict) -> bool:
 
 
 def run_llm(sess: Session, llm, autoprofile: dict, memory: Optional[dict] = None, batch_size: int = 8,
-            after=None, max_batches: Optional[int] = None, retry_failed: bool = False) -> dict:
+            after=None, max_batches: Optional[int] = None, retry_failed: bool = False, guide: str = "") -> dict:
     """Chạy Claude 2 pha theo lô track. Không có llm thì trả về lý do, không lỗi.
 
     0.9.10: chạy được từng phần. max_batches = số lô Pha 1 trong lần gọi này (None = hết), kết quả tích luỹ trong
@@ -330,7 +330,7 @@ def run_llm(sess: Session, llm, autoprofile: dict, memory: Optional[dict] = None
             while todo and not sess.cancelled and (max_batches is None or ran < max_batches):
                 group, todo = todo[:batch_size], todo[batch_size:]
                 cam_images = _camera_images(sess, [raw_by_id[t["id"]] for t in group if t["id"] in raw_by_id])
-                p1 = judge_3d.phase1(llm, group, sess.label_ids, autoprofile, cam_images, memory, batch_size)
+                p1 = judge_3d.phase1(llm, group, sess.label_ids, autoprofile, cam_images, memory, batch_size, guide=guide)
                 with sess.lock:
                     sess.llm_p1.update(p1)
                     sess.llm = {**sess.llm, **p1}              # kết quả tạm: dừng giữa chừng vẫn thấy phần đã chấm
@@ -342,7 +342,7 @@ def run_llm(sess: Session, llm, autoprofile: dict, memory: Optional[dict] = None
                     after(None)
             if not todo and not sess.cancelled and not sess.llm_final:
                 p2 = judge_3d.phase2(llm, [by_id[i] for i in by_id if i in sess.llm_p1], sess.label_ids,
-                                     dict(sess.llm_p1), sess.rule)
+                                     dict(sess.llm_p1), sess.rule, guide=guide)
                 with sess.lock:
                     sess.llm = p2
                     sess.llm_final = True
@@ -406,8 +406,32 @@ def _camera_images(sess: Session, raw_tracks: list[dict]) -> dict[int, dict]:
     return out
 
 
-def result(sess: Session, limit: Optional[int] = None) -> dict:
-    """Kết quả gộp: tracks (kèm bucket + Claude sửa) + rổ đếm + cảnh báo, để panel hiển thị và ghi vào CVAT."""
+def singles(sess: Session) -> list[dict]:
+    """0.9.11: vật chỉ thấy ở MỘT frame (tracking bỏ vì ngắn hơn min_track_frames). Khi ghi dạng shape từng frame,
+    panel hiện chúng ở rổ Nghi rác, mặc định không tick, để bạn tự chọn."""
+    from .lidar import cvat_points
+
+    used: set[tuple[int, int]] = set()
+    for t in (sess.track or {}).get("tracks") or []:
+        for f, o in (t.get("_obs") or {}).items():
+            used.add((int(f), id(o)))
+    out = []
+    for f in sorted(sess.detected):
+        for o in sess.detected[f].get("objects") or []:
+            if (int(f), id(o)) in used:
+                continue
+            out.append({"frame": int(f), "label_id": o["label_id"], "label_name": sess.names.get(o["label_id"], str(o["label_id"])),
+                        "cls": o.get("cls"), "size": [round(float(v), 2) for v in o["size"]], "points_n": int(o.get("points", 0)),
+                        "points": cvat_points(o["center"], o["size"], float(o.get("yaw", 0.0))),
+                        "confidence": round(float(o.get("confidence", o.get("score", 0.5))), 3)})
+    return out
+
+
+def result(sess: Session, limit: Optional[int] = None, per_frame: bool = False) -> dict:
+    """Kết quả gộp: tracks (kèm bucket + Claude sửa) + rổ đếm + cảnh báo, để panel hiển thị và ghi vào CVAT.
+
+    0.9.11: per_frame=True thêm `frames` ([{frame, points, seen}]) cho mỗi track và `singles` (vật chỉ thấy ở 1 frame),
+    để panel ghi dạng "shape từng frame" thay cho track."""
     tracks = list((sess.track or {}).get("tracks") or [])
     if limit is not None:
         tracks = tracks[:max(0, int(limit))]
@@ -415,6 +439,8 @@ def result(sess: Session, limit: Optional[int] = None) -> dict:
     for t in tracks:
         r = sess.llm.get(t.get("tid")) or {}
         item = {k: v for k, v in t.items() if not k.startswith("_")}      # `_obs` chỉ nằm trong RAM backend
+        if per_frame:
+            item["frames"] = list(t.get("_frames") or [])
         item["bucket"] = r.get("bucket") or default_bucket(t, sess.track.get("tracks") or [])
         if t.get("notes"):
             item["notes"] = list(t["notes"])
@@ -437,11 +463,14 @@ def result(sess: Session, limit: Optional[int] = None) -> dict:
         if item["bucket"] in buckets:
             buckets[item["bucket"]] += 1
     rule = {k: v for k, v in sess.rule.items() if k not in ("dropped",)}
-    return {"session_id": sess.id, "tracks": out, "buckets": buckets,
-            "warnings": list((sess.track or {}).get("warnings") or []) + _error_summary(sess.errors),
-            "frames": sorted(sess.detected), "rule": rule, "engine": (sess.track or {}).get("engine"),
-            "checked_by": {"camera": sum(1 for t in tracks if (t.get("vision2d") or {}).get("verdict") not in (None, "no_image")),
-                           "claude": sum(1 for t in tracks if t.get("tid") in sess.llm)}}
+    res = {"session_id": sess.id, "tracks": out, "buckets": buckets,
+           "warnings": list((sess.track or {}).get("warnings") or []) + _error_summary(sess.errors),
+           "frames": sorted(sess.detected), "rule": rule, "engine": (sess.track or {}).get("engine"),
+           "checked_by": {"camera": sum(1 for t in tracks if (t.get("vision2d") or {}).get("verdict") not in (None, "no_image")),
+                          "claude": sum(1 for t in tracks if t.get("tid") in sess.llm)}}
+    if per_frame:
+        res["singles"] = singles(sess)
+    return res
 
 
 # Class mà kích thước một mình không đủ phân biệt với vật cố định (thùng rác, container, nhà vệ sinh di động, tường):

@@ -92,7 +92,7 @@ async function sessionFlow() {
   const calls = [];
   const sess = { frames: new Set(), tracks: 10, judged: 0, final: false, gone: new Set(), n: 0 };
   const env = {
-    console, Set, Math, Object, Promise, String, Array, Date, JSON,
+    console, Set, Math, Object, Promise, String, Array, Date, JSON, singleSeq: 0,
     S: { jobId: 7, lidarSession: null, stopRequested: false, tracks: [], trackMeta: null, busy: '' },
     GM_getValue: (k, d) => (k in store ? JSON.parse(JSON.stringify(store[k])) : d),
     GM_setValue: (k, v) => { store[k] = JSON.parse(JSON.stringify(v)); },
@@ -118,13 +118,17 @@ async function sessionFlow() {
         return { judged: sess.judged, total: sess.tracks, remaining: sess.tracks - sess.judged, final: sess.final,
           buckets: sess.final ? { high_confidence: 10, needs_review: 0, suspected_noise: 0 } : undefined };
       }
-      if (url.endsWith('/result')) return { tracks: [{ tid: 1, bucket: 'high_confidence', shapes: [{ frame: 0, points: [] }] }], checked_by: { claude: 1 } };
+      if (url.endsWith('/result')) {
+        env.perFrame = !!(body && body.per_frame);
+        return { tracks: [{ tid: 1, bucket: 'high_confidence', shapes: [{ frame: 0, points: [] }], frames: [{ frame: 0, points: [], seen: true }] }],
+          singles: [{ frame: 4, label_id: 1, label_name: 'Car', points: [], size: [4, 2, 1.5], confidence: 0.4 }], checked_by: { claude: 1 } };
+      }
       return {};
     },
   };
   const fctx = vm.createContext(env);
   for (const name of ['saveLidarSession', 'restoreLidarSession', 'lidarPause', 'lidarFetchResult', 'lidarUpload',
-    'lidarTrackSession', 'lidarShowPartial', 'dropLidarSession', 'phaseText', 'pausedText']) {
+    'lidarTrackSession', 'lidarShowPartial', 'dropLidarSession', 'phaseText', 'pausedText', 'guideMode3d', 'singleTrack']) {
     vm.runInContext(sourceOf(name), fctx, { filename: name });
   }
   // 1) chạy, Claude chạy 1 lô rồi bạn bấm dừng
@@ -143,7 +147,10 @@ async function sessionFlow() {
   await fctx.lidarTrackSession(true);
   check('tiếp tục: không tạo phiên mới, không gửi lại frame', !calls.some((c) => c.includes('/init') || c.includes('/frames')), calls);
   check('tiếp tục: chấm lại track Claude lỗi ở lô đầu', calls.some((c) => c.includes('llm_batch') && c.includes('retry')), calls);
-  check('tiếp tục: xong, có kết quả, phiên đã đóng', env.S.lidarSession === null && env.S.tracks.length === 1 && calls.some((c) => c.endsWith('/close')), calls);
+  check('tiếp tục: xong, có kết quả, phiên đã đóng', env.S.lidarSession === null && env.S.tracks.length === 2 && calls.some((c) => c.endsWith('/close')), calls);
+  check('kết quả lấy kèm cuboid từng frame (per_frame)', env.perFrame === true);
+  const single = env.S.tracks.find((t) => t.single);
+  check('vật 1 frame: rổ Nghi rác, không tick', single && single.checked === false && single.bucket === 'suspected_noise' && single.frames.length === 1, single);
   check('xong: không còn nhớ phiên', !(store.lidarSess || {})[7]);
   // 4) lỗi hết giờ giữa chừng -> nút tiếp tục; backend khởi động lại (404) -> chạy lại từ đầu, báo rõ
   sess.judged = 0; sess.final = false; env.failNextLlm = true;
@@ -153,6 +160,24 @@ async function sessionFlow() {
   await fctx.lidarTrackSession(true);
   check('phiên mất trên backend: chạy lại từ đầu', calls.some((c) => c.endsWith('/init')) && (env.S.trackMeta.warnings || []).some((w) => w.includes('khởi động lại')), calls);
 }
+
+// --- 0.9.11: track -> cuboid từng frame (ghi dạng shape) ---
+vm.runInContext(sourceOf('tracksToShapes'), ctx, { filename: 'tracksToShapes' });
+const P = (x) => [x, 0, -1, 0, 0, 0, 4.4, 1.8, 1.5, 0, 0, 0, 0, 0, 0, 0];
+const tr = [
+  { label_id: 1, checked: true, frames: [{ frame: 0, points: P(10), seen: true }, { frame: 1, points: P(11), seen: false }, { frame: 2, points: P(12), seen: true }] },
+  { label_id: 2, checked: false, frames: [{ frame: 0, points: P(-5), seen: true }] },
+  { label_id: 1, checked: true, single: true, frames: [{ frame: 3, points: P(20), seen: true }] },
+];
+const noHidden = ctx.tracksToShapes(tr, [], false);
+check('shape: bỏ frame nội suy khi không chọn', noHidden.shapes.length === 3 && noHidden.hidden === 1, noHidden);
+check('shape: track bỏ tick không ghi', !noHidden.shapes.some((s) => s.track.label_id === 2));
+check('shape: vật 1 frame vẫn ghi được', noHidden.shapes.some((s) => s.frame === 3));
+check('shape: 16 số mỗi cuboid', noHidden.shapes.every((s) => s.points.length === 16));
+const withHidden = ctx.tracksToShapes(tr, [], true);
+check('shape: ghi cả frame nội suy, đánh occluded', withHidden.shapes.length === 4 && withHidden.shapes.find((s) => s.frame === 1).occluded === true);
+const dedup = ctx.tracksToShapes(tr, [{ frame: 0, label_id: 1, points: P(10.4) }, { frame: 2, label_id: 9, points: P(12) }], false);
+check('shape: bỏ cuboid trùng (cùng label, < 1 m)', dedup.dup === 1 && dedup.shapes.length === 2 && !dedup.shapes.some((s) => s.frame === 0), dedup);
 
 sessionFlow().then(() => {
   console.log(`\n== userscript 3D logic: ${pass} pass, ${fail} fail ==`);

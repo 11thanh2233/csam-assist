@@ -17,10 +17,13 @@ chạy rồi dời box về lại; cường độ điểm không có thì để 
 """
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Optional
 
 import numpy as np
+
+log = logging.getLogger("sam3-assist")
 
 # ------------------------------------------------------------- cấu hình gốc ---
 PC_RANGE = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0)
@@ -176,24 +179,44 @@ class CenterPointONNX:
         self.session = session
         self.error: Optional[str] = None
         self.inputs: dict[str, str] = {}
+        self.optimized = True            # 0.9.11: False = phải tắt tối ưu đồ thị mới nạp được (file xuất từ mmdet3d)
 
     @property
     def ready(self) -> bool:
         return self.session is not None
 
+    def _open(self, ort, optimize: bool):
+        kwargs: dict[str, Any] = {"providers": self.providers}
+        if "CUDAExecutionProvider" in self.providers and self.options.get("cuda"):
+            kwargs["provider_options"] = [self.options["cuda"]] + [{}] * (len(self.providers) - 1)
+        if not optimize:
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+            kwargs["sess_options"] = opts
+        return ort.InferenceSession(self.path, **kwargs)
+
     def load(self) -> "CenterPointONNX":
         if self.session is None:
             try:
                 import onnxruntime as ort
-
-                kwargs: dict[str, Any] = {"providers": self.providers}
-                if "CUDAExecutionProvider" in self.providers and self.options.get("cuda"):
-                    kwargs["provider_options"] = [self.options["cuda"]] + [{}] * (len(self.providers) - 1)
-                self.session = ort.InferenceSession(self.path, **kwargs)
-            except Exception as exc:  # noqa: BLE001 - file hỏng / thiếu onnxruntime: báo, dùng hình học
+            except Exception as exc:  # noqa: BLE001 - thiếu onnxruntime: báo, dùng hình học
                 self.error = f"không nạp được model 3D ONNX: {exc}"
-                self.session = None
                 return self
+            try:
+                self.session = self._open(ort, True)
+                self.optimized = True
+            except Exception as first:  # noqa: BLE001
+                # 0.9.11: file CenterPoint xuất từ mmdet3d lỗi ở bước tối ưu khi nạp ("MatMulBnFusion_Gemm ... First
+                # input does not have rank 2"): PillarFeatureNet nhân ma trận 3 chiều ngay trước BatchNorm. Tắt tối ưu
+                # đồ thị thì chạy đúng (chậm hơn một chút). File hỏng thật thì lần hai cũng lỗi: báo lỗi lần đầu.
+                try:
+                    self.session = self._open(ort, False)
+                    self.optimized = False
+                    log.info("Model 3D ONNX: nạp với tối ưu đồ thị tắt (%s)", str(first)[:160])
+                except Exception:  # noqa: BLE001 - file hỏng: báo, dùng hình học
+                    self.error = f"không nạp được model 3D ONNX: {first}"
+                    self.session = None
+                    return self
         names = [i.name for i in self.session.get_inputs()]
         if not {"voxels", "num_points", "coors"} <= set(names):
             self.error = f"model 3D ONNX cần đầu vào voxels / num_points / coors, file này có: {', '.join(names)}"

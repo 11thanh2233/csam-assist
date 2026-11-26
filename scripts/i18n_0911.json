@@ -1,0 +1,35 @@
+{
+"backend": {
+"Không đọc được guideline cho job 3D: %s": "Could not read the guideline for the 3D job: %s",
+"Model 3D ONNX: nạp với tối ưu đồ thị tắt (%s)": "3D ONNX model: loaded with graph optimization off (%s)"
+},
+"userscript": {
+"Claude đọc guideline: {0}{1}": "Claude reads guideline: {0}{1}",
+"Track (keyframe + nội suy)": "Track (keyframes + interpolation)",
+"Shape từng frame": "Shape per frame",
+"Ghi dạng:": "Write as:",
+"Ghi cả frame nội suy (bị che)": "Also write interpolated frames (occluded)",
+"Kết quả này chưa có cuboid từng frame: chạy lại \"Bắt đầu dựng Cuboid 3D\" (hoặc \"Xem kết quả đã có\" nếu phiên còn) rồi ghi.": "These results have no per-frame cuboids yet: run \"Start building 3D cuboids\" again (or \"Show results so far\" if the session is still there), then write.",
+"Phần guideline gửi kèm mỗi lần Claude chấm (tốn thêm lượt gọi)": "Part of the guideline sent with every Claude review (uses more of your call budget)",
+"Đoạn liên quan": "Relevant excerpts",
+"Cả guideline": "Whole guideline",
+"Không gửi": "Don't send",
+"Chưa có guideline: nạp ở tab Guideline để Claude chấm theo định nghĩa của project.": "No guideline yet: import one in the Guideline tab so Claude reviews by the project's definitions.",
+"Mở tab Guideline": "Open the Guideline tab",
+"Claude không đọc guideline": "Claude does not read the guideline",
+" (cả guideline)": " (whole guideline)",
+" (định nghĩa {0} label + đoạn liên quan)": " ({0} label definitions + relevant excerpts)",
+"Dựng cuboid: model 3D lỗi — đang dùng hình học": "Building cuboids: 3D model failed — using geometry",
+"Chỉ thấy ở 1 frame: chỉ ghi được khi chọn \"Shape từng frame\"": "Seen in 1 frame only: can only be written with \"Shape per frame\"",
+"Kết quả này chưa có cuboid từng frame: chạy lại \"Bắt đầu dựng Cuboid 3D\" rồi ghi.": "These results have no per-frame cuboids yet: run \"Start building 3D cuboids\" again, then write.",
+"Đang ghi cuboid từng frame vào CVAT…": "Writing per-frame cuboids to CVAT…",
+"Không có cuboid mới để ghi ({0} cuboid đã có sẵn trong job).": "No new cuboids to write ({0} cuboids are already in the job).",
+"Ghi {0} cuboid trên {1} frame vào job {2}?": "Write {0} cuboids on {1} frames to job {2}?",
+"Đang ghi cuboid: {0}/{1}…": "Writing cuboids: {0}/{1}…",
+"bỏ {0} cuboid đã có": "skipped {0} existing cuboids",
+"bỏ {0} frame nội suy": "skipped {0} interpolated frames",
+"Đã ghi {0} cuboid trên {1} frame{2}.{3}": "Wrote {0} cuboids on {1} frames{2}.{3}",
+"Ghi {0} cuboid ({1} frame) vào CVAT": "Write {0} cuboids ({1} frames) to CVAT",
+"{0} vật chỉ thấy ở 1 frame không ghi được dạng track: chọn \"Shape từng frame\"": "{0} objects seen in only 1 frame can't be written as tracks: choose \"Shape per frame\""
+}
+}
