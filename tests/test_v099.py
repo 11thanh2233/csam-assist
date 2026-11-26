@@ -242,4 +242,3 @@ def test_panel_line_names_the_filter():
     assert "function engines3d(perFrame)" in js and "engines3d(true)" in js
     for s in ("Lọc rác bằng ảnh: SAM3", "Lọc rác bằng ảnh: đang bỏ qua", "SAM3 nếu đủ VRAM"):
         assert s in js
-

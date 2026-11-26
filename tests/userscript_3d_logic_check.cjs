@@ -78,5 +78,83 @@ check('trackNote không lộ mã cờ thô', !/LOW_VISIBILITY|ATTRIBUTE_CHECK|UN
 check('trackNote thêm ghi chú nghi rác từ ảnh', ctx.trackNote({ flags: [], vision2d: { verdict: 'none', camera: 'CAM_FRONT' } })
   .includes('nghi rác'));
 
-console.log(`\n== userscript 3D logic: ${pass} pass, ${fail} fail ==`);
-process.exit(fail ? 1 : 0);
+// --- 0.9.10: dòng báo phiên đã dừng + tiến độ gửi frame ---
+vm.runInContext(sourceOf('pausedText'), ctx, { filename: 'pausedText' });
+const up = ctx.phaseText('upload', { done: 12, total: 40 });
+check('phaseText bước gửi frame', up.includes('12/40'), up);
+const pz = ctx.pausedText({ phase: 'llm', done: 16, total: 40, error: '' });
+check('pausedText nói dừng ở đâu và cách tiếp tục', pz.includes('16/40') && pz.includes('Tiếp tục từ chỗ dừng'), pz);
+check('pausedText kèm lỗi', ctx.pausedText({ phase: 'llm', done: 0, total: 0, error: 'hết giờ' }).startsWith('Lỗi: hết giờ'));
+
+// --- 0.9.10: chạy cả luồng phiên 3D với backend giả: dừng ở Pha 3, F5, tiếp tục chỉ chạy phần còn thiếu ---
+async function sessionFlow() {
+  const store = {};
+  const calls = [];
+  const sess = { frames: new Set(), tracks: 10, judged: 0, final: false, gone: new Set(), n: 0 };
+  const env = {
+    console, Set, Math, Object, Promise, String, Array, Date, JSON,
+    S: { jobId: 7, lidarSession: null, stopRequested: false, tracks: [], trackMeta: null, busy: '' },
+    GM_getValue: (k, d) => (k in store ? JSON.parse(JSON.stringify(store[k])) : d),
+    GM_setValue: (k, v) => { store[k] = JSON.parse(JSON.stringify(v)); },
+    jobRange: () => ({ from: 0, to: 9 }), jobFrames: () => [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    l3: () => ({ batch: 5, useLlm: true }), llmOn: () => true, lidarBody: (x) => x,
+    fetchCloud: async (f) => ({ frame: f }), fetchContext: async () => '', rememberCamera() {},
+    render() {}, notify() {}, persist() {}, setStatus: (t, k) => { env.lastStatus = [t, k]; },
+    run: async (_t, fn) => { env.S.busy = 'x'; try { await fn(); } catch (e) { env.lastStatus = [e.message, 'error']; } env.S.busy = ''; },
+    lidarBuckets: ctx.lidarBuckets, bucketOrder: ctx.bucketOrder,
+    backend: async (method, url, body) => {
+      calls.push(`${method} ${url}${body && body.max_batches ? ' x1' : ''}${body && body.retry_failed ? ' retry' : ''}`);
+      const m = url.match(/session\/(S\d+)\//);
+      if (m && sess.gone.has(m[1])) throw Object.assign(new Error('Phiên 3D không còn'), { status: 404 });
+      if (url.endsWith('/init')) { body.frames.forEach((f) => sess.frames.add(f.frame)); return { session_id: `S${++sess.n}` }; }
+      if (url.endsWith('/frames')) { body.frames.forEach((f) => sess.frames.add(f.frame)); return {}; }
+      if (url.endsWith('/progress')) return { frame_list: [...sess.frames] };
+      if (url.endsWith('/geometry')) return { remaining: 0, done: { geometry: sess.frames.size } };
+      if (url.endsWith('/vision')) return { skipped: 'chưa có bộ dò 2D' };
+      if (url.endsWith('/llm_batch')) {
+        if (env.failNextLlm) { env.failNextLlm = false; throw new Error('Backend không phản hồi sau 5 phút.'); }
+        sess.judged = Math.min(sess.tracks, sess.judged + 8); sess.final = sess.judged >= sess.tracks;
+        if (env.stopAfterLlm) env.S.stopRequested = true;
+        return { judged: sess.judged, total: sess.tracks, remaining: sess.tracks - sess.judged, final: sess.final,
+          buckets: sess.final ? { high_confidence: 10, needs_review: 0, suspected_noise: 0 } : undefined };
+      }
+      if (url.endsWith('/result')) return { tracks: [{ tid: 1, bucket: 'high_confidence', shapes: [{ frame: 0, points: [] }] }], checked_by: { claude: 1 } };
+      return {};
+    },
+  };
+  const fctx = vm.createContext(env);
+  for (const name of ['saveLidarSession', 'restoreLidarSession', 'lidarPause', 'lidarFetchResult', 'lidarUpload',
+    'lidarTrackSession', 'lidarShowPartial', 'dropLidarSession', 'phaseText', 'pausedText']) {
+    vm.runInContext(sourceOf(name), fctx, { filename: name });
+  }
+  // 1) chạy, Claude chạy 1 lô rồi bạn bấm dừng
+  env.stopAfterLlm = true;
+  await fctx.lidarTrackSession(false);
+  const st = env.S.lidarSession;
+  check('dừng ở Pha 3: phiên giữ lại, đánh dấu tạm dừng', st && st.sid === 'S1' && st.paused && st.phase === 'llm', st);
+  check('Claude gọi từng lô (max_batches 1)', calls.filter((c) => c.includes('llm_batch')).every((c) => c.includes(' x1')), calls);
+  check('nhớ phiên theo job', store.lidarSess && store.lidarSess[7] && store.lidarSess[7].sid === 'S1', store);
+  // 2) F5: nạp lại trang -> phiên tạm dừng hiện lại
+  env.S.lidarSession = null;
+  fctx.restoreLidarSession();
+  check('tải lại trang: thấy phiên tạm dừng', env.S.lidarSession && env.S.lidarSession.paused && env.S.lidarSession.sid === 'S1');
+  // 3) Tiếp tục: không gửi lại frame, không init lại, chạy nốt Claude, ra kết quả, xoá phiên đã nhớ
+  env.stopAfterLlm = false; calls.length = 0;
+  await fctx.lidarTrackSession(true);
+  check('tiếp tục: không tạo phiên mới, không gửi lại frame', !calls.some((c) => c.includes('/init') || c.includes('/frames')), calls);
+  check('tiếp tục: chấm lại track Claude lỗi ở lô đầu', calls.some((c) => c.includes('llm_batch') && c.includes('retry')), calls);
+  check('tiếp tục: xong, có kết quả, phiên đã đóng', env.S.lidarSession === null && env.S.tracks.length === 1 && calls.some((c) => c.endsWith('/close')), calls);
+  check('xong: không còn nhớ phiên', !(store.lidarSess || {})[7]);
+  // 4) lỗi hết giờ giữa chừng -> nút tiếp tục; backend khởi động lại (404) -> chạy lại từ đầu, báo rõ
+  sess.judged = 0; sess.final = false; env.failNextLlm = true;
+  await fctx.lidarTrackSession(false);
+  check('hết giờ ở Pha 3: tạm dừng kèm lỗi', env.S.lidarSession && env.S.lidarSession.paused && /5 phút/.test(env.S.lidarSession.error), env.S.lidarSession);
+  sess.gone.add(env.S.lidarSession.sid); sess.frames.clear(); calls.length = 0;
+  await fctx.lidarTrackSession(true);
+  check('phiên mất trên backend: chạy lại từ đầu', calls.some((c) => c.endsWith('/init')) && (env.S.trackMeta.warnings || []).some((w) => w.includes('khởi động lại')), calls);
+}
+
+sessionFlow().then(() => {
+  console.log(`\n== userscript 3D logic: ${pass} pass, ${fail} fail ==`);
+  process.exit(fail ? 1 : 0);
+}).catch((e) => { console.log('FAIL sessionFlow', e && e.stack); process.exit(1); });

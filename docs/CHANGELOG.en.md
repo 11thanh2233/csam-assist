@@ -3,6 +3,22 @@
 English version of `docs/CHANGELOG.md`: one `## <version>` section per release, same versions. The app shows these
 sections in the "What's new" box when the interface language is English, and the release notes on GitHub include both.
 
+## 0.9.10 (2026-11-26)
+
+Patch: a 3D cuboid session can now continue from where it stopped. Details in `docs/CHECKLIST_0.9.10.md` (Vietnamese).
+
+- **Claude no longer times out:** the "Phase 3/3: Claude recognition & audit" step used to be ONE request for every
+  track, so jobs with many tracks easily went past 5 minutes and timed out. The panel now sends batches of 8 tracks,
+  one short request each, and shows progress "Phase 3/3: Claude … (16/40 tracks)".
+- **"Pause / Cancel" really stops:** it stops after the running batch (also between Claude batches); finished work is
+  kept on the backend.
+- **"Continue from where it stopped" button:** shown after you pause, or after a timeout or network error midway. It
+  only runs what is missing: frames not yet sent / built, tracks not yet cross-checked with cameras, tracks not yet
+  reviewed by Claude (and re-reviews tracks where Claude failed last time). Plus "Show results so far" to review the
+  finished part right away, and "Drop this session".
+- **Reloading the page (F5) can still continue:** the session id is remembered per job for 2 days. If the backend has
+  restarted (session lost), the panel says so and starts over.
+
 ## 0.9.9 (2026-11-26)
 
 Small patch: SAM3 in 3D jobs no longer hard-requires 6 GB of free VRAM. Only matters when RT-DETR is not installed

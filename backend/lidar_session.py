@@ -42,6 +42,10 @@ class Session:
         self.detected: dict[int, dict] = {}                     # {số frame: kết quả detect()}
         self.track: Optional[dict] = None                       # kết quả tracking gần nhất
         self.llm: dict[int, dict] = {}                          # {track_id: kết quả Pha 1+2}
+        # 0.9.10: Claude chạy từng lô (mỗi request một lô): kết quả Pha 1 tích luỹ ở đây, Pha 2 chạy một lần khi đủ
+        self.llm_p1: dict[int, dict] = {}
+        self.llm_final = False
+        self.step_lock = threading.Lock()                       # một lô Claude tại một thời điểm (panel hết giờ rồi bấm tiếp)
         self.created = time.time()
         self.touched = self.created
         self.cancelled = False
@@ -123,6 +127,13 @@ def run_geometry(sess: Session, frames: Optional[list[int]] = None, limit: int =
             todo = [f for f in todo if f in set(frames)]
         batch = todo[:max(1, int(limit))]
         by_frame = dict(sess.frames)
+        if not batch and sess.track is not None:
+            # 0.9.10: không còn frame nào: KHÔNG dựng lại track (dựng lại làm mất kết quả đối chiếu camera đã chạy,
+            # nên "Tiếp tục từ chỗ dừng" phải làm lại từ đầu)
+            sess.touch()
+            return {"session_id": sess.id, "ran": 0, "done": dict(sess.done),
+                    "tracks": len(sess.track.get("tracks") or []), "remaining": 0,
+                    "cancelled": sess.cancelled, "warnings": sess.track.get("warnings") or []}
     done = 0
     for f in batch:
         if sess.cancelled:
@@ -149,6 +160,10 @@ def run_geometry(sess: Session, frames: Optional[list[int]] = None, limit: int =
         frames_in = [{"frame": f, "objects": sess.detected[f]["objects"]} for f in sorted(sess.detected)]
         sess.track = tracking_3d.build(frames_in, sess.rule, sess.names, keep_obs=True)
         mark_debris(sess.track.get("tracks") or [], len(sess.detected))
+        if done:
+            # có frame mới: track dựng lại, số hiệu track có thể đổi -> kết quả camera / Claude cũ không còn khớp
+            sess.llm, sess.llm_p1, sess.llm_final = {}, {}, False
+            sess.done["vision"] = sess.done["llm"] = 0
         sess.touch()
         return {"session_id": sess.id, "ran": done, "done": dict(sess.done),
                 "tracks": len(sess.track.get("tracks") or []), "remaining": max(0, len(todo) - done),
@@ -277,38 +292,94 @@ def run_vision(sess: Session, vision, rig: dict, offset: Optional[float] = None,
             "cancelled": sess.cancelled}
 
 
+def _llm_failed(r: dict) -> bool:
+    return str(r.get("reason") or "").startswith(("Claude lỗi", "Claude không chạy được"))
+
+
 def run_llm(sess: Session, llm, autoprofile: dict, memory: Optional[dict] = None, batch_size: int = 8,
-            after=None) -> dict:
-    """Chạy Claude 2 pha theo lô track. Không có llm thì trả về lý do, không lỗi."""
+            after=None, max_batches: Optional[int] = None, retry_failed: bool = False) -> dict:
+    """Chạy Claude 2 pha theo lô track. Không có llm thì trả về lý do, không lỗi.
+
+    0.9.10: chạy được từng phần. max_batches = số lô Pha 1 trong lần gọi này (None = hết), kết quả tích luỹ trong
+    phiên; khi mọi track đã có kết quả Pha 1 thì chạy Pha 2 một lần. Panel gọi lặp tới khi `remaining == 0` và
+    `final`, nên mỗi request chỉ dài khoảng một lần gọi Claude (0.9.9: một request cho mọi track -> quá 5 phút với job
+    nhiều track). Dừng (`cancelled`) giữa các lô: phần đã chấm vẫn giữ. retry_failed: chấm lại các track lần trước
+    Claude lỗi (khi bạn bấm "Tiếp tục từ chỗ dừng")."""
     from . import judge_3d
 
     if llm is None:
         return {"session_id": sess.id, "skipped": "chưa bật Claude (cần ANTHROPIC_API_KEY hoặc LLM local)"}
     if not sess.track:
         return {"session_id": sess.id, "skipped": "chưa dựng geometry"}
-    raw = list(sess.track.get("tracks") or [])
-    tracks = [view(t) for t in raw]                   # 0.9.8: đủ id / center / yaw / points cho judge_3d
-    try:
-        cam_images = _camera_images(sess, raw)
-        p1 = judge_3d.phase1(llm, tracks, sess.label_ids, autoprofile, cam_images, memory, batch_size)
+    batch_size = max(1, int(batch_size))
+    with sess.step_lock:
+        raw = list(sess.track.get("tracks") or [])
+        tracks = [view(t) for t in raw]               # 0.9.8: đủ id / center / yaw / points cho judge_3d
+        by_id = {t["id"]: t for t in tracks}
+        raw_by_id = {t.get("tid"): t for t in raw}
         with sess.lock:
-            sess.llm = dict(p1)
-            sess.done["llm"] = len(p1)
-        if after:
-            after(None)
-        p2 = judge_3d.phase2(llm, tracks, sess.label_ids, p1, sess.rule)
-    except Exception as exc:  # noqa: BLE001 - lỗi bất ngờ: mọi track vào Cần xem kèm lý do, phiên không trả 500
-        msg = f"Claude không chạy được: {type(exc).__name__}: {str(exc)[:160]}"
-        sess.errors.append(msg)
+            if retry_failed:
+                failed = [tid for tid, r in sess.llm_p1.items() if _llm_failed(r)]
+                for tid in failed:
+                    sess.llm_p1.pop(tid, None)
+                if failed:
+                    sess.llm_final = False
+            todo = [t for t in tracks if t["id"] not in sess.llm_p1]
+        ran = 0
+        try:
+            while todo and not sess.cancelled and (max_batches is None or ran < max_batches):
+                group, todo = todo[:batch_size], todo[batch_size:]
+                cam_images = _camera_images(sess, [raw_by_id[t["id"]] for t in group if t["id"] in raw_by_id])
+                p1 = judge_3d.phase1(llm, group, sess.label_ids, autoprofile, cam_images, memory, batch_size)
+                with sess.lock:
+                    sess.llm_p1.update(p1)
+                    sess.llm = {**sess.llm, **p1}              # kết quả tạm: dừng giữa chừng vẫn thấy phần đã chấm
+                    sess.done["llm"] = len(sess.llm_p1)
+                    sess.llm_final = False
+                    sess.touch()
+                ran += 1
+                if after:
+                    after(None)
+            if not todo and not sess.cancelled and not sess.llm_final:
+                p2 = judge_3d.phase2(llm, [by_id[i] for i in by_id if i in sess.llm_p1], sess.label_ids,
+                                     dict(sess.llm_p1), sess.rule)
+                with sess.lock:
+                    sess.llm = p2
+                    sess.llm_final = True
+                    sess.touch()
+        except Exception as exc:  # noqa: BLE001 - lỗi bất ngờ: track chưa chấm vào Cần xem kèm lý do, phiên không trả 500
+            msg = f"Claude không chạy được: {type(exc).__name__}: {str(exc)[:160]}"
+            sess.errors.append(msg)
+            with sess.lock:
+                for t in tracks:
+                    if t["id"] not in sess.llm_p1:
+                        sess.llm_p1[t["id"]] = {"keep": None, "bucket": "needs_review", "reason": msg}
+                sess.llm = {**sess.llm_p1, **sess.llm}
+                sess.done["llm"] = len(sess.llm_p1)
+            return {"session_id": sess.id, "error": msg, "judged": len(sess.llm_p1), "total": len(tracks),
+                    "remaining": 0, "final": False, "done": dict(sess.done), "cancelled": sess.cancelled}
         with sess.lock:
-            sess.llm = {t["id"]: {"keep": None, "bucket": "needs_review", "reason": msg} for t in tracks}
-        return {"session_id": sess.id, "error": msg, "judged": 0, "done": dict(sess.done), "cancelled": sess.cancelled}
+            judged = len([i for i in by_id if i in sess.llm_p1])
+            final = sess.llm_final
+            current = dict(sess.llm)
+    errors = sorted({str(r.get("reason")) for r in current.values() if _llm_failed(r)})
+    out = {"session_id": sess.id, "judged": judged, "total": len(tracks), "remaining": len(tracks) - judged,
+           "final": final, "ran": ran, "done": dict(sess.done), "cancelled": sess.cancelled, "errors": errors[:3]}
+    if final:
+        out["buckets"] = judge_3d.summarize(current)
+    return out
+
+
+def progress(sess: Session) -> dict:
+    """0.9.10: phiên đã chạy tới đâu, để panel "Tiếp tục từ chỗ dừng" chỉ chạy phần còn thiếu."""
+    tracks = (sess.track or {}).get("tracks") or []
     with sess.lock:
-        sess.llm = p2
-        sess.touch()
-    errors = sorted({str(r.get("reason")) for r in p2.values() if str(r.get("reason") or "").startswith("Claude lỗi")})
-    return {"session_id": sess.id, "judged": len(p2), "buckets": judge_3d.summarize(p2),
-            "done": dict(sess.done), "cancelled": sess.cancelled, "errors": errors[:3]}
+        return {"session_id": sess.id, "frames": len(sess.frames), "frame_list": [f for f, _ in sess.frames],
+                "geometry": len(sess.detected),
+                "tracks": len(tracks), "vision": sum(1 for t in tracks if t.get("vision2d")),
+                "llm": len([t for t in tracks if t.get("tid") in sess.llm_p1]), "llm_final": sess.llm_final,
+                "llm_failed": sum(1 for r in sess.llm_p1.values() if _llm_failed(r)),
+                "contexts": len(sess.contexts), "cancelled": sess.cancelled}
 
 
 def _camera_images(sess: Session, raw_tracks: list[dict]) -> dict[int, dict]:

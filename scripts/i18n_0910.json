@@ -1,0 +1,26 @@
+{
+"backend": {
+"Claude không chạy được": "Claude could not run"
+},
+"userscript": {
+"Chỉ chạy phần còn thiếu: frame chưa dựng, track chưa đối chiếu camera, track chưa qua Claude": "Only runs what is missing: frames not built yet, tracks not cross-checked with cameras, tracks not reviewed by Claude",
+"Tiếp tục từ chỗ dừng": "Continue from where it stopped",
+"Xem kết quả đã có": "Show results so far",
+"Bỏ phiên này": "Drop this session",
+"Chạy lại từ đầu ({0} frame)": "Start over ({0} frames)",
+"Đang gửi point cloud cho backend ({0}/{1} frame)": "Sending point clouds to the backend ({0}/{1} frames)",
+"Lỗi: {0}": "Error: {0}",
+"Đã tạm dừng.": "Paused.",
+"{0} Dừng ở: {1}. Phần đã chạy vẫn giữ trên backend: bấm \"Tiếp tục từ chỗ dừng\" để chạy nốt.": "{0} Stopped at: {1}. Finished work is kept on the backend: press \"Continue from where it stopped\" to finish.",
+"Đã tạm dừng. Bấm \"Tiếp tục từ chỗ dừng\" để chạy nốt, hoặc \"Xem kết quả đã có\".": "Paused. Press \"Continue from where it stopped\" to finish, or \"Show results so far\".",
+"Kết quả tạm (dừng ở: {0}). Track chưa qua bước kiểm nào nằm ở rổ \"Cần xem\".": "Partial results (stopped at: {0}). Tracks not checked by any step are in \"Needs review\".",
+"Đang chạy tiếp phiên 3D từ chỗ dừng…": "Continuing the 3D session from where it stopped…",
+"Phiên cũ không còn trên backend (backend đã khởi động lại): đã chạy lại từ đầu.": "The old session is no longer on the backend (the backend restarted): started over.",
+"Đã dừng trước khi backend nhận frame nào.": "Stopped before the backend received any frame.",
+"Đang lấy kết quả đã có…": "Fetching results so far…",
+"Kết quả tạm: {0} track ({1} cần xem · {2} nghi rác · {3} tin cậy cao). Vẫn bấm \"Tiếp tục từ chỗ dừng\" được.": "Partial results: {0} tracks ({1} to review · {2} suspected noise · {3} high confidence). You can still press \"Continue from where it stopped\".",
+"Phiên 3D không còn trên backend (backend đã khởi động lại). Bấm \"Bắt đầu dựng Cuboid 3D\" để chạy lại.": "The 3D session is no longer on the backend (the backend restarted). Press \"Start building 3D cuboids\" to run again.",
+"Đã bỏ phiên 3D đang dừng.": "Dropped the paused 3D session.",
+"Phiên 3D đã tạm dừng": "3D session paused"
+}
+}

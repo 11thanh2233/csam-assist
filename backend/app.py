@@ -1324,6 +1324,9 @@ class LidarSessionLlmReq(ResolveReq):
     session_id: str = ""
     batch_size: int = 8                     # số track mỗi lô gửi Claude (6-10 theo spec)
     use_llm: bool = True
+    # 0.9.10: số lô Claude trong request này (panel gửi 1: mỗi request ngắn, không còn hết giờ). None = chạy hết như cũ
+    max_batches: Optional[int] = Field(default=None, ge=1, le=50)
+    retry_failed: bool = False              # "Tiếp tục từ chỗ dừng": chấm lại các track lần trước Claude lỗi
 
 
 class LidarSessionCancelReq(BaseModel):
@@ -1774,6 +1777,7 @@ def lidar_v2_vision(sid: str, req: LidarSessionStepReq) -> dict:
     from . import camera_rig, lidar_session, lidar_vision
 
     sess, profile, rule, table, info = _session_of(sid, req)
+    sess.cancelled = False                  # 0.9.10: "Tiếp tục từ chỗ dừng" sau khi bấm dừng (như bước geometry)
     if not sess.contexts:
         return {"session_id": sess.id, "skipped": "job không có ảnh camera — bỏ qua đối chiếu camera"}
     path = _onnx2d_path()
@@ -1803,6 +1807,7 @@ def lidar_v2_llm(sid: str, req: LidarSessionLlmReq) -> dict:
     sess, profile, rule, table, info = _session_of(sid, req)
     if not req.use_llm:
         return {"session_id": sess.id, "skipped": "bạn đã tắt Claude AI cho job này"}
+    sess.cancelled = False                  # 0.9.10: chạy tiếp sau khi bấm dừng
     llm = _llm_for_3d()
     mem = None
     if rt.memory is not None:
@@ -1810,7 +1815,21 @@ def lidar_v2_llm(sid: str, req: LidarSessionLlmReq) -> dict:
             mem = {"lessons": rt.memory.lessons(profile["id"])}
         except Exception:  # noqa: BLE001 - trí nhớ lỗi: vẫn chạy Claude không lessons
             mem = None
-    return lidar_session.run_llm(sess, llm, profile, mem, max(4, min(10, req.batch_size)))
+    return lidar_session.run_llm(sess, llm, profile, mem, max(4, min(10, req.batch_size)),
+                                 max_batches=req.max_batches, retry_failed=req.retry_failed)
+
+
+@app.get("/lidar/v2/session/{sid}/progress", dependencies=[Depends(require_key)])
+def lidar_v2_progress(sid: str) -> dict:
+    """0.9.10: phiên đã chạy tới đâu (frame đã dựng, track đã đối chiếu camera, đã qua Claude). Panel dùng để
+    "Tiếp tục từ chỗ dừng" chỉ chạy phần còn thiếu; 404 = backend đã khởi động lại, phải chạy lại."""
+    from . import lidar_session
+
+    sess = lidar_session.get(sid)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="Phiên 3D không còn trong bộ nhớ (backend đã khởi động lại, hoặc "
+                                                    "quá 8 phiên). Hãy tạo phiên mới.")
+    return lidar_session.progress(sess)
 
 
 @app.post("/lidar/v2/session/{sid}/result", dependencies=[Depends(require_key)])

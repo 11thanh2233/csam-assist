@@ -3,6 +3,20 @@
 Mỗi bản một mục `## <bản>`. App hiện các mục này trong khung "Có gì mới" sau khi cập nhật, và bước build lấy đúng
 mục của bản đang phát hành làm ghi chú trên GitHub Releases.
 
+## 0.9.10 (2026-11-26)
+
+Bản vá: phiên dựng cuboid 3D tiếp tục được từ chỗ dừng. Chi tiết ở `docs/CHECKLIST_0.9.10.md`.
+
+- **Claude không còn làm hết giờ:** trước đây bước "Pha 3/3: Claude nhận diện & kiểm duyệt" là MỘT request cho mọi
+  track, job nhiều track dễ quá 5 phút và báo hết giờ. Giờ panel gửi từng lô 8 track, mỗi lô một request ngắn, và hiện
+  tiến độ "Pha 3/3: Claude … (16/40 track)".
+- **"Tạm dừng / Hủy" dừng thật:** dừng sau lô đang chạy (kể cả giữa các lô Claude), phần đã chạy giữ trên backend.
+- **Nút "Tiếp tục từ chỗ dừng":** hiện khi bạn bấm dừng, khi hết giờ hoặc lỗi mạng giữa chừng. Chỉ chạy phần còn
+  thiếu: frame chưa gửi / chưa dựng, track chưa đối chiếu camera, track chưa qua Claude (và chấm lại các track lần
+  trước Claude lỗi). Kèm "Xem kết quả đã có" để duyệt ngay phần đã xong, và "Bỏ phiên này".
+- **Tải lại trang (F5) vẫn tiếp tục được:** mã phiên nhớ theo job trong 2 ngày. Backend đã khởi động lại (phiên mất)
+  thì panel báo rõ và chạy lại từ đầu.
+
 ## 0.9.9 (2026-11-26)
 
 Bản vá nhỏ: SAM3 ở job 3D không còn đòi cứng 6 GB VRAM trống. Chỉ ảnh hưởng khi chưa cài RT-DETR (có RT-DETR thì tool
